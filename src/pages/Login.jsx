@@ -4,8 +4,6 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Loader2 } from 'lucide-react';
 
-import { Capacitor } from '@capacitor/core';
-import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
 
 export default function Login() {
   const { authError, authenticated, driveAuthorized } = useAuth();
@@ -30,27 +28,6 @@ export default function Login() {
     try {
       localStorage.setItem('pending_drive_onboarding', 'true');
       
-      if (Capacitor.isNativePlatform()) {
-        // Native Android/iOS Login
-        await GoogleSignIn.initialize({
-          clientId: '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com',
-          serverClientId: '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com',
-          scopes: ['profile', 'email', 'https://www.googleapis.com/auth/drive.file']
-        });
-        const result = await GoogleSignIn.signIn();
-        const idToken = result.idToken || result.authentication?.idToken;
-        
-        if (idToken) {
-          const { error: sbError } = await supabase.auth.signInWithIdToken({
-            provider: 'google',
-            token: idToken,
-          });
-          if (sbError) throw sbError;
-        } else {
-          throw new Error("No ID Token received from Google");
-        }
-      } else {
-        // Web Login
         const { error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
@@ -60,7 +37,6 @@ export default function Login() {
         });
         
         if (error) throw error;
-      }
     } catch (err) {
       setError(err.message || 'Failed to sign in with Google');
       setIsLoading(false);

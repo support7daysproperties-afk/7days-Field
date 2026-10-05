@@ -10,11 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@capacitor/android": "^8.5.2",
-    "@capacitor/browser": "^8.0.5",
-    "@capacitor/core": "^8.5.2",
     "@capacitor/ios": "^8.5.2",
-    "@capawesome/capacitor-google-sign-in": "^0.1.4",
     "@supabase/supabase-js": "^2.117.2",
     "idb": "^8.0.3",
     "lucide-react": "^1.48.0",
@@ -23,7 +19,6 @@
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.5.2",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
