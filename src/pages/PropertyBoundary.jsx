@@ -435,11 +435,11 @@ export default function PropertyBoundary({
         setSavedBoundary(existing);
         drawCoordsRef.current = existing.coordinates;
         setCoords(existing.coordinates);
-        setMode('saved');
+        setMode('completed');
 
         const tryRender = () => {
           if (mapRef.current) {
-            renderLayers(existing.coordinates, 'saved');
+            renderLayers(existing.coordinates, 'completed');
             const llPts = llAll(existing.coordinates);
             mapRef.current.fitBounds(L.latLngBounds(llPts), { padding: [60, 60] });
           } else {
