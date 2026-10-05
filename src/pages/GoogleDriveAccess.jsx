@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { HardDrive, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import GoogleDriveService from '../services/GoogleDriveService';
+import { Capacitor } from '@capacitor/core';
+import { supabase } from '../lib/supabase';
 
 export default function GoogleDriveAccess() {
   const navigate = useNavigate();
@@ -38,13 +40,25 @@ export default function GoogleDriveAccess() {
     setErrorMessage('');
     
     try {
-      await GoogleDriveService.requestDriveAccess();
-      // Test the API and lazy-create the root application folder to verify it works
-      await GoogleDriveService.getOrCreateFolder('7Days Field');
-      
-      authorizeDrive();
-      setStatus('success');
-      
+      if (Capacitor.isNativePlatform()) {
+        // GIS fails in WebViews with invalid_client. We must use the browser OAuth flow
+        // to show the Google Drive permission screen. Supabase handles @capacitor/browser natively!
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            scopes: 'https://www.googleapis.com/auth/drive.file',
+            redirectTo: window.location.origin, 
+            skipBrowserRedirect: false // Explicitly allow Supabase to open the system browser
+          }
+        });
+        if (error) throw error;
+      } else {
+        await GoogleDriveService.requestDriveAccess();
+        // Test the API and lazy-create the root application folder to verify it works
+        await GoogleDriveService.getOrCreateFolder('7Days Field');
+        authorizeDrive();
+        setStatus('success');
+      }
     } catch (error) {
       console.error(error);
       setStatus('error');
