@@ -1,41 +1,34 @@
 /**
- * PropertyBoundary.jsx — Leaflet implementation
+ * PropertyBoundary.jsx — Crosshair / Target-based boundary marking
  *
- * WHY LEAFLET INSTEAD OF MAPLIBRE:
- *   MapLibre GL JS (via `import * as`) has an ESM/Vite interop problem where
- *   map.on('click') silently fails on some mobile browsers because of how the
- *   canvas touch-action is configured versus what Vite's module bundler exports.
+ * INTERACTION MODEL (DJI SmartFarm style):
+ *   1. Satellite map opens with fixed crosshair at center
+ *   2. User PANS/ZOOMS the map freely — no points created from panning
+ *   3. User aligns property corner under the fixed crosshair
+ *   4. User presses "+ Add Point" → map.getCenter() → new vertex
+ *   5. Vertex immediately rendered, line connects to previous vertex
+ *   6. User pans to next corner → "Add Point" → repeat
+ *   7. "Complete Boundary" closes the polygon with fill
+ *   8. Edit mode: draggable vertices + midpoint insertion
+ *   9. Save → BoundaryRepository (IndexedDB, offline-first)
+ *  10. Reopening restores exact polygon
  *
- *   Leaflet's L.Map.on('click') fires reliably on both desktop mouse and mobile
- *   touch (it internally normalises touchend → click after debouncing pan gestures)
- *   and its layer primitives (L.circleMarker, L.polyline, L.polygon) are
- *   guaranteed to render at geographic coordinates.
- *
- * RENDERING PIPELINE (the only correct way):
- *   User tap
- *   → Leaflet 'click' event fires with {latlng: {lat, lng}}
- *   → addPoint([lng, lat]) called immediately
- *   → drawCoordsRef.current updated (avoids stale closure)
- *   → React coords state updated (triggers re-render for UI)
- *   → updateLeafletLayers(newCoords) called immediately (no re-render wait)
- *     → L.circleMarker added for each vertex
- *     → L.polyline drawn through all vertices (+ closing segment if ≥3)
- *     → L.polygon fill shown if ≥3 vertices
- *   → All layers move/scale correctly on pan and zoom (geographic coordinates)
- *
- * COORDINATE ORDER:
- *   GPS:          lat, lng  (standard geographic)
- *   Leaflet:      [lat, lng] for L.* primitives
- *   Internal state & GeoJSON: [lng, lat] (GeoJSON spec)
- *   Conversion:   L.LatLng.lat → stored as coord[1], .lng → coord[0]
+ * MAP LIBRARY: Leaflet
+ *   - L.circleMarker for vertices
+ *   - L.polyline for open boundary line (drawing)
+ *   - L.polygon for closed filled boundary (completed)
+ *   - L.marker (draggable) for vertex editing
+ *   - L.circleMarker (interactive) for midpoint insertion
+ *   - map.getCenter() for crosshair coordinate
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
-  ArrowLeft, Plus, Minus, Undo2, Trash2, Save,
-  Layers, Navigation2, CheckCircle2,
+  ArrowLeft, Plus, Minus, Navigation2, Layers,
+  Undo2, Trash2, Save, CheckCircle2, Check,
+  MapPin, Edit3, X,
 } from 'lucide-react';
 import BoundaryRepository from '../services/offline/BoundaryRepository';
 import {
@@ -47,16 +40,26 @@ import {
 } from '../services/BoundaryService';
 import { useAuth } from '../context/AuthContext';
 
-// ─── Tile layers ───────────────────────────────────────────────────────────────
-const SATELLITE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-const LABELS_URL    = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+// ── Tile URLs ──────────────────────────────────────────────────────────────────
+const ESRI_SAT  = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
-// ─── Visual style constants ────────────────────────────────────────────────────
-const C_PRIMARY = '#3b82f6';
-const C_VERTEX  = '#ffffff';
-const C_FILL_OP = 0.20;
+// ── Visual constants ───────────────────────────────────────────────────────────
+const C_BLUE    = '#3b82f6';
+const C_WHITE   = '#ffffff';
+const C_FILL_OP = 0.18;
+const C_LINE_W  = 2.5;
+const V_RADIUS  = 7;   // vertex radius px
+const MID_RADIUS= 5;   // midpoint radius px
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
+// Convert our stored [lng, lat] → Leaflet [lat, lng]
+const ll = (c) => [c[1], c[0]];
+const llAll = (cs) => cs.map(ll);
+
+function emptyFC() { return { type: 'FeatureCollection', features: [] }; }
+
+// ── Component ──────────────────────────────────────────────────────────────────
 export default function PropertyBoundary({
   inspectionId,
   propertyId,
@@ -67,183 +70,309 @@ export default function PropertyBoundary({
   const { user } = useAuth();
 
   // DOM
-  const mapContainer = useRef(null);
+  const mapEl = useRef(null);
 
   // Leaflet instances
-  const mapRef        = useRef(null);   // L.Map
-  const satLayer      = useRef(null);
-  const labelLayer    = useRef(null);
-  const gpsMarker     = useRef(null);
-  const watchId       = useRef(null);
+  const mapRef       = useRef(null);
+  const satLayerRef  = useRef(null);
+  const osmLayerRef  = useRef(null);
+  const gpsMarkerRef = useRef(null);
+  const gpsWatchRef  = useRef(null);
+  const layerGrp     = useRef(null);   // all boundary layers live here
 
-  // Boundary Leaflet layers – rebuilt on every coords change
-  const layerGroup    = useRef(null);   // L.LayerGroup holding all boundary layers
-
-  // State
-  // drawCoordsRef always matches coords – used inside Leaflet callbacks to avoid stale closure
+  // Coords: stored as [lng, lat] pairs (GeoJSON order)
+  // drawCoordsRef stays in sync with coords; used inside Leaflet callbacks to avoid stale closure
   const drawCoordsRef = useRef([]);
-  const [coords, setCoords]                   = useState([]);
-  const modeRef       = useRef('normal');      // 'normal' | 'drawing' | 'saved'
-  const [mode, setMode]                       = useState('normal');
-  const [savedBoundary, setSavedBoundary]     = useState(null);
-  const [isSaving, setIsSaving]               = useState(false);
-  const [saveError, setSaveError]             = useState(null);
-  const [showLabels, setShowLabels]           = useState(false);
-  const [gpsAccuracy, setGpsAccuracy]         = useState(null);
-  const [gpsWarning, setGpsWarning]           = useState(false);
+  const [coords, setCoords]             = useState([]);
 
+  // mode: 'drawing' | 'completed' | 'saved' | 'editing'
+  const modeRef = useRef('drawing');
+  const [mode, setMode]                 = useState('drawing');
+
+  const [savedBoundary, setSavedBoundary] = useState(null);
+  const [isSaving, setIsSaving]           = useState(false);
+  const [saveError, setSaveError]         = useState(null);
+  const [showLabels, setShowLabels]       = useState(false);
+  const [gpsAccuracy, setGpsAccuracy]     = useState(null);
+  const [gpsWarning, setGpsWarning]       = useState(false);
+  const [toast, setToast]                 = useState('');   // temporary feedback
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  // Derived metrics
   const hasPolygon  = coords.length >= 3;
   const areaMetrics = hasPolygon ? areaFromM2(calcPolygonAreaM2(coords)) : null;
   const perimeterM  = hasPolygon ? Math.round(calcPerimeterM(coords)) : 0;
 
-  // ─── Keep modeRef in sync ───────────────────────────────────────────────────
+  // ── Keep modeRef in sync ──────────────────────────────────────────────────────
   useEffect(() => { modeRef.current = mode; }, [mode]);
 
-  // ─── Render boundary layers into Leaflet ────────────────────────────────────
-  // Called every time coords changes — immediately, synchronously.
-  // All Leaflet primitives work on [lat, lng] arrays.
-  const updateLeafletLayers = (pts) => {
+  // ── Toast helper ──────────────────────────────────────────────────────────────
+  const showToast = useCallback((msg, duration = 1800) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), duration);
+  }, []);
+
+  // ── Leaflet layer rebuild ─────────────────────────────────────────────────────
+  // Called synchronously after every state change. Never waits for React re-render.
+  const renderLayers = useCallback((pts, currentMode) => {
     const m = mapRef.current;
     if (!m) return;
 
-    // Clear previous boundary layers
-    if (layerGroup.current) {
-      layerGroup.current.clearLayers();
+    // Clear existing boundary layers
+    if (layerGrp.current) {
+      layerGrp.current.clearLayers();
     } else {
-      layerGroup.current = L.layerGroup().addTo(m);
+      layerGrp.current = L.layerGroup().addTo(m);
     }
 
     if (pts.length === 0) return;
 
-    // Convert [lng, lat] → [lat, lng] for Leaflet
-    const llPts = pts.map(c => [c[1], c[0]]);
+    const llPts = llAll(pts);
+    const isCompleted = currentMode === 'completed' || currentMode === 'saved' || currentMode === 'editing';
 
-    // 1. Polygon fill (only when ≥ 3 points)
-    if (pts.length >= 3) {
+    // 1. Polygon fill (only when completed)
+    if (isCompleted && pts.length >= 3) {
       L.polygon(llPts, {
-        color: C_PRIMARY,
-        weight: 2.5,
-        fillColor: C_PRIMARY,
+        color: C_BLUE,
+        weight: C_LINE_W,
+        fillColor: C_BLUE,
         fillOpacity: C_FILL_OP,
         interactive: false,
-      }).addTo(layerGroup.current);
+      }).addTo(layerGrp.current);
     }
 
-    // 2. Polyline through all vertices (closes the ring if ≥ 3)
+    // 2. Open polyline during drawing OR closed outline during completed
     if (pts.length >= 2) {
-      const linePoints = pts.length >= 3 ? [...llPts, llPts[0]] : llPts;
-      L.polyline(linePoints, {
-        color: C_PRIMARY,
-        weight: 2.5,
+      const lineCoords = isCompleted && pts.length >= 3 ? [...llPts, llPts[0]] : llPts;
+      L.polyline(lineCoords, {
+        color: C_BLUE,
+        weight: C_LINE_W,
         interactive: false,
-      }).addTo(layerGroup.current);
+      }).addTo(layerGrp.current);
     }
 
-    // 3. Vertex circles — drawn LAST so they appear on top
-    llPts.forEach((ll, i) => {
-      L.circleMarker(ll, {
-        radius: 8,
-        color: C_PRIMARY,
-        weight: 2.5,
-        fillColor: C_VERTEX,
-        fillOpacity: 1,
-        interactive: false,
-      }).addTo(layerGroup.current);
-    });
-  };
+    // 3. Vertices
+    if (currentMode === 'editing') {
+      // Draggable marker vertices
+      pts.forEach((c, idx) => {
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="
+            width:${V_RADIUS * 2}px;height:${V_RADIUS * 2}px;
+            border-radius:50%;background:${C_WHITE};
+            border:2.5px solid ${C_BLUE};
+            box-sizing:border-box;cursor:move;
+            box-shadow:0 1px 4px rgba(0,0,0,0.4);
+          "></div>`,
+          iconSize: [V_RADIUS * 2, V_RADIUS * 2],
+          iconAnchor: [V_RADIUS, V_RADIUS],
+        });
+        const marker = L.marker(ll(c), { icon, draggable: true, zIndexOffset: 500 });
+        marker.on('drag', (e) => {
+          const pos = e.target.getLatLng();
+          const next = [...drawCoordsRef.current];
+          next[idx] = [pos.lng, pos.lat];
+          drawCoordsRef.current = next;
+          setCoords([...next]);
+          renderLayers(next, 'editing');
+        });
+        marker.addTo(layerGrp.current);
+      });
 
-  // ─── Add a boundary point ───────────────────────────────────────────────────
-  const addPoint = (latlng) => {
-    // latlng from Leaflet event: {lat, lng}
-    const newPt = [latlng.lng, latlng.lat]; // store as [lng, lat] (GeoJSON order)
-    const next  = [...drawCoordsRef.current, newPt];
+      // Midpoint markers for inserting a new vertex between two existing ones
+      if (pts.length >= 2) {
+        pts.forEach((c, idx) => {
+          const nextIdx = (idx + 1) % pts.length;
+          const c2 = pts[nextIdx];
+          const midLng = (c[0] + c2[0]) / 2;
+          const midLat = (c[1] + c2[1]) / 2;
+
+          const mid = L.circleMarker([midLat, midLng], {
+            radius: MID_RADIUS,
+            color: C_BLUE,
+            weight: 2,
+            fillColor: C_WHITE,
+            fillOpacity: 0.85,
+            interactive: true,
+            className: 'mid-handle',
+          });
+          mid.on('click', () => {
+            // Insert new vertex AFTER idx
+            const insertAt = idx + 1;
+            const next = [
+              ...drawCoordsRef.current.slice(0, insertAt),
+              [midLng, midLat],
+              ...drawCoordsRef.current.slice(insertAt),
+            ];
+            drawCoordsRef.current = next;
+            setCoords([...next]);
+            renderLayers(next, 'editing');
+            showToast(`Point inserted`);
+          });
+          mid.addTo(layerGrp.current);
+        });
+      }
+    } else {
+      // Static vertex circles
+      llPts.forEach((latlng, idx) => {
+        L.circleMarker(latlng, {
+          radius: V_RADIUS,
+          color: C_BLUE,
+          weight: 2.5,
+          fillColor: C_WHITE,
+          fillOpacity: 1,
+          interactive: false,
+        }).addTo(layerGrp.current);
+      });
+    }
+  }, [showToast]);
+
+  // ── Set coords + update layers atomically ─────────────────────────────────────
+  const applyCoords = useCallback((next, currentMode) => {
     drawCoordsRef.current = next;
-    setCoords(next);           // update React state for UI
-    updateLeafletLayers(next); // update Leaflet immediately (no re-render wait)
-  };
+    setCoords([...next]);
+    renderLayers(next, currentMode ?? modeRef.current);
+  }, [renderLayers]);
 
-  // ─── Undo / Reset ───────────────────────────────────────────────────────────
-  const undoLast = () => {
+  // ── Add Point (reads crosshair = map center) ──────────────────────────────────
+  const addPoint = useCallback(() => {
+    if (!mapRef.current) return;
+    const center = mapRef.current.getCenter(); // geographic center under crosshair
+    const newPt  = [center.lng, center.lat];   // GeoJSON order
+    const next   = [...drawCoordsRef.current, newPt];
+    applyCoords(next, 'drawing');
+    showToast(`Point ${next.length} added`);
+  }, [applyCoords, showToast]);
+
+  // ── Undo ──────────────────────────────────────────────────────────────────────
+  const undoLast = useCallback(() => {
+    if (drawCoordsRef.current.length === 0) return;
     const next = drawCoordsRef.current.slice(0, -1);
-    drawCoordsRef.current = next;
-    setCoords(next);
-    updateLeafletLayers(next);
-  };
+    applyCoords(next, 'drawing');
+    setMode('drawing');
+    showToast('Last point removed');
+  }, [applyCoords, showToast]);
 
-  const resetBoundary = () => {
+  // ── Complete boundary ─────────────────────────────────────────────────────────
+  const completeBoundary = useCallback(() => {
+    if (drawCoordsRef.current.length < 3) return;
+    setMode('completed');
+    renderLayers(drawCoordsRef.current, 'completed');
+  }, [renderLayers]);
+
+  // ── Clear ─────────────────────────────────────────────────────────────────────
+  const clearBoundary = useCallback(() => {
     drawCoordsRef.current = [];
     setCoords([]);
-    updateLeafletLayers([]);
     setMode('drawing');
     setSaveError(null);
-  };
+    setShowClearConfirm(false);
+    renderLayers([], 'drawing');
+    showToast('Boundary cleared');
+  }, [renderLayers, showToast]);
 
-  // ─── Init Leaflet map (once) ────────────────────────────────────────────────
+  // ── Edit mode ─────────────────────────────────────────────────────────────────
+  const enterEditMode = useCallback(() => {
+    setMode('editing');
+    renderLayers(drawCoordsRef.current, 'editing');
+  }, [renderLayers]);
+
+  const finishEditing = useCallback(() => {
+    setMode('completed');
+    renderLayers(drawCoordsRef.current, 'completed');
+  }, [renderLayers]);
+
+  // ── Delete vertex (in edit mode) ─────────────────────────────────────────────
+  const deleteVertex = useCallback((idx) => {
+    const next = drawCoordsRef.current.filter((_, i) => i !== idx);
+    applyCoords(next, next.length >= 3 ? 'editing' : 'drawing');
+    if (next.length < 3) setMode('drawing');
+    showToast('Point deleted');
+  }, [applyCoords, showToast]);
+
+  // ── Save ──────────────────────────────────────────────────────────────────────
+  const handleSave = useCallback(async () => {
+    const pts = drawCoordsRef.current;
+    if (pts.length < 3) {
+      setSaveError('At least 3 points required.');
+      return;
+    }
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      const supervisorId = user?.supervisorProfile?.id || user?.id;
+      const record = buildBoundaryRecord({
+        inspectionId, propertyId, supervisorId,
+        coords: pts, captureMode: 'manual',
+        gpsAccuracyM: gpsAccuracy,
+        existingId: savedBoundary?.id || null,
+      });
+      const saved = await BoundaryRepository.saveBoundary(record);
+      setSavedBoundary(saved);
+      setMode('saved');
+      renderLayers(pts, 'saved'); // keep polygon visible
+      if (onSave) onSave(saved);
+    } catch (err) {
+      console.error('[PropertyBoundary] save error:', err);
+      setSaveError('Save failed. Boundary is still in memory.');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [gpsAccuracy, inspectionId, onSave, propertyId, renderLayers, savedBoundary, user]);
+
+  // ── Init Leaflet ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (mapRef.current) return;
 
-    // Leaflet needs the container to have a non-zero height before init.
-    // Since our container is flex:1 inside a fixed-position root, it should
-    // already have height by the time this effect runs (after first paint).
-    const m = L.map(mapContainer.current, {
+    const m = L.map(mapEl.current, {
       center: [13.0827, 80.2707],
       zoom: 17,
-      zoomControl: false,         // we have our own buttons
+      zoomControl: false,
       attributionControl: true,
+      // Important: do NOT add click handler for drawing — only "Add Point" button does
     });
 
-    // Satellite base layer
-    satLayer.current = L.tileLayer(SATELLITE_URL, {
+    satLayerRef.current = L.tileLayer(ESRI_SAT, {
       attribution: '© Esri',
-      maxZoom: 19,
+      maxZoom: 22,
     }).addTo(m);
 
-    // OSM labels layer (starts hidden)
-    labelLayer.current = L.tileLayer(LABELS_URL, {
+    osmLayerRef.current = L.tileLayer(OSM_TILES, {
       attribution: '© OSM',
       maxZoom: 19,
       opacity: 0,
     }).addTo(m);
 
-    // Boundary layer group
-    layerGroup.current = L.layerGroup().addTo(m);
+    layerGrp.current = L.layerGroup().addTo(m);
 
-    // ── MAP CLICK → add boundary point ──────────────────────────────────────
-    m.on('click', (e) => {
-      if (modeRef.current !== 'drawing') return;
-      // e.latlng is Leaflet's LatLng object with .lat and .lng
-      addPoint(e.latlng);
-    });
-
-    mapRef.current = m;
-
-    // ── GPS watch ──────────────────────────────────────────────────────────
+    // ── GPS watch ──────────────────────────────────────────────────────────────
     if ('geolocation' in navigator) {
-      watchId.current = navigator.geolocation.watchPosition(
+      gpsWatchRef.current = navigator.geolocation.watchPosition(
         ({ coords: pos }) => {
           const { latitude, longitude, accuracy } = pos;
           setGpsAccuracy(Math.round(accuracy));
           setGpsWarning(accuracy > 30);
 
-          if (!gpsMarker.current) {
-            // First GPS fix — fly to it
+          if (!gpsMarkerRef.current) {
             m.setView([latitude, longitude], 18, { animate: true });
-
-            // Custom GPS dot
-            const icon = L.divIcon({
+            const gpsIcon = L.divIcon({
               className: '',
               html: `<div style="
-                width:20px;height:20px;border-radius:50%;
-                background:${C_PRIMARY};border:3px solid white;
-                box-shadow:0 0 0 6px rgba(59,130,246,0.25);
+                width:18px;height:18px;border-radius:50%;
+                background:#3b82f6;border:3px solid white;
+                box-shadow:0 0 0 6px rgba(59,130,246,0.22);
                 pointer-events:none;
               "></div>`,
-              iconSize: [20, 20],
-              iconAnchor: [10, 10],
+              iconSize: [18, 18],
+              iconAnchor: [9, 9],
             });
-            gpsMarker.current = L.marker([latitude, longitude], { icon, interactive: false }).addTo(m);
+            gpsMarkerRef.current = L.marker([latitude, longitude], {
+              icon: gpsIcon,
+              interactive: false,
+              zIndexOffset: 800,
+            }).addTo(m);
           } else {
-            gpsMarker.current.setLatLng([latitude, longitude]);
+            gpsMarkerRef.current.setLatLng([latitude, longitude]);
           }
         },
         () => setGpsWarning(true),
@@ -253,17 +382,19 @@ export default function PropertyBoundary({
       setGpsWarning(true);
     }
 
+    mapRef.current = m;
+
     return () => {
-      if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
+      if (gpsWatchRef.current) navigator.geolocation.clearWatch(gpsWatchRef.current);
       m.remove();
-      mapRef.current    = null;
-      layerGroup.current = null;
-      gpsMarker.current  = null;
+      mapRef.current = null;
+      layerGrp.current = null;
+      gpsMarkerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── Load existing boundary from IndexedDB ────────────────────────────────
+  // ── Load existing boundary from IndexedDB ─────────────────────────────────────
   useEffect(() => {
     (async () => {
       const existing = await BoundaryRepository.getBoundaryForInspection(inspectionId);
@@ -273,12 +404,10 @@ export default function PropertyBoundary({
         setCoords(existing.coordinates);
         setMode('saved');
 
-        // Wait for Leaflet to be ready
         const tryRender = () => {
           if (mapRef.current) {
-            updateLeafletLayers(existing.coordinates);
-            // Fit map to polygon
-            const llPts = existing.coordinates.map(c => [c[1], c[0]]);
+            renderLayers(existing.coordinates, 'saved');
+            const llPts = llAll(existing.coordinates);
             mapRef.current.fitBounds(L.latLngBounds(llPts), { padding: [60, 60] });
           } else {
             setTimeout(tryRender, 100);
@@ -290,186 +419,428 @@ export default function PropertyBoundary({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspectionId]);
 
-  // ─── Layer / control helpers ─────────────────────────────────────────────
-  const toggleLabels = () => {
-    const next = !showLabels;
-    labelLayer.current?.setOpacity(next ? 0.45 : 0);
-    setShowLabels(next);
-  };
+  // ── Map helpers ───────────────────────────────────────────────────────────────
   const zoomIn  = () => mapRef.current?.zoomIn();
   const zoomOut = () => mapRef.current?.zoomOut();
-  const centreGPS = () => {
-    if (gpsMarker.current && mapRef.current) {
-      mapRef.current.setView(gpsMarker.current.getLatLng(), 18, { animate: true });
+
+  const goToGPS = () => {
+    if (gpsMarkerRef.current && mapRef.current) {
+      mapRef.current.setView(gpsMarkerRef.current.getLatLng(), 18, { animate: true });
     }
   };
 
-  // ─── Save ────────────────────────────────────────────────────────────────
-  const handleSave = async () => {
-    const pts = drawCoordsRef.current;
-    if (pts.length < 3) {
-      setSaveError('Please add at least 3 points to create a valid boundary.');
-      return;
-    }
-    setIsSaving(true);
-    setSaveError(null);
-    try {
-      const supervisorId = user?.supervisorProfile?.id || user?.id;
-      const record = buildBoundaryRecord({
-        inspectionId, propertyId, supervisorId,
-        coords: pts, captureMode: 'manual', gpsAccuracyM: gpsAccuracy,
-        existingId: savedBoundary?.id || null,
-      });
-      const saved = await BoundaryRepository.saveBoundary(record);
-      setSavedBoundary(saved);
-      setMode('saved');
-      // Polygon remains visible — layers unchanged
-      updateLeafletLayers(pts);
-      if (onSave) onSave(saved);
-    } catch (err) {
-      console.error('[PropertyBoundary] save error:', err);
-      setSaveError('Failed to save boundary. Please try again.');
-    } finally {
-      setIsSaving(false);
-    }
+  const toggleLabels = () => {
+    const next = !showLabels;
+    osmLayerRef.current?.setOpacity(next ? 0.45 : 0);
+    setShowLabels(next);
   };
 
-  // ─── Render ──────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────
+  const isDrawing   = mode === 'drawing';
+  const isCompleted = mode === 'completed';
+  const isSaved     = mode === 'saved';
+  const isEditing   = mode === 'editing';
+
   return (
     <div style={S.root}>
-      {/* Header */}
+      {/* ── Header ── */}
       <header style={S.header}>
-        <button style={S.iconBtn} onClick={onCancel}><ArrowLeft size={22}/></button>
+        <button style={S.iconBtn} onClick={onCancel} aria-label="Back">
+          <ArrowLeft size={22} />
+        </button>
         <div style={{ flex: 1, textAlign: 'center' }}>
-          <div style={S.title}>Property Boundary</div>
-          <div style={{ fontSize: 11, fontWeight: 600, color: mode === 'drawing' ? '#f59e0b' : mode === 'saved' ? '#10b981' : '#94a3b8' }}>
-            {mode === 'drawing' ? '● Drawing Mode — tap map to add points' : mode === 'saved' ? '✓ Saved' : 'Tap + to begin'}
+          <div style={S.headerTitle}>Property Boundary</div>
+          <div style={{
+            fontSize: 11, fontWeight: 600,
+            color: isEditing ? '#f59e0b' : isCompleted ? '#10b981' : isSaved ? '#10b981' : '#94a3b8',
+          }}>
+            {isEditing   ? '✎ Editing — drag vertices'
+             : isCompleted ? '✓ Boundary complete'
+             : isSaved    ? '✓ Saved locally'
+             : coords.length === 0
+               ? 'Pan map · align crosshair · Add Point'
+               : `${coords.length} point${coords.length !== 1 ? 's' : ''} — keep adding`}
           </div>
         </div>
-        <button
-          style={{ ...S.saveBtn, background: (hasPolygon && mode !== 'saved') ? C_PRIMARY : 'rgba(59,130,246,0.15)', color: (hasPolygon && mode !== 'saved') ? '#fff' : '#475569', cursor: (hasPolygon && mode !== 'saved') ? 'pointer' : 'default' }}
-          onClick={handleSave}
-          disabled={!hasPolygon || isSaving || mode === 'saved'}
-        >
-          {isSaving ? 'Saving…' : 'Save'}
-        </button>
+        {/* Save button in header (compact) */}
+        {(isCompleted || isEditing) && (
+          <button
+            style={{ ...S.headerSaveBtn, opacity: isSaving ? 0.6 : 1 }}
+            onClick={handleSave}
+            disabled={isSaving}
+          >
+            {isSaving ? '…' : <Check size={18} />}
+          </button>
+        )}
+        {(isSaved) && (
+          <div style={{ ...S.headerSaveBtn, background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>
+            <Check size={18} />
+          </div>
+        )}
+        {(!isCompleted && !isEditing && !isSaved) && <div style={{ width: 40 }} />}
       </header>
 
-      {/* Map — must have explicit pixel height so Leaflet can render */}
+      {/* ── Map ── */}
       <div
-        ref={mapContainer}
+        ref={mapEl}
         style={{
-          position: 'absolute',
-          top: 0, left: 0, right: 0, bottom: 0,
-          // cursor shows drawing state
-          cursor: mode === 'drawing' ? 'crosshair' : 'grab',
+          position: 'absolute', inset: 0,
+          cursor: isEditing ? 'default' : 'grab',
         }}
       />
 
-      {/* Stats strip */}
-      {hasPolygon && (
-        <div style={S.stats}>
-          {propertyAreaAcres && <StatCol label="Planned Area" value={`${propertyAreaAcres} ac`}/>}
-          <StatCol label="Captured Area" value={`${areaMetrics.acres} ac`} sub={`${areaMetrics.sq_ft.toLocaleString()} sq.ft · ${areaMetrics.cents} cents`}/>
-          <StatCol label="Perimeter" value={formatPerimeter(perimeterM)}/>
+      {/* ── Fixed crosshair (only while drawing or adding points) ── */}
+      {(isDrawing || isCompleted) && (
+        <div style={S.crosshairWrap} aria-hidden="true">
+          <svg width="48" height="48" viewBox="0 0 48 48" style={{ display: 'block' }}>
+            {/* Outer circle */}
+            <circle cx="24" cy="24" r="10" fill="none" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
+            <circle cx="24" cy="24" r="10" fill="none" stroke={C_WHITE} strokeWidth="2"/>
+            {/* Cross lines */}
+            {/* top */}
+            <line x1="24" y1="4"  x2="24" y2="12" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
+            <line x1="24" y1="4"  x2="24" y2="12" stroke={C_WHITE} strokeWidth="2"/>
+            {/* bottom */}
+            <line x1="24" y1="36" x2="24" y2="44" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
+            <line x1="24" y1="36" x2="24" y2="44" stroke={C_WHITE} strokeWidth="2"/>
+            {/* left */}
+            <line x1="4"  y1="24" x2="12" y2="24" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
+            <line x1="4"  y1="24" x2="12" y2="24" stroke={C_WHITE} strokeWidth="2"/>
+            {/* right */}
+            <line x1="36" y1="24" x2="44" y2="24" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
+            <line x1="36" y1="24" x2="44" y2="24" stroke={C_WHITE} strokeWidth="2"/>
+            {/* Center dot */}
+            <circle cx="24" cy="24" r="2.5" fill={C_WHITE} stroke="rgba(0,0,0,0.4)" strokeWidth="1"/>
+          </svg>
         </div>
       )}
 
-      {/* Right controls */}
+      {/* ── Stats panel ── */}
+      {coords.length > 0 && (
+        <div style={S.stats}>
+          <StatItem label="Points" value={coords.length} />
+          {propertyAreaAcres && <StatItem label="Planned" value={`${propertyAreaAcres} ac`}/>}
+          {areaMetrics && <StatItem label="Area" value={`${areaMetrics.acres} ac`} sub={`${areaMetrics.sq_ft.toLocaleString()} ft² · ${areaMetrics.cents}¢`}/>}
+          {perimeterM > 0 && <StatItem label="Perimeter" value={formatPerimeter(perimeterM)}/>}
+        </div>
+      )}
+
+      {/* ── Right controls ── */}
       <div style={S.rightControls}>
-        <MapBtn title="Labels" active={showLabels} onClick={toggleLabels}><Layers size={17}/></MapBtn>
-        <MapBtn title="My location" onClick={centreGPS}><Navigation2 size={17}/></MapBtn>
-        <MapBtn title="Zoom in" onClick={zoomIn}><Plus size={17}/></MapBtn>
-        <MapBtn title="Zoom out" onClick={zoomOut}><Minus size={17}/></MapBtn>
+        <MapBtn title="Labels" active={showLabels} onClick={toggleLabels}><Layers size={16}/></MapBtn>
+        <MapBtn title="My location" onClick={goToGPS}><Navigation2 size={16}/></MapBtn>
+        <MapBtn title="Zoom in"  onClick={zoomIn}><Plus size={16}/></MapBtn>
+        <MapBtn title="Zoom out" onClick={zoomOut}><Minus size={16}/></MapBtn>
       </div>
 
-      {/* GPS badge */}
+      {/* ── GPS badge ── */}
       {gpsAccuracy !== null && (
         <div style={{ ...S.gpsBadge, borderColor: gpsWarning ? '#f59e0b' : '#10b981', color: gpsWarning ? '#f59e0b' : '#10b981', background: gpsWarning ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.1)' }}>
-          GPS ±{gpsAccuracy} m
+          GPS ±{gpsAccuracy}m
         </div>
       )}
 
-      {/* Bottom bar */}
+      {/* ── Toast ── */}
+      {toast !== '' && (
+        <div style={S.toast}>{toast}</div>
+      )}
+
+      {/* ── Clear confirm overlay ── */}
+      {showClearConfirm && (
+        <div style={S.confirmOverlay}>
+          <div style={S.confirmBox}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 700 }}>Clear Boundary?</h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#94a3b8' }}>
+              {savedBoundary
+                ? 'This will remove the saved boundary from this screen. The local record will remain until you save a new boundary.'
+                : 'All boundary points will be removed.'}
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn onClick={() => setShowClearConfirm(false)}>Cancel</Btn>
+              <Btn danger onClick={clearBoundary}>Clear</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bottom panel ── */}
       <div style={S.bottomBar}>
         {saveError && <div style={S.error}>{saveError}</div>}
 
-        {mode === 'saved' && (
+        {/* DRAWING */}
+        {isDrawing && (
           <>
-            <div style={S.savedMsg}><CheckCircle2 size={20} color="#10b981"/><span>Boundary Saved Locally</span></div>
             <div style={S.row}>
-              <Btn onClick={resetBoundary}><Trash2 size={15}/> Redraw</Btn>
+              <Btn
+                disabled={coords.length === 0}
+                onClick={undoLast}
+              >
+                <Undo2 size={15}/> Undo
+              </Btn>
+              <Btn
+                disabled={coords.length === 0}
+                onClick={() => setShowClearConfirm(true)}
+              >
+                <Trash2 size={15}/> Clear
+              </Btn>
+            </div>
+            {/* Add Point — primary action */}
+            <button style={S.addPointBtn} onClick={addPoint}>
+              <span style={S.plusCircle}><Plus size={20}/></span>
+              Add Point
+            </button>
+            {/* Complete — available at 3+ points */}
+            {coords.length >= 3 && (
+              <button style={S.completeBtn} onClick={completeBoundary}>
+                <Check size={16}/> Complete Boundary
+              </button>
+            )}
+          </>
+        )}
+
+        {/* COMPLETED */}
+        {isCompleted && (
+          <>
+            <div style={S.row}>
+              <Btn onClick={() => { setMode('drawing'); renderLayers(drawCoordsRef.current, 'drawing'); }}>
+                <Plus size={15}/> Add More
+              </Btn>
+              <Btn onClick={enterEditMode}>
+                <Edit3 size={15}/> Edit
+              </Btn>
+              <Btn onClick={() => setShowClearConfirm(true)}>
+                <Trash2 size={15}/>
+              </Btn>
+            </div>
+            <button style={S.saveBtn} onClick={handleSave} disabled={isSaving}>
+              <Save size={16}/> {isSaving ? 'Saving…' : 'Save Boundary'}
+            </button>
+          </>
+        )}
+
+        {/* SAVED */}
+        {isSaved && (
+          <>
+            <div style={S.savedMsg}>
+              <CheckCircle2 size={20} color="#10b981"/>
+              <span>Boundary Saved Locally</span>
+            </div>
+            <div style={S.row}>
+              <Btn onClick={enterEditMode}><Edit3 size={15}/> Edit</Btn>
+              <Btn onClick={() => setShowClearConfirm(true)}><Trash2 size={15}/> Clear</Btn>
               <Btn primary onClick={onCancel}>Done</Btn>
             </div>
           </>
         )}
 
-        {mode === 'drawing' && (
+        {/* EDITING */}
+        {isEditing && (
           <>
-            <div style={S.row}>
-              <Btn onClick={undoLast} disabled={coords.length === 0}><Undo2 size={15}/> Undo</Btn>
-              <Btn onClick={resetBoundary}><Trash2 size={15}/> Clear</Btn>
-              {hasPolygon && <Btn primary onClick={handleSave}><Save size={15}/> Save</Btn>}
+            <div style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center' }}>
+              Drag vertices to adjust · Tap midpoint marker to insert
             </div>
+            {/* Vertex list for delete */}
             {coords.length > 0 && (
-              <div style={S.pointCount}>{coords.length} point{coords.length !== 1 ? 's' : ''} — tap map to add more</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {coords.map((_, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => deleteVertex(idx)}
+                    style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', fontSize: 12, cursor: 'pointer' }}
+                  >
+                    ✕ P{idx + 1}
+                  </button>
+                ))}
+              </div>
             )}
+            <div style={S.row}>
+              <Btn onClick={finishEditing}>
+                <Check size={15}/> Done Editing
+              </Btn>
+              <Btn primary onClick={handleSave} disabled={isSaving}>
+                <Save size={15}/> {isSaving ? 'Saving…' : 'Save'}
+              </Btn>
+            </div>
           </>
-        )}
-
-        {mode === 'normal' && (
-          <button style={S.addBtn} onClick={() => { setMode('drawing'); setSaveError(null); }}>
-            <span style={S.plusCircle}><Plus size={20}/></span>
-            Add Boundary Points
-          </button>
         )}
       </div>
     </div>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-function StatCol({ label, value, sub }) {
+// ── Sub-components ─────────────────────────────────────────────────────────────
+function StatItem({ label, value, sub }) {
   return (
-    <div>
-      <div style={{ fontSize: 10, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>{value}</div>
-      {sub && <div style={{ fontSize: 10, color: '#94a3b8' }}>{sub}</div>}
+    <div style={{ minWidth: 60 }}>
+      <div style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc', lineHeight: 1.2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: '#94a3b8' }}>{sub}</div>}
     </div>
   );
 }
 
 function MapBtn({ children, onClick, active, title }) {
   return (
-    <button onClick={onClick} title={title} style={{ width: 40, height: 40, borderRadius: 10, background: active ? 'rgba(59,130,246,0.25)' : 'rgba(15,17,21,0.82)', border: `1px solid ${active ? '#3b82f6' : 'rgba(255,255,255,0.1)'}`, color: active ? '#3b82f6' : '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', backdropFilter: 'blur(6px)' }}>
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        width: 38, height: 38, borderRadius: 9,
+        background: active ? 'rgba(59,130,246,0.22)' : 'rgba(15,17,21,0.82)',
+        border: `1px solid ${active ? '#3b82f6' : 'rgba(255,255,255,0.1)'}`,
+        color: active ? '#3b82f6' : '#94a3b8',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', backdropFilter: 'blur(6px)',
+      }}
+    >
       {children}
     </button>
   );
 }
 
-function Btn({ children, onClick, primary, disabled }) {
+function Btn({ children, onClick, primary, danger, disabled }) {
   return (
-    <button onClick={onClick} disabled={disabled} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '12px 14px', borderRadius: 10, border: primary ? 'none' : '1px solid rgba(255,255,255,0.1)', background: primary ? '#3b82f6' : 'rgba(255,255,255,0.06)', color: disabled ? '#475569' : (primary ? '#fff' : '#e2e8f0'), fontWeight: 600, fontSize: 14, cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 }}>
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        flex: 1,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        padding: '11px 12px',
+        borderRadius: 10,
+        border: 'none',
+        background: primary  ? '#3b82f6'
+                  : danger   ? 'rgba(239,68,68,0.12)'
+                  :            'rgba(255,255,255,0.07)',
+        color: primary ? '#fff' : danger ? '#ef4444' : disabled ? '#475569' : '#e2e8f0',
+        fontWeight: 600, fontSize: 14,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        fontFamily: 'inherit',
+      }}
+    >
       {children}
     </button>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ── Styles ─────────────────────────────────────────────────────────────────────
 const S = {
-  root:         { position: 'fixed', inset: 0, zIndex: 200, background: '#0f1115', fontFamily: 'var(--font-main, Outfit, sans-serif)' },
-  header:       { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', background: 'rgba(15,17,21,0.88)', backdropFilter: 'blur(10px)', borderBottom: '1px solid rgba(255,255,255,0.07)' },
-  title:        { fontWeight: 700, fontSize: 16, color: '#f8fafc' },
-  iconBtn:      { background: 'none', border: 'none', color: '#3b82f6', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', zIndex: 600 },
-  saveBtn:      { border: 'none', borderRadius: 8, padding: '8px 18px', fontWeight: 700, fontSize: 14, zIndex: 600 },
-  stats:        { position: 'absolute', top: 64, left: 10, right: 10, zIndex: 400, background: 'rgba(15,17,21,0.84)', backdropFilter: 'blur(6px)', borderRadius: 10, padding: '8px 14px', display: 'flex', gap: 20, border: '1px solid rgba(255,255,255,0.06)', pointerEvents: 'none' },
-  rightControls:{ position: 'absolute', right: 10, bottom: 160, zIndex: 400, display: 'flex', flexDirection: 'column', gap: 8 },
-  gpsBadge:     { position: 'absolute', bottom: 160, left: 10, zIndex: 400, border: '1px solid', borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600, pointerEvents: 'none' },
-  bottomBar:    { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 500, padding: '14px 14px calc(14px + env(safe-area-inset-bottom))', background: 'rgba(15,17,21,0.92)', backdropFilter: 'blur(10px)', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', flexDirection: 'column', gap: 10 },
-  savedMsg:     { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#10b981', fontWeight: 700, fontSize: 15 },
-  error:        { color: '#ef4444', fontSize: 13, textAlign: 'center', fontWeight: 500 },
-  row:          { display: 'flex', gap: 10 },
-  addBtn:       { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '16px 24px', borderRadius: 14, background: '#3b82f6', color: '#fff', border: 'none', fontWeight: 700, fontSize: 16, cursor: 'pointer', boxShadow: '0 4px 20px rgba(59,130,246,0.4)' },
-  plusCircle:   { width: 28, height: 28, borderRadius: '50%', background: 'rgba(255,255,255,0.22)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  pointCount:   { textAlign: 'center', fontSize: 12, color: '#94a3b8', fontWeight: 500 },
+  root: {
+    position: 'fixed', inset: 0, zIndex: 200,
+    background: '#0f1115',
+    fontFamily: 'var(--font-main, Outfit, sans-serif)',
+  },
+  header: {
+    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 500,
+    display: 'flex', alignItems: 'center', padding: '10px 12px',
+    background: 'rgba(15,17,21,0.90)', backdropFilter: 'blur(10px)',
+    borderBottom: '1px solid rgba(255,255,255,0.07)',
+    gap: 8,
+  },
+  headerTitle: { fontWeight: 700, fontSize: 15, color: '#f8fafc' },
+  iconBtn: {
+    background: 'none', border: 'none', color: '#3b82f6',
+    cursor: 'pointer', padding: 6, display: 'flex', alignItems: 'center', borderRadius: 8,
+  },
+  headerSaveBtn: {
+    width: 36, height: 36, borderRadius: 8,
+    background: 'rgba(59,130,246,0.15)', color: '#3b82f6',
+    border: 'none', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+  },
+  crosshairWrap: {
+    position: 'absolute',
+    top: '50%', left: '50%',
+    transform: 'translate(-50%, -50%)',
+    zIndex: 400,
+    pointerEvents: 'none',
+    filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.5))',
+  },
+  stats: {
+    position: 'absolute', top: 62, left: 10, right: 60, zIndex: 400,
+    background: 'rgba(15,17,21,0.86)', backdropFilter: 'blur(6px)',
+    borderRadius: 10, padding: '7px 12px',
+    display: 'flex', gap: 14, flexWrap: 'wrap',
+    border: '1px solid rgba(255,255,255,0.06)',
+    pointerEvents: 'none',
+  },
+  rightControls: {
+    position: 'absolute', right: 10, bottom: 200, zIndex: 400,
+    display: 'flex', flexDirection: 'column', gap: 7,
+  },
+  gpsBadge: {
+    position: 'absolute', bottom: 200, left: 10, zIndex: 400,
+    border: '1px solid', borderRadius: 6, padding: '3px 8px',
+    fontSize: 11, fontWeight: 600, pointerEvents: 'none',
+  },
+  toast: {
+    position: 'absolute',
+    bottom: 200, left: '50%', transform: 'translateX(-50%)',
+    zIndex: 450,
+    background: 'rgba(59,130,246,0.9)', color: '#fff',
+    borderRadius: 20, padding: '6px 18px',
+    fontSize: 13, fontWeight: 600,
+    whiteSpace: 'nowrap',
+    pointerEvents: 'none',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+  },
+  confirmOverlay: {
+    position: 'absolute', inset: 0, zIndex: 600,
+    background: 'rgba(0,0,0,0.65)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 20,
+  },
+  confirmBox: {
+    background: '#1a1d24', border: '1px solid #334155',
+    borderRadius: 16, padding: '20px 20px 16px',
+    maxWidth: 340, width: '100%',
+    color: '#f8fafc',
+  },
+  bottomBar: {
+    position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 500,
+    padding: '12px 12px calc(12px + env(safe-area-inset-bottom))',
+    background: 'rgba(15,17,21,0.94)', backdropFilter: 'blur(12px)',
+    borderTop: '1px solid rgba(255,255,255,0.07)',
+    display: 'flex', flexDirection: 'column', gap: 9,
+  },
+  row: { display: 'flex', gap: 8 },
+  addPointBtn: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+    padding: '15px 24px', borderRadius: 13,
+    background: '#3b82f6', color: '#fff',
+    border: 'none', fontWeight: 700, fontSize: 17,
+    cursor: 'pointer', width: '100%',
+    boxShadow: '0 4px 20px rgba(59,130,246,0.4)',
+    fontFamily: 'inherit',
+  },
+  plusCircle: {
+    width: 30, height: 30, borderRadius: '50%',
+    background: 'rgba(255,255,255,0.22)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  completeBtn: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    padding: '12px 20px', borderRadius: 11,
+    background: 'rgba(16,185,129,0.12)', color: '#10b981',
+    border: '1px solid rgba(16,185,129,0.3)',
+    fontWeight: 700, fontSize: 15,
+    cursor: 'pointer', width: '100%',
+    fontFamily: 'inherit',
+  },
+  saveBtn: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    padding: '13px 20px', borderRadius: 11,
+    background: '#3b82f6', color: '#fff',
+    border: 'none', fontWeight: 700, fontSize: 15,
+    cursor: 'pointer', width: '100%',
+    fontFamily: 'inherit',
+  },
+  savedMsg: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    gap: 8, color: '#10b981', fontWeight: 700, fontSize: 15,
+  },
+  error: {
+    color: '#ef4444', fontSize: 13, textAlign: 'center', fontWeight: 500,
+  },
 };
