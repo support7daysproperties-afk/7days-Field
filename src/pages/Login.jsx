@@ -23,7 +23,7 @@ export default function Login() {
         await GoogleSignIn.initialize({
           clientId: '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com',
           serverClientId: '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com',
-          scopes: ['profile', 'email']
+          scopes: ['profile', 'email', 'https://www.googleapis.com/auth/drive.file']
         });
         const result = await GoogleSignIn.signIn();
         const idToken = result.authentication?.idToken;
