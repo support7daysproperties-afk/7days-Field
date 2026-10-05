@@ -61,8 +61,10 @@ export function AuthProvider({ children }) {
     // Check active sessions and sets the user
     supabase.auth.getSession().then(({ data: { session } }) => {
       checkSupervisorAccess(session?.user);
-      if (session?.provider_token) {
-        GoogleDriveService.accessToken = session.provider_token;
+      
+      // We no longer rely on provider_token from Supabase for Drive Auth,
+      // as we want to handle Drive OAuth via GIS as a second step.
+      if (sessionStorage.getItem('drive_connected') === 'true') {
         setDriveAuthorized(true);
       }
     });
@@ -71,11 +73,11 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setLoading(true);
       checkSupervisorAccess(session?.user);
-      if (session?.provider_token) {
-        GoogleDriveService.accessToken = session.provider_token;
-        setDriveAuthorized(true);
-      } else {
+      
+      if (!session) {
         setDriveAuthorized(false);
+      } else if (sessionStorage.getItem('drive_connected') === 'true') {
+        setDriveAuthorized(true);
       }
     });
 
