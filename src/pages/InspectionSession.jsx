@@ -233,45 +233,74 @@ export default function InspectionSession() {
   const renderBoundaryContent = () => {
     if (boundary) {
       return (
-        <div className="card">
-          <h3 className="mb-md flex items-center gap-sm" style={{ color: 'var(--success-color)' }}>
-            <Check size={20} /> Property Boundary Captured
-          </h3>
-          <div className="flex flex-col gap-sm mb-md" style={{ fontSize: 14 }}>
-            <div className="flex justify-between">
-              <span className="text-secondary">Area</span>
-              <span style={{ fontWeight: 600 }}>
-                {boundary.area_acres} acres · {boundary.area_sq_ft?.toLocaleString()} sq.ft · {boundary.area_cents} cents
+        <div className="flex flex-col gap-md">
+          {/* ── Snapshot Image ── */}
+          {boundary.snapshot_image && (
+            <div style={{
+              width: '100%',
+              background: '#1a1d24',
+              borderRadius: 16,
+              overflow: 'hidden',
+              border: '1px solid rgba(255,255,255,0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <img 
+                src={boundary.snapshot_image} 
+                alt="Property Boundary Snapshot" 
+                style={{ width: '100%', height: 'auto', objectFit: 'contain', display: 'block' }} 
+              />
+            </div>
+          )}
+
+          {/* Success Banner */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '12px',
+            background: 'rgba(16,185,129,0.1)', padding: '16px', borderRadius: '12px',
+            border: '1px solid rgba(16,185,129,0.2)'
+          }}>
+            <Check size={24} color="#10b981" style={{ flexShrink: 0 }} />
+            <div style={{ fontWeight: 700, fontSize: '18px', color: '#10b981' }}>Property Boundary Captured</div>
+          </div>
+
+          {/* Stats Card */}
+          <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="flex justify-between items-center">
+              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Area</span>
+              <span style={{ fontWeight: 700, fontSize: '15px' }}>
+                {boundary.area_acres} acres
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-secondary">Perimeter</span>
-              <span style={{ fontWeight: 600 }}>{boundary.perimeter_m} m</span>
+            <div className="flex justify-between items-center">
+              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Perimeter</span>
+              <span style={{ fontWeight: 700, fontSize: '15px' }}>{boundary.perimeter_m} m</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-secondary">Method</span>
-              <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{boundary.capture_mode}</span>
+            <div className="flex justify-between items-center">
+              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Method</span>
+              <span style={{ fontWeight: 700, fontSize: '15px', textTransform: 'capitalize' }}>{boundary.capture_mode}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-secondary">Points</span>
-              <span style={{ fontWeight: 600 }}>{boundary.coordinates?.length ?? 0}</span>
+            <div className="flex justify-between items-center">
+              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Points</span>
+              <span style={{ fontWeight: 700, fontSize: '15px' }}>{boundary.coordinates?.length ?? 0}</span>
             </div>
-          </div>
-          <div className="flex gap-sm">
-            <button
-              className="btn btn-secondary flex-1"
-              onClick={() => setShowBoundaryMap(true)}
-              style={{ fontSize: 14 }}
-            >
-              <Landmark size={16} /> Edit Boundary
-            </button>
-            <button
-              className="btn btn-primary flex-1"
-              onClick={() => setActiveStepId('overview')}
-              style={{ fontSize: 14 }}
-            >
-              Done
-            </button>
+
+            <div className="flex gap-sm mt-sm">
+              <button
+                className="btn btn-secondary flex-1 flex justify-center items-center gap-sm"
+                onClick={() => setShowBoundaryMap(true)}
+                style={{ fontSize: '14px', fontWeight: 600, padding: '12px' }}
+              >
+                <Landmark size={16} /> Edit Boundary
+              </button>
+              <button
+                className="btn flex-1"
+                onClick={() => setActiveStepId('overview')}
+                style={{ fontSize: '14px', fontWeight: 600, padding: '12px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '10px' }}
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       );
