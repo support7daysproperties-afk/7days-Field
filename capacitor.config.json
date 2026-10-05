@@ -1,5 +1,17 @@
 {
   "appId": "com.sevendaysfield.app",
   "appName": "7days Field",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "url": "https://7days-field.vercel.app",
+    "cleartext": true
+  },
+  "plugins": {
+    "GoogleAuth": {
+      "scopes": ["profile", "email"],
+      "serverClientId": "611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com",
+      "forceCodeForRefreshToken": true,
+      "androidClientId": "611802862463-d3tkef61buftju7qcmf06bd8puhglct3.apps.googleusercontent.com"
+    }
+  }
 }
