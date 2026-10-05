@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { toPng } from 'html-to-image';
 import {
   ArrowLeft, Plus, Minus, Navigation2, Layers,
   Undo2, Trash2, Save, CheckCircle2, Check,
@@ -91,6 +92,7 @@ export default function PropertyBoundary({
 
   const [savedBoundary, setSavedBoundary] = useState(null);
   const [isSaving, setIsSaving]           = useState(false);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [saveError, setSaveError]         = useState(null);
   const [showLabels, setShowLabels]       = useState(false);
   const [gpsAccuracy, setGpsAccuracy]     = useState(null);
@@ -298,14 +300,42 @@ export default function PropertyBoundary({
       return;
     }
     setIsSaving(true);
+    setSnapshotLoading(true);
     setSaveError(null);
     try {
       const supervisorId = user?.supervisorProfile?.id || user?.id;
+
+      // Ensure map is fitted to boundary before snapshot
+      if (mapRef.current) {
+        const llPts = llAll(pts);
+        mapRef.current.fitBounds(L.latLngBounds(llPts), { padding: [50, 50], animate: false });
+        // Wait for tiles to load
+        await new Promise(r => setTimeout(r, 800));
+      }
+
+      // Generate snapshot image
+      let snapshotDataUrl = null;
+      try {
+        if (mapEl.current) {
+          snapshotDataUrl = await toPng(mapEl.current, {
+            cacheBust: true,
+            filter: (node) => {
+              if (node?.classList?.contains('leaflet-control-container')) return false;
+              return true;
+            }
+          });
+        }
+      } catch (err) {
+        console.error('[PropertyBoundary] snapshot error:', err);
+        // Continue saving even if snapshot fails
+      }
+
       const record = buildBoundaryRecord({
         inspectionId, propertyId, supervisorId,
         coords: pts, captureMode: 'manual',
         gpsAccuracyM: gpsAccuracy,
         existingId: savedBoundary?.id || null,
+        snapshotImage: snapshotDataUrl,
       });
       const saved = await BoundaryRepository.saveBoundary(record);
       setSavedBoundary(saved);
@@ -317,6 +347,7 @@ export default function PropertyBoundary({
       setSaveError('Save failed. Boundary is still in memory.');
     } finally {
       setIsSaving(false);
+      setSnapshotLoading(false);
     }
   }, [gpsAccuracy, inspectionId, onSave, propertyId, renderLayers, savedBoundary, user]);
 
@@ -335,12 +366,14 @@ export default function PropertyBoundary({
     satLayerRef.current = L.tileLayer(ESRI_SAT, {
       attribution: '© Esri',
       maxZoom: 22,
+      crossOrigin: true,
     }).addTo(m);
 
     osmLayerRef.current = L.tileLayer(OSM_TILES, {
       attribution: '© OSM',
       maxZoom: 19,
       opacity: 0,
+      crossOrigin: true,
     }).addTo(m);
 
     layerGrp.current = L.layerGroup().addTo(m);
@@ -563,7 +596,69 @@ export default function PropertyBoundary({
         </div>
       )}
 
+      {/* ── Snapshot Loading Overlay ── */}
+      {snapshotLoading && (
+        <div style={S.loadingOverlay}>
+          <div style={S.loadingBox}>
+            <div style={S.spinner} />
+            <div style={{ marginTop: 16, fontWeight: 600, fontSize: 15 }}>Generating boundary map…</div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Saved Full-Screen Overlay ── */}
+      {isSaved && !snapshotLoading && (
+        <div style={S.savedOverlay}>
+          <div style={S.savedContent}>
+            <div style={S.savedHeader}>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Property Boundary Map</h2>
+            </div>
+            
+            <div style={S.snapshotContainer}>
+              {savedBoundary?.snapshot_image ? (
+                <img src={savedBoundary.snapshot_image} style={S.snapshotImage} alt="Boundary map snapshot" />
+              ) : (
+                <div style={S.snapshotPlaceholder}>
+                  <div style={{ marginBottom: 12 }}>Map preview couldn't be generated.</div>
+                  <Btn onClick={handleSave}>Retry Map Preview</Btn>
+                </div>
+              )}
+            </div>
+
+            <div style={S.savedSuccess}>
+              <CheckCircle2 size={24} color="#10b981" style={{ flexShrink: 0 }} />
+              <div style={{ fontWeight: 700, fontSize: 18, color: '#10b981' }}>Property Boundary Captured</div>
+            </div>
+
+            <div style={S.savedStats}>
+              <div style={S.statRow}>
+                <span style={S.statLabel}>Area</span>
+                <span style={S.statValue}>{savedBoundary?.area_acres} acres</span>
+              </div>
+              <div style={S.statRow}>
+                <span style={S.statLabel}>Perimeter</span>
+                <span style={S.statValue}>{savedBoundary?.perimeter_m} m</span>
+              </div>
+              <div style={S.statRow}>
+                <span style={S.statLabel}>Method</span>
+                <span style={S.statValue}>{savedBoundary?.capture_mode === 'manual' ? 'Manual' : savedBoundary?.capture_mode}</span>
+              </div>
+              <div style={S.statRow}>
+                <span style={S.statLabel}>Points</span>
+                <span style={S.statValue}>{savedBoundary?.coordinates?.length}</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 12, marginTop: 'auto' }}>
+              <Btn onClick={enterEditMode}><Edit3 size={16}/> Edit Boundary</Btn>
+              <Btn primary onClick={onCancel}>Done</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Bottom panel ── */}
+      {(!isSaved || snapshotLoading) && (
       <div style={S.bottomBar}>
         {saveError && <div style={S.error}>{saveError}</div>}
 
@@ -618,21 +713,6 @@ export default function PropertyBoundary({
           </>
         )}
 
-        {/* SAVED */}
-        {isSaved && (
-          <>
-            <div style={S.savedMsg}>
-              <CheckCircle2 size={20} color="#10b981"/>
-              <span>Boundary Saved Locally</span>
-            </div>
-            <div style={S.row}>
-              <Btn onClick={enterEditMode}><Edit3 size={15}/> Edit</Btn>
-              <Btn onClick={() => setShowClearConfirm(true)}><Trash2 size={15}/> Clear</Btn>
-              <Btn primary onClick={onCancel}>Done</Btn>
-            </div>
-          </>
-        )}
-
         {/* EDITING */}
         {isEditing && (
           <>
@@ -664,6 +744,7 @@ export default function PropertyBoundary({
           </>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -843,4 +924,73 @@ const S = {
   error: {
     color: '#ef4444', fontSize: 13, textAlign: 'center', fontWeight: 500,
   },
+  loadingOverlay: {
+    position: 'absolute', inset: 0, zIndex: 600,
+    background: 'rgba(15,17,21,0.95)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  loadingBox: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#f8fafc',
+  },
+  spinner: {
+    width: 40, height: 40, border: '4px solid rgba(59,130,246,0.3)',
+    borderTopColor: '#3b82f6', borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+  },
+  savedOverlay: {
+    position: 'absolute', top: 56, left: 0, right: 0, bottom: 0, zIndex: 500,
+    background: '#0f1115',
+    display: 'flex', flexDirection: 'column',
+    overflowY: 'auto',
+  },
+  savedContent: {
+    padding: '20px 20px 30px', flex: 1,
+    display: 'flex', flexDirection: 'column',
+    maxWidth: 600, margin: '0 auto', width: '100%', boxSizing: 'border-box'
+  },
+  savedHeader: {
+    marginBottom: 20, color: '#f8fafc',
+  },
+  snapshotContainer: {
+    width: '100%', aspectRatio: '1/1',
+    background: '#1a1d24', borderRadius: 16,
+    overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)',
+    marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'center'
+  },
+  snapshotImage: {
+    width: '100%', height: 'auto', objectFit: 'contain'
+  },
+  snapshotPlaceholder: {
+    color: '#94a3b8', fontSize: 14, textAlign: 'center'
+  },
+  savedSuccess: {
+    display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24,
+    background: 'rgba(16,185,129,0.1)', padding: '16px', borderRadius: 12,
+    border: '1px solid rgba(16,185,129,0.2)'
+  },
+  savedStats: {
+    background: '#1a1d24', borderRadius: 12, padding: '16px',
+    display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32,
+    border: '1px solid rgba(255,255,255,0.05)'
+  },
+  statRow: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+  },
+  statLabel: {
+    color: '#94a3b8', fontSize: 14, fontWeight: 500
+  },
+  statValue: {
+    color: '#f8fafc', fontSize: 15, fontWeight: 600
+  }
 };
+
+// Add spinner animation globally if not present
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.innerHTML = `
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  `;
+  document.head.appendChild(style);
+}

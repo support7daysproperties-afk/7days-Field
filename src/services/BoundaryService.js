@@ -122,6 +122,7 @@ export function buildBoundaryRecord({
   captureMode = 'manual',
   gpsAccuracyM = null,
   existingId = null,
+  snapshotImage = null,
 }) {
   const m2 = calcPolygonAreaM2(coords);
   const areas = areaFromM2(m2);
@@ -146,6 +147,7 @@ export function buildBoundaryRecord({
     center_lng: center.lng,
     capture_mode: captureMode,
     gps_accuracy_m: gpsAccuracyM,
+    snapshot_image: snapshotImage,
     sync_status: 'LOCAL_ONLY',
   };
 }
