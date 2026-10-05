@@ -1,7 +1,9 @@
-import { User, LogOut, Smartphone, HardDrive, CheckCircle2, XCircle } from 'lucide-react';
+import { User, LogOut, Smartphone, HardDrive, CheckCircle2, XCircle, ChevronRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Profile() {
+  const navigate = useNavigate();
   const { user, signOut, driveAuthorized } = useAuth();
   
   const name = user?.supervisorProfile?.name || 'Field Supervisor';
@@ -33,22 +35,29 @@ export default function Profile() {
 
       <div className="card mb-md">
         <h3 className="mb-sm text-sm text-secondary">INTEGRATIONS</h3>
-        <div className="flex justify-between items-center py-sm">
+        <div 
+          className="flex justify-between items-center py-sm cursor-pointer hover-effect" 
+          onClick={() => navigate('/google-drive-access')}
+          style={{ transition: 'all 0.2s ease', padding: '8px -8px' }}
+        >
           <div className="flex items-center gap-sm">
-            <HardDrive size={18} className="text-secondary" />
-            <span>Google Drive</span>
+            <HardDrive size={18} className="text-primary" />
+            <span style={{ fontWeight: 500 }}>Google Drive</span>
           </div>
-          {driveAuthorized ? (
-            <div className="flex items-center gap-xs text-success text-sm font-medium">
-              <CheckCircle2 size={16} />
-              <span>Connected</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-xs text-danger text-sm font-medium">
-              <XCircle size={16} />
-              <span>Not Connected</span>
-            </div>
-          )}
+          <div className="flex items-center gap-xs">
+            {driveAuthorized ? (
+              <div className="flex items-center gap-xs text-success text-sm font-medium">
+                <CheckCircle2 size={16} />
+                <span>Connected</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-xs text-danger text-sm font-medium">
+                <XCircle size={16} />
+                <span>Not Connected</span>
+              </div>
+            )}
+            <ChevronRight size={16} className="text-secondary ml-xs" />
+          </div>
         </div>
       </div>
 
