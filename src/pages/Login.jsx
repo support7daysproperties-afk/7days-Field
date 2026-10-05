@@ -26,14 +26,13 @@ export default function Login() {
           scopes: ['profile', 'email', 'https://www.googleapis.com/auth/drive.file']
         });
         const result = await GoogleSignIn.signIn();
+        const idToken = result.idToken || result.authentication?.idToken;
         
         // DEBUG
-        if (!result.authentication?.idToken) {
+        if (!idToken) {
            alert("DEBUG Result: " + JSON.stringify(result));
         }
 
-        const idToken = result.authentication?.idToken;
-        
         if (idToken) {
           const { error: sbError } = await supabase.auth.signInWithIdToken({
             provider: 'google',
