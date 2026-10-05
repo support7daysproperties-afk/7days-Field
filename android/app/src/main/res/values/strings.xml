@@ -4,4 +4,5 @@
     <string name="title_activity_main">7days Field</string>
     <string name="package_name">com.sevendaysfield.app</string>
     <string name="custom_url_scheme">com.sevendaysfield.app</string>
+    <string name="server_client_id">611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com</string>
 </resources>
