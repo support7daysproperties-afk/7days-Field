@@ -93,7 +93,9 @@ class GoogleDriveService {
   }
 
   get clientId() {
-    return import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    // Hardcoded to ensure we always use the Web Client ID for GIS, 
+    // regardless of what is in the .env file.
+    return '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com';
   }
 
   get apiKey() {
