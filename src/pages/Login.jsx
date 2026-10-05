@@ -20,6 +20,11 @@ export default function Login() {
       
       if (Capacitor.isNativePlatform()) {
         // Native Android/iOS Login
+        await GoogleSignIn.initialize({
+          clientId: '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com',
+          serverClientId: '611802862463-d3tkef61buftju7qcmf06bd8puhglct3.apps.googleusercontent.com',
+          scopes: ['profile', 'email']
+        });
         const result = await GoogleSignIn.signIn();
         const idToken = result.authentication?.idToken;
         
