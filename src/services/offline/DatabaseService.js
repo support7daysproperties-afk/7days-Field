@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = '7days_offline_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 class DatabaseService {
   constructor() {
@@ -33,6 +33,15 @@ class DatabaseService {
             const jobStore = db.createObjectStore('sync_jobs', { keyPath: 'id' });
             jobStore.createIndex('inspection_id', 'inspection_id');
             jobStore.createIndex('status', 'status');
+          }
+        }
+
+        // Version 3: add boundaries store
+        if (oldVersion < 3) {
+          if (!db.objectStoreNames.contains('boundaries')) {
+            const boundaryStore = db.createObjectStore('boundaries', { keyPath: 'id' });
+            boundaryStore.createIndex('inspection_id', 'inspection_id');
+            boundaryStore.createIndex('sync_status', 'sync_status');
           }
         }
       },

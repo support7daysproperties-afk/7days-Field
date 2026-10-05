@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2 } from 'lucide-react';
+import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark } from 'lucide-react';
 import FieldCamera from '../components/FieldCamera';
 import VideoCamera from '../components/VideoCamera';
 import SignaturePad from '../components/SignaturePad';
+import PropertyBoundary from './PropertyBoundary';
 import { EvidenceService } from '../services/EvidenceService';
 import InspectionRepository from '../services/offline/InspectionRepository';
+import BoundaryRepository from '../services/offline/BoundaryRepository';
 import MediaRepository from '../services/offline/MediaRepository';
 import SyncEngine from '../services/offline/SyncEngine';
 import { useAuth } from '../context/AuthContext';
@@ -39,6 +41,8 @@ export default function InspectionSession() {
   const [ownerInfo, setOwnerInfo] = useState({ name: '', phone: '', relationship: 'Owner', remarks: '' });
   const [consent, setConsent] = useState(false);
   const [signature, setSignature] = useState(null);
+  const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
+  const [showBoundaryMap, setShowBoundaryMap] = useState(false);
 
   useEffect(() => {
     const loadState = async () => {
@@ -51,6 +55,9 @@ export default function InspectionSession() {
           if (record.metadata.consent !== undefined) setConsent(record.metadata.consent);
           if (record.metadata.signature) setSignature(record.metadata.signature);
         }
+        // Load any existing boundary
+        const existingBoundary = await BoundaryRepository.getBoundaryForInspection(id);
+        if (existingBoundary) setBoundary(existingBoundary);
       } catch (err) {
         console.error("Failed to load inspection state", err);
       } finally {
@@ -93,6 +100,7 @@ export default function InspectionSession() {
 
   const steps = [
     { id: 'location', name: 'Location Verification', completed: !!evidenceSummary.location },
+    { id: 'boundary', name: 'Property Boundary', completed: !!boundary },
     { id: 'evidence', name: 'Evidence (Photos/Videos)', completed: evidenceSummary.total > 0 },
     { id: 'checklist', name: 'Field Checklist', completed: checklistCompleted === checklistTotal },
     { id: 'remarks', name: 'Field Observations', completed: remarks.length > 0 },
@@ -217,6 +225,70 @@ export default function InspectionSession() {
         <p className="text-secondary text-sm mb-lg">Capture a photo of the property to record where this inspection was performed. Your location will be recorded automatically.</p>
         <button className="btn btn-primary flex justify-center items-center gap-sm" onClick={() => setShowPhotoCamera(true)}>
           <Camera size={20} /> Open Camera
+        </button>
+      </div>
+    );
+  };
+
+  const renderBoundaryContent = () => {
+    if (boundary) {
+      return (
+        <div className="card">
+          <h3 className="mb-md flex items-center gap-sm" style={{ color: 'var(--success-color)' }}>
+            <Check size={20} /> Property Boundary Captured
+          </h3>
+          <div className="flex flex-col gap-sm mb-md" style={{ fontSize: 14 }}>
+            <div className="flex justify-between">
+              <span className="text-secondary">Area</span>
+              <span style={{ fontWeight: 600 }}>
+                {boundary.area_acres} acres · {boundary.area_sq_ft?.toLocaleString()} sq.ft · {boundary.area_cents} cents
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-secondary">Perimeter</span>
+              <span style={{ fontWeight: 600 }}>{boundary.perimeter_m} m</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-secondary">Method</span>
+              <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{boundary.capture_mode}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-secondary">Points</span>
+              <span style={{ fontWeight: 600 }}>{boundary.coordinates?.length ?? 0}</span>
+            </div>
+          </div>
+          <div className="flex gap-sm">
+            <button
+              className="btn btn-secondary flex-1"
+              onClick={() => setShowBoundaryMap(true)}
+              style={{ fontSize: 14 }}
+            >
+              <Landmark size={16} /> Edit Boundary
+            </button>
+            <button
+              className="btn btn-primary flex-1"
+              onClick={() => setActiveStepId('overview')}
+              style={{ fontSize: 14 }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="card text-center p-md">
+        <Landmark size={48} className="text-primary mx-auto mb-md" />
+        <h3 className="mb-sm">Property Boundary</h3>
+        <p className="text-secondary text-sm mb-lg">
+          Draw the actual boundary of this property on the satellite map. Tap to add vertices and create an accurate polygon.
+        </p>
+        <button
+          className="btn btn-primary flex justify-center items-center gap-sm"
+          onClick={() => setShowBoundaryMap(true)}
+        >
+          <Landmark size={20} /> Open Boundary Map
         </button>
       </div>
     );
@@ -390,6 +462,32 @@ export default function InspectionSession() {
       </div>
 
       <div className="card" style={{ marginBottom: 0 }}>
+        <h3 className="mb-sm flex items-center gap-sm"><Landmark size={18}/> Property Boundary</h3>
+        <div className="flex flex-col gap-xs text-sm">
+          <div className="flex justify-between">
+            <span>Boundary</span>
+            {boundary ? <Check size={16} className="text-success"/> : <span className="text-secondary">Not captured</span>}
+          </div>
+          {boundary && (
+            <>
+              <div className="flex justify-between"><span>Area</span><span>{boundary.area_acres} ac</span></div>
+              <div className="flex justify-between"><span>Perimeter</span><span>{boundary.perimeter_m} m</span></div>
+              <div className="flex justify-between"><span>Method</span><span style={{ textTransform: 'capitalize' }}>{boundary.capture_mode}</span></div>
+            </>
+          )}
+          {boundary && (
+            <button
+              className="btn btn-secondary mt-sm"
+              style={{ fontSize: 13, padding: '8px 12px', width: 'auto', alignSelf: 'flex-start' }}
+              onClick={() => setShowBoundaryMap(true)}
+            >
+              View Boundary
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 0 }}>
         <h3 className="mb-sm flex items-center gap-sm"><Check size={18}/> Checklist</h3>
         <div className="flex justify-between text-sm">
           <span>Completion</span>
@@ -439,6 +537,19 @@ export default function InspectionSession() {
     <div className="inspection-session bg-bg-color" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {showPhotoCamera && <FieldCamera taskId={id} evidenceType={activeStepId === 'location' ? 'Location Verification' : 'Exterior'} onSave={handleMediaSave} onCancel={() => setShowPhotoCamera(false)} />}
       {showVideoCamera && <VideoCamera taskId={id} evidenceType="Exterior Video" onSave={handleMediaSave} onCancel={() => setShowVideoCamera(false)} />}
+      {showBoundaryMap && (
+        <PropertyBoundary
+          inspectionId={id}
+          propertyId={id}
+          propertyAreaAcres={null}
+          onSave={(saved) => {
+            setBoundary(saved);
+            setShowBoundaryMap(false);
+            setActiveStepId('overview');
+          }}
+          onCancel={() => setShowBoundaryMap(false)}
+        />
+      )}
 
       {activeStepId !== 'overview' && (
         <header className="p-md" style={{ padding: '16px', backgroundColor: 'var(--surface-color)', borderBottom: '1px solid var(--border-color)', position: 'sticky', top: 0, zIndex: 10 }}>
@@ -464,6 +575,7 @@ export default function InspectionSession() {
       <div className="flex-1 overflow-y-auto" style={{ padding: '16px', paddingBottom: '32px' }}>
         {activeStepId === 'overview' && renderOverviewContent()}
         {activeStepId === 'location' && renderLocationContent()}
+        {activeStepId === 'boundary' && renderBoundaryContent()}
         {activeStepId === 'evidence' && renderEvidenceContent()}
         {activeStepId === 'checklist' && renderChecklistContent()}
         
