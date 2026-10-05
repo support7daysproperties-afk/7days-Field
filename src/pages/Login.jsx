@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Loader2 } from 'lucide-react';
@@ -7,9 +8,20 @@ import { Capacitor } from '@capacitor/core';
 import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
 
 export default function Login() {
-  const { authError } = useAuth();
+  const { authError, authenticated, driveAuthorized } = useAuth();
+  const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (authenticated) {
+      if (!driveAuthorized) {
+        navigate('/google-drive-access', { replace: true });
+      } else {
+        navigate('/', { replace: true });
+      }
+    }
+  }, [authenticated, driveAuthorized, navigate]);
 
   const handleGoogleLogin = async () => {
     setIsLoading(true);
@@ -28,11 +40,6 @@ export default function Login() {
         const result = await GoogleSignIn.signIn();
         const idToken = result.idToken || result.authentication?.idToken;
         
-        // DEBUG
-        if (!idToken) {
-           alert("DEBUG Result: " + JSON.stringify(result));
-        }
-
         if (idToken) {
           const { error: sbError } = await supabase.auth.signInWithIdToken({
             provider: 'google',
