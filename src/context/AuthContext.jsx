@@ -62,9 +62,11 @@ export function AuthProvider({ children }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       checkSupervisorAccess(session?.user);
       
-      // We no longer rely on provider_token from Supabase for Drive Auth,
-      // as we want to handle Drive OAuth via GIS as a second step.
-      if (sessionStorage.getItem('drive_connected') === 'true') {
+      if (session?.provider_token && sessionStorage.getItem('drive_disconnected') !== 'true') {
+        GoogleDriveService.accessToken = session.provider_token;
+        setDriveAuthorized(true);
+        sessionStorage.setItem('drive_connected', 'true');
+      } else if (sessionStorage.getItem('drive_connected') === 'true') {
         setDriveAuthorized(true);
       }
     });
@@ -76,6 +78,10 @@ export function AuthProvider({ children }) {
       
       if (!session) {
         setDriveAuthorized(false);
+      } else if (session?.provider_token && sessionStorage.getItem('drive_disconnected') !== 'true') {
+        GoogleDriveService.accessToken = session.provider_token;
+        setDriveAuthorized(true);
+        sessionStorage.setItem('drive_connected', 'true');
       } else if (sessionStorage.getItem('drive_connected') === 'true') {
         setDriveAuthorized(true);
       }
@@ -88,6 +94,7 @@ export function AuthProvider({ children }) {
     setDriveAuthorized(authorized);
     if (authorized) {
       sessionStorage.setItem('drive_connected', 'true');
+      sessionStorage.removeItem('drive_disconnected');
       // Resume any pending/NEEDS_DRIVE_AUTH sync jobs now that Drive is available
       setTimeout(() => SyncEngine.startSync(), 500);
     } else {
@@ -112,6 +119,8 @@ export function AuthProvider({ children }) {
   const disconnectDrive = () => {
     setDriveAuthorized(false);
     sessionStorage.removeItem('drive_connected');
+    sessionStorage.setItem('drive_disconnected', 'true');
+    GoogleDriveService.revokeAccess();
   };
 
   const signOut = async () => {

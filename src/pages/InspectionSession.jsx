@@ -11,6 +11,8 @@ import BoundaryRepository from '../services/offline/BoundaryRepository';
 import MediaRepository from '../services/offline/MediaRepository';
 import SyncEngine from '../services/offline/SyncEngine';
 import { useAuth } from '../context/AuthContext';
+import { land360Service } from '../services/Land360Service';
+import Land360Overview from './land360/Land360Overview';
 
 export default function InspectionSession() {
   const navigate = useNavigate();
@@ -43,6 +45,7 @@ export default function InspectionSession() {
   const [signature, setSignature] = useState(null);
   const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
   const [showBoundaryMap, setShowBoundaryMap] = useState(false);
+  const [land360Points, setLand360Points] = useState([]);
 
   useEffect(() => {
     const loadState = async () => {
@@ -58,6 +61,9 @@ export default function InspectionSession() {
         // Load any existing boundary
         const existingBoundary = await BoundaryRepository.getBoundaryForInspection(id);
         if (existingBoundary) setBoundary(existingBoundary);
+        
+        const cp = await land360Service.getCapturePointsForInspection(id);
+        setLand360Points(cp || []);
       } catch (err) {
         console.error("Failed to load inspection state", err);
       } finally {
@@ -101,6 +107,7 @@ export default function InspectionSession() {
   const steps = [
     { id: 'location', name: 'Location Verification', completed: !!evidenceSummary.location },
     { id: 'boundary', name: 'Property Boundary', completed: !!boundary },
+    { id: 'land360', name: 'Land 360° Capture', completed: land360Points.length > 0 },
     { id: 'evidence', name: 'Evidence (Photos/Videos)', completed: evidenceSummary.total > 0 },
     { id: 'checklist', name: 'Field Checklist', completed: checklistCompleted === checklistTotal },
     { id: 'remarks', name: 'Field Observations', completed: remarks.length > 0 },
@@ -605,6 +612,7 @@ export default function InspectionSession() {
         {activeStepId === 'overview' && renderOverviewContent()}
         {activeStepId === 'location' && renderLocationContent()}
         {activeStepId === 'boundary' && renderBoundaryContent()}
+        {activeStepId === 'land360' && <Land360Overview inspectionId={id} points={land360Points} onPointsUpdated={setLand360Points} onNext={() => setActiveStepId('evidence')} />}
         {activeStepId === 'evidence' && renderEvidenceContent()}
         {activeStepId === 'checklist' && renderChecklistContent()}
         
