@@ -3,6 +3,7 @@ import MainLayout from './layouts/MainLayout';
 import Home from './pages/Home';
 import Tasks from './pages/Tasks';
 import TaskDetails from './pages/TaskDetails';
+import CreateInspection from './pages/CreateInspection';
 import InspectionSession from './pages/InspectionSession';
 import Sync from './pages/Sync';
 import Profile from './pages/Profile';
@@ -41,6 +42,7 @@ function App() {
               <Route index element={<Home />} />
               <Route path="tasks" element={<Tasks />} />
               <Route path="tasks/:id" element={<TaskDetails />} />
+              <Route path="create-inspection" element={<CreateInspection />} />
               <Route path="sync" element={<Sync />} />
               <Route path="profile" element={<Profile />} />
             </Route>

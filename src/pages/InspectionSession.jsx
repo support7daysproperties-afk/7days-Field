@@ -46,17 +46,21 @@ export default function InspectionSession() {
   const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
   const [showBoundaryMap, setShowBoundaryMap] = useState(false);
   const [land360Points, setLand360Points] = useState([]);
+  const [inspectionRecord, setInspectionRecord] = useState(null);
 
   useEffect(() => {
     const loadState = async () => {
       try {
         const record = await InspectionRepository.getInspection(id);
-        if (record && record.metadata) {
-          if (record.metadata.checklist) setChecklist(record.metadata.checklist);
-          if (record.metadata.remarks) setRemarks(record.metadata.remarks);
-          if (record.metadata.ownerInfo) setOwnerInfo(record.metadata.ownerInfo);
-          if (record.metadata.consent !== undefined) setConsent(record.metadata.consent);
-          if (record.metadata.signature) setSignature(record.metadata.signature);
+        if (record) {
+          setInspectionRecord(record);
+          if (record.metadata) {
+            if (record.metadata.checklist) setChecklist(record.metadata.checklist);
+            if (record.metadata.remarks) setRemarks(record.metadata.remarks);
+            if (record.metadata.ownerInfo) setOwnerInfo(record.metadata.ownerInfo);
+            if (record.metadata.consent !== undefined) setConsent(record.metadata.consent);
+            if (record.metadata.signature) setSignature(record.metadata.signature);
+          }
         }
         // Load any existing boundary
         const existingBoundary = await BoundaryRepository.getBoundaryForInspection(id);
@@ -144,8 +148,8 @@ export default function InspectionSession() {
         </header>
 
         <div className="bg-surface-color p-md mb-lg shadow-sm rounded-b-lg border-b border-color">
-          <div className="text-primary font-bold text-sm mb-xs">FV-2026-57724</div>
-          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: '0 0 16px 0' }}>Ooty Tea Estate Land</h1>
+          <div className="text-primary font-bold text-sm mb-xs">{inspectionRecord?.id || id}</div>
+          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: '0 0 16px 0' }}>{inspectionRecord?.title || 'Inspection'}</h1>
           
           <div className="text-secondary text-sm mb-xs">
             Progress: {completedCount} / {steps.length} sections completed
