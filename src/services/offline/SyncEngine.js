@@ -24,6 +24,7 @@ import { supabase } from '../../lib/supabase';
 import MediaRepository from './MediaRepository';
 import InspectionRepository from './InspectionRepository';
 import SyncJobRepository from './SyncJobRepository';
+import BoundaryRepository from './BoundaryRepository';
 import ConnectivityService from './ConnectivityService';
 import GoogleDriveService from '../GoogleDriveService';
 
@@ -149,6 +150,40 @@ class SyncEngine {
         if (!uploaded) allUploaded = false;
       }
 
+      // ── STEP 4.5: Upload Boundary Snapshot to Drive ────────────────────────
+      const boundary = await BoundaryRepository.getBoundaryForInspection(inspection.id);
+      if (boundary && boundary.snapshot_image && boundary.sync_status !== 'SYNCED' && ConnectivityService.online) {
+        try {
+          // Convert base64 data URL to Blob
+          const base64Data = boundary.snapshot_image.split(',')[1];
+          const byteCharacters = atob(base64Data);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: 'image/png' });
+
+          const filename = `boundary_snapshot_${inspection.id}.png`;
+          const existing = await GoogleDriveService.findExistingFile(filename, folders.boundaryFolder).catch(() => null);
+          
+          let driveFile = existing;
+          if (!driveFile) {
+            driveFile = await GoogleDriveService.uploadFile(blob, filename, 'image/png', folders.boundaryFolder);
+          }
+          
+          await BoundaryRepository.saveBoundary({
+            ...boundary,
+            sync_status: 'SYNCED',
+            drive_file_id: driveFile.id,
+            drive_web_url: driveFile.webViewLink || driveFile.webContentLink
+          });
+        } catch (e) {
+          console.error('Boundary upload failed:', e);
+          allUploaded = false;
+        }
+      }
+
       // ── STEP 5: Write optional summary JSON to Drive ──────────────────────
       try {
         await this._writeDriveSummary(inspection, allMedia, folders.inspectionFolder);
@@ -160,11 +195,13 @@ class SyncEngine {
       // ── STEP 6: Final verification & mark status ──────────────────────────
       const freshMedia = await MediaRepository.getMediaForInspection(inspection.id);
       const pendingCount = freshMedia.filter(m => m.original_blob && m.sync_status !== 'UPLOADED').length;
+      const freshBoundary = await BoundaryRepository.getBoundaryForInspection(inspection.id);
+      const isBoundaryPending = freshBoundary && freshBoundary.snapshot_image && freshBoundary.sync_status !== 'SYNCED';
 
-      if (pendingCount === 0) {
+      if (pendingCount === 0 && !isBoundaryPending) {
         await this._markSynced(job, inspection, supabaseInspectionId);
       } else {
-        await this._markPartiallySynced(job, inspection, `${pendingCount} media item(s) still pending`);
+        await this._markPartiallySynced(job, inspection, `${pendingCount} media item(s) and/or boundary still pending`);
       }
 
     } catch (err) {

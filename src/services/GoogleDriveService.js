@@ -212,14 +212,15 @@ class GoogleDriveService {
     const propertyFolder = await this.getOrCreateFolder(propertyLabel, inspectionsRoot);
     const inspectionFolder = await this.getOrCreateFolder(inspectionId, propertyFolder);
 
-    const [photosFolder, videosFolder, signaturesFolder, otherFolder] = await Promise.all([
+    const [photosFolder, videosFolder, signaturesFolder, otherFolder, boundaryFolder] = await Promise.all([
       this.getOrCreateFolder('Photos', inspectionFolder),
       this.getOrCreateFolder('Videos', inspectionFolder),
       this.getOrCreateFolder('Signatures', inspectionFolder),
       this.getOrCreateFolder('Other', inspectionFolder),
+      this.getOrCreateFolder('Plot Area (Property Boundary)', inspectionFolder),
     ]);
 
-    return { root, inspectionsRoot, propertyFolder, inspectionFolder, photosFolder, videosFolder, signaturesFolder, otherFolder };
+    return { root, inspectionsRoot, propertyFolder, inspectionFolder, photosFolder, videosFolder, signaturesFolder, otherFolder, boundaryFolder };
   }
 
   /**
