@@ -4,6 +4,7 @@ import {
   generateSphericalTargets,
   projectTargetToViewport,
   selectNextTarget,
+  getUnlockedTargets,
 } from './PhotoSphereTargets';
 import { PhotoSphereOrientation } from './PhotoSphereOrientation';
 import { PhotoSphereStitcher } from './PhotoSphereStitcher';
@@ -325,21 +326,38 @@ export default function PhotoSphereCapture({
   // Project targets onto viewport and Check Alignment Tick
   const isCameraReady = cameraState === CAMERA_STATES.READY;
 
-  // Project ONLY the active target for maximum performance & single-target guidance
-  const rawActiveTarget = targets.find((t) => t.id === activeTargetId);
-  const activeTarget = isCameraReady && rawActiveTarget ? {
-    ...rawActiveTarget,
+  // 1. Get all unlocked target dots (at start: target_0; after shots: adjacent Left/Right/Above/Below marbles)
+  const unlockedRawTargets = isCameraReady ? getUnlockedTargets(targets, capturedFrames) : [];
+
+  // 2. Project each unlocked target in physical 3D space onto the 2D viewport
+  const projectedUnlockedTargets = unlockedRawTargets.map((t) => ({
+    ...t,
     projected: projectTargetToViewport(
-      rawActiveTarget.yaw,
-      rawActiveTarget.pitch,
+      t.yaw,
+      t.pitch,
       orientation.yaw,
       orientation.pitch,
       viewportSize.width,
       viewportSize.height,
       65,
       orientation.roll || 0
-    )
-  } : null;
+    ),
+  }));
+
+  // 3. Find the target closest to the camera bore sight (optical center)
+  let activeTarget = null;
+  let minAngularDist = 999;
+  projectedUnlockedTargets.forEach((t) => {
+    if (!t.projected.isBehind && t.projected.angularDistance < minAngularDist) {
+      minAngularDist = t.projected.angularDistance;
+      activeTarget = t;
+    }
+  });
+
+  // Fallback to activeTargetId if user was already focusing one
+  if (!activeTarget && projectedUnlockedTargets.length > 0) {
+    activeTarget = projectedUnlockedTargets.find((t) => t.id === activeTargetId) || projectedUnlockedTargets[0];
+  }
 
   const activeDist = activeTarget ? activeTarget.projected.angularDistance : 999;
   const isAligned = isCameraReady && activeTarget && activeDist <= 3.0;
@@ -739,8 +757,9 @@ export default function PhotoSphereCapture({
             </div>
           )}
 
-          {/* Blue Target Dot (Single Active Target Guidance) */}
+          {/* Blue Target Dots: Unlocked 3D floating marbles pinned in physical space */}
           <TargetDotsOverlay
+            targets={projectedUnlockedTargets}
             activeTarget={activeTarget}
             viewportWidth={viewportSize.width}
             viewportHeight={viewportSize.height}
@@ -880,14 +899,14 @@ export default function PhotoSphereCapture({
             />
           </button>
 
-          {/* Stitch / Finish Button (available once 3+ shots or complete) */}
+          {/* Stitch / Finish Button (available once 1+ shots or complete) */}
           <button
             onClick={handleStartStitching}
-            disabled={!isCameraReady || capturedCount < 3 || isStitching}
+            disabled={!isCameraReady || capturedCount < 1 || isStitching}
             style={{
-              backgroundColor: capturedCount >= 3 ? '#10b981' : 'rgba(255, 255, 255, 0.1)',
+              backgroundColor: capturedCount >= 1 ? '#10b981' : 'rgba(255, 255, 255, 0.1)',
               border: 'none',
-              color: capturedCount >= 3 ? '#ffffff' : '#64748b',
+              color: capturedCount >= 1 ? '#ffffff' : '#64748b',
               height: '46px',
               padding: '0 16px',
               borderRadius: '24px',
@@ -896,8 +915,8 @@ export default function PhotoSphereCapture({
               gap: '6px',
               fontWeight: 'bold',
               fontSize: '13px',
-              cursor: capturedCount >= 3 ? 'pointer' : 'not-allowed',
-              boxShadow: capturedCount >= 3 ? '0 4px 12px rgba(16, 185, 129, 0.4)' : 'none',
+              cursor: capturedCount >= 1 ? 'pointer' : 'not-allowed',
+              boxShadow: capturedCount >= 1 ? '0 4px 12px rgba(16, 185, 129, 0.4)' : 'none',
             }}
             title="Generate stitched panorama"
           >

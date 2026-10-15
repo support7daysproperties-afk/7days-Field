@@ -3,6 +3,7 @@ import {
   generateSphericalTargets,
   projectTargetToViewport,
   selectNextTarget,
+  getUnlockedTargets,
   angularDistance,
   normalizeAngle,
   signedAngleDiff,
@@ -201,6 +202,31 @@ describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
     expect(projUp.visible).toBe(true);
     expect(Math.round(projUp.x)).toBe(width / 2);
     expect(projUp.y).toBeLessThan(height / 2);
+  });
+
+  it('should unlock the 4 physical 3D adjacent neighbors (left, right, above, below) around captured shots', () => {
+    const targets = generateSphericalTargets();
+    // 1. Initial state (0 captured): only target_0 unlocked
+    const initialUnlocked = getUnlockedTargets(targets, []);
+    expect(initialUnlocked.length).toBe(1);
+    expect(initialUnlocked[0].id).toBe('target_0');
+
+    // 2. After capturing target_0 (yaw: 0, pitch: 0)
+    const capturedFrames = [{ targetId: 'target_0' }];
+    targets[0].status = 'captured';
+
+    const unlockedAfterFirst = getUnlockedTargets(targets, capturedFrames);
+    // Should have right neighbor (target_1, yaw: 36, pitch: 0), left neighbor (target_9, yaw: 324, pitch: 0),
+    // and vertical neighbors (upper and lower)
+    const right = unlockedAfterFirst.find((t) => t.yaw === 36 && t.pitch === 0);
+    const left = unlockedAfterFirst.find((t) => t.yaw === 324 && t.pitch === 0);
+    const upper = unlockedAfterFirst.find((t) => t.pitch > 0);
+    const lower = unlockedAfterFirst.find((t) => t.pitch < 0);
+
+    expect(right).toBeDefined();
+    expect(left).toBeDefined();
+    expect(upper).toBeDefined();
+    expect(lower).toBeDefined();
   });
 });
 

@@ -300,6 +300,101 @@ export function projectTargetToViewport(
 }
 
 /**
+ * Returns the list of currently unlocked targets:
+ * - At startup (0 captured): only target_0 (dead center in front of you) is active.
+ * - After captures: unlocks the adjacent 4 targets (Left, Right, Above, Below)
+ *   around every captured frame so the user sees real floating marbles in physical 3D space.
+ *
+ * @param {Array} targets Full spherical target list
+ * @param {Array} capturedFrames List of captured frame records
+ */
+export function getUnlockedTargets(targets, capturedFrames = []) {
+  if (!targets || targets.length === 0) return [];
+
+  // When no photos have been taken yet, only target_0 is visible right in front
+  if (capturedFrames.length === 0) {
+    const initialTarget = targets.find((t) => t.id === 'target_0') || targets[0];
+    return [initialTarget];
+  }
+
+  const capturedTargetIds = new Set(capturedFrames.map((f) => f.targetId));
+  const unlockedTargetIds = new Set();
+
+  // For every photo captured so far, find its 4 adjacent pending neighbors (Left, Right, Above, Below)
+  capturedFrames.forEach((frame) => {
+    const current = targets.find((t) => t.id === frame.targetId);
+    if (!current) return;
+
+    // Find closest pending neighbors in 4 directions:
+    // 1. Right (dYaw > 0, same/close pitch)
+    // 2. Left (dYaw < 0, same/close pitch)
+    // 3. Above (pitch > current.pitch)
+    // 4. Below (pitch < current.pitch)
+
+    const pending = targets.filter((t) => t.status === 'pending');
+
+    // Horizontal neighbors along the ring
+    const sameRingPending = pending.filter((t) => t.ring === current.ring);
+    let rightNeighbor = null;
+    let minRightDiff = 999;
+    let leftNeighbor = null;
+    let minLeftDiff = 999;
+
+    sameRingPending.forEach((t) => {
+      const diff = signedAngleDiff(t.yaw, current.yaw);
+      if (diff > 0 && diff < minRightDiff) {
+        minRightDiff = diff;
+        rightNeighbor = t;
+      } else if (diff < 0 && Math.abs(diff) < minLeftDiff) {
+        minLeftDiff = Math.abs(diff);
+        leftNeighbor = t;
+      }
+    });
+
+    if (rightNeighbor && minRightDiff <= 55) unlockedTargetIds.add(rightNeighbor.id);
+    if (leftNeighbor && minLeftDiff <= 55) unlockedTargetIds.add(leftNeighbor.id);
+
+    // Vertical neighbors (above / below)
+    let aboveNeighbor = null;
+    let minAboveDist = 999;
+    let belowNeighbor = null;
+    let minBelowDist = 999;
+
+    pending.forEach((t) => {
+      const pDiff = t.pitch - current.pitch;
+      const yDiff = Math.abs(signedAngleDiff(t.yaw, current.yaw));
+
+      if (pDiff > 10 && pDiff < 60 && yDiff <= 45) {
+        const dist = Math.hypot(yDiff, pDiff);
+        if (dist < minAboveDist) {
+          minAboveDist = dist;
+          aboveNeighbor = t;
+        }
+      } else if (pDiff < -10 && pDiff > -60 && yDiff <= 45) {
+        const dist = Math.hypot(yDiff, pDiff);
+        if (dist < minBelowDist) {
+          minBelowDist = dist;
+          belowNeighbor = t;
+        }
+      }
+    });
+
+    if (aboveNeighbor) unlockedTargetIds.add(aboveNeighbor.id);
+    if (belowNeighbor) unlockedTargetIds.add(belowNeighbor.id);
+  });
+
+  // If all adjacent neighbors are somehow taken, unlock remaining pending targets nearest to last shot
+  if (unlockedTargetIds.size === 0) {
+    const remainingPending = targets.filter((t) => t.status === 'pending');
+    if (remainingPending.length > 0) {
+      unlockedTargetIds.add(remainingPending[0].id);
+    }
+  }
+
+  return targets.filter((t) => unlockedTargetIds.has(t.id));
+}
+
+/**
  * Select the next target to capture matching Google Camera's sequence:
  * Completes equatorial horizon ring first in a circular sweep,
  * then upper ring, zenith, lower ring, and nadir.
