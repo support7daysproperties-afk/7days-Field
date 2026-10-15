@@ -115,6 +115,13 @@ export default function MotionSensorViewer({ panoramaUrl, onClose }) {
       if (renderer.domElement && container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      if (sphereRef.current) {
+        if (sphereRef.current.geometry) sphereRef.current.geometry.dispose();
+        if (sphereRef.current.material) {
+          if (sphereRef.current.material.map) sphereRef.current.material.map.dispose();
+          sphereRef.current.material.dispose();
+        }
+      }
       renderer.dispose();
     };
   }, [panoramaUrl]);

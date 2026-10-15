@@ -69,17 +69,21 @@ export default function VRViewer({ panoramaUrl, onClose }) {
     rightContainer.appendChild(rendererRight.domElement);
     rendererRightRef.current = rendererRight;
 
+    let loadedTexture = null;
+    let sphereMesh = null;
+
     // 4. Inverted Equirectangular Sphere Mesh
     const textureLoader = new THREE.TextureLoader();
     textureLoader.load(panoramaUrl, (texture) => {
+      loadedTexture = texture;
       texture.mapping = THREE.EquirectangularReflectionMapping;
       texture.colorSpace = THREE.SRGBColorSpace;
 
       const geometry = new THREE.SphereGeometry(500, 60, 40);
       geometry.scale(-1, 1, 1);
       const material = new THREE.MeshBasicMaterial({ map: texture });
-      const sphere = new THREE.Mesh(geometry, material);
-      scene.add(sphere);
+      sphereMesh = new THREE.Mesh(geometry, material);
+      scene.add(sphereMesh);
     });
 
     // 5. Render Loop
@@ -124,6 +128,13 @@ export default function VRViewer({ panoramaUrl, onClose }) {
       }
       if (rendererRight.domElement && rightContainer.contains(rendererRight.domElement)) {
         rightContainer.removeChild(rendererRight.domElement);
+      }
+      if (sphereMesh) {
+        if (sphereMesh.geometry) sphereMesh.geometry.dispose();
+        if (sphereMesh.material) sphereMesh.material.dispose();
+      }
+      if (loadedTexture) {
+        loadedTexture.dispose();
       }
       rendererLeft.dispose();
       rendererRight.dispose();

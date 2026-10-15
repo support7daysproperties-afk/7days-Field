@@ -100,6 +100,7 @@ class PhotoSphereStorage {
       blob: panoramaRecord.blob,
       width: panoramaRecord.width,
       height: panoramaRecord.height,
+      isCompleteSphere: panoramaRecord.isCompleteSphere ?? true,
       metadata: panoramaRecord.metadata || {},
       createdAt: Date.now(),
     };

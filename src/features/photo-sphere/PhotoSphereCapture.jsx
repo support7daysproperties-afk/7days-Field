@@ -399,6 +399,7 @@ export default function PhotoSphereCapture({
         blob: result.blob,
         width: result.width,
         height: result.height,
+        isCompleteSphere: result.isCompleteSphere,
         metadata: {
           frameCount: capturedFrames.length,
           stitchedAt: Date.now(),
