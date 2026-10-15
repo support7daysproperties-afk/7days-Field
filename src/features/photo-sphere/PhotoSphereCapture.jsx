@@ -5,6 +5,7 @@ import {
   projectTargetToViewport,
   selectNextTarget,
   getUnlockedTargets,
+  sphericalToVector,
 } from './PhotoSphereTargets';
 import { PhotoSphereOrientation } from './PhotoSphereOrientation';
 import { PhotoSphereStitcher } from './PhotoSphereStitcher';
@@ -333,6 +334,7 @@ export default function PhotoSphereCapture({
   // 2. Project each unlocked target in physical 3D space onto the 2D viewport
   const projectedUnlockedTargets = unlockedRawTargets.map((t) => ({
     ...t,
+    worldVector: sphericalToVector(t.yaw, t.pitch),
     projected: projectTargetToViewport(
       t.yaw,
       t.pitch,

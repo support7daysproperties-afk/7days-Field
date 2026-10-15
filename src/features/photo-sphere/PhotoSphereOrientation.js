@@ -148,6 +148,8 @@ export class PhotoSphereOrientation {
       ? window.screen.orientation.angle || 0
       : (typeof window !== 'undefined' ? window.orientation || 0 : 0);
 
+    const sampleDtMs = this.lastTimestamp ? Math.round(now - this.lastTimestamp) : 0;
+
     this.currentOrientation = {
       yaw: relYaw,
       rawYaw,
@@ -156,6 +158,7 @@ export class PhotoSphereOrientation {
       roll: gamma || 0,
       angularVelocity: Math.round(this.smoothedVelocity * 10) / 10,
       isMovingTooFast,
+      sampleDtMs,
       rawSensor: {
         alpha: Math.round(alpha * 10) / 10,
         beta: Math.round(beta * 10) / 10,

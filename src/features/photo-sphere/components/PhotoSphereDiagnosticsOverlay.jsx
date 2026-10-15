@@ -93,17 +93,19 @@ export default function PhotoSphereDiagnosticsOverlay({
           {/* Raw Sensors */}
           <div>
             <div style={{ color: '#93c5fd', fontWeight: 'bold' }}>1. Raw Sensors (DeviceOrientation)</div>
-            <div>alpha (yaw): {raw.alpha ?? 'N/A'}°</div>
-            <div>beta (pitch): {raw.beta ?? 'N/A'}°</div>
-            <div>gamma (roll): {raw.gamma ?? 'N/A'}°</div>
+            <div>alpha: {raw.alpha !== undefined && raw.alpha !== null ? `${raw.alpha}°` : 'null'}</div>
+            <div>beta: {raw.beta !== undefined && raw.beta !== null ? `${raw.beta}°` : 'null'}</div>
+            <div>gamma: {raw.gamma !== undefined && raw.gamma !== null ? `${raw.gamma}°` : 'null'}</div>
+            <div>sample dt: {orientation.sampleDtMs ? `${orientation.sampleDtMs}ms` : 'N/A'}</div>
             <div>screen angle: {orientation.screenOrientationAngle ?? 0}°</div>
           </div>
 
           {/* Calibrated Frame */}
           <div>
-            <div style={{ color: '#93c5fd', fontWeight: 'bold' }}>2. Calibrated Frame (Bore Sight)</div>
+            <div style={{ color: '#93c5fd', fontWeight: 'bold' }}>2. Calibrated Frame & Matrix</div>
             <div>relYaw: {orientation.yaw}° (rawYaw: {orientation.rawYaw}°)</div>
             <div>relPitch: {orientation.pitch}° (rawPitch: {orientation.rawPitch}°)</div>
+            <div>roll: {Math.round((orientation.roll || 0) * 10) / 10}°</div>
             <div>angVel: {orientation.angularVelocity}°/s</div>
             <div>movingTooFast: {orientation.isMovingTooFast ? 'TRUE' : 'FALSE'}</div>
           </div>
@@ -113,9 +115,12 @@ export default function PhotoSphereDiagnosticsOverlay({
             <div style={{ color: '#93c5fd', fontWeight: 'bold' }}>3. Target & Projection</div>
             <div>Target ID: {activeTarget ? activeTarget.id : 'None'} ({unlockedCount} unlocked)</div>
             <div>World (Y, P): {activeTarget ? `${activeTarget.yaw}°, ${activeTarget.pitch}°` : 'N/A'}</div>
+            <div>World Vec: [{activeTarget ? activeTarget.worldVector?.map(v => Math.round(v * 1000) / 1000).join(', ') : 'N/A'}]</div>
             <div>Cam Vector: [{camVec.join(', ')}]</div>
             <div>isBehind: {proj ? (proj.isBehind ? 'YES' : 'NO') : 'N/A'}</div>
             <div>Screen (x, y): {proj ? `${Math.round(proj.x)}, ${Math.round(proj.y)}` : 'N/A'}</div>
+            <div>Center (x, y): {Math.round(viewportSize.width / 2)}, {Math.round(viewportSize.height / 2)}</div>
+            <div>Pixel Err: {proj ? `dx:${Math.round(proj.x - viewportSize.width / 2)}px, dy:${Math.round(proj.y - viewportSize.height / 2)}px` : 'N/A'}</div>
             <div>Viewport: {viewportSize.width} x {viewportSize.height}</div>
             <div>Angular Error: {proj ? `${Math.round(proj.angularDistance * 10) / 10}°` : 'N/A'}</div>
           </div>
