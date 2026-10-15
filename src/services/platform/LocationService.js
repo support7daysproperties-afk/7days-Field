@@ -28,15 +28,11 @@ export class LocationService {
 
       // If high accuracy timed out (code 3) or position unavailable (code 2),
       // retry with low accuracy (WiFi/cellular network triangulation) and larger timeout
-      try {
-        return await this._queryPosition({
-          enableHighAccuracy: false,
-          timeout: 12000,
-          maximumAge: 60000, // accept cached location up to 1 minute old
-        });
-      } catch (fallbackErr) {
-        throw fallbackErr;
-      }
+      return await this._queryPosition({
+        enableHighAccuracy: false,
+        timeout: 12000,
+        maximumAge: 60000, // accept cached location up to 1 minute old
+      });
     }
   }
 

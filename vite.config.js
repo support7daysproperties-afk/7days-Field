@@ -7,5 +7,9 @@ export default defineConfig({
   plugins: [react(), mkcert()],
   server: {
     host: '0.0.0.0'
-  }
+  },
+  test: {
+    environment: 'node',
+    include: ['tests/**/*.test.js'],
+  },
 })
