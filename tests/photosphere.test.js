@@ -135,18 +135,53 @@ describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
 
     // Simulate phone held tilted up 15° (beta = 105°) and pointing compass 120° (alpha = 120°)
     tracker._handleOrientation({ alpha: 120, beta: 105, gamma: 0 });
-    expect(capturedOrientation.rawYaw).toBe(120);
+    // In optical camera space: rawYaw = normalizeAngle(360 - alpha) = 240, rawPitch = beta - 90 = 15
+    expect(capturedOrientation.rawYaw).toBe(240);
     expect(capturedOrientation.rawPitch).toBe(15);
     // Before calibration, pitch is 15
     expect(capturedOrientation.pitch).toBe(15);
 
-    // Calibrate reference frame matching InitTargets
-    tracker.setReferenceHeading(120, 15);
+    // Calibrate reference frame matching initial pose
+    tracker.setReferenceHeading(240, 15);
     tracker._handleOrientation({ alpha: 120, beta: 105, gamma: 0 });
 
     // After calibration, phone is directly looking at target_0 (yaw = 0, pitch = 0)
     expect(capturedOrientation.yaw).toBe(0);
     expect(capturedOrientation.pitch).toBe(0);
+  });
+
+  it('should ensure target converges to reticle center when phone rotates toward target', () => {
+    // Reticle is at screen center (W/2, H/2)
+    const W = 400;
+    const H = 800;
+    const fov = 60;
+
+    // Target at world yaw 0, pitch 0
+    const targetYaw = 0;
+    const targetPitch = 0;
+
+    // Case 1: Phone starts pointed slightly to the left (yaw = -10° = 350°)
+    // The target is to the right in the viewport: screen X > W/2
+    const projLeft = projectTargetToViewport(targetYaw, targetPitch, 350, 0, W, H, fov);
+    expect(projLeft.x).toBeGreaterThan(W / 2);
+
+    // User rotates phone right towards target (yaw moves from 350° towards 0°)
+    // As yaw approaches 0°, target moves towards center W/2
+    const projCenter = projectTargetToViewport(targetYaw, targetPitch, 0, 0, W, H, fov);
+    expect(projCenter.x).toBe(W / 2);
+    expect(projCenter.y).toBe(H / 2);
+
+    // Case 2: Phone is pointed slightly down (pitch = -10°)
+    // With camera pitch = -10° and target at pitch = 0°:
+    // The target is higher than the camera center. As the user tilts the phone up (towards pitch 0°),
+    // the target moves towards the reticle center.
+    // projDown.y is 461.08, while center is 400.
+    const projDown = projectTargetToViewport(targetYaw, targetPitch, 0, -10, W, H, fov);
+    expect(projDown.y).toBeGreaterThan(H / 2);
+
+    // User tilts phone up towards target (pitch moves from -10° towards 0°)
+    const projCenterPitch = projectTargetToViewport(targetYaw, targetPitch, 0, 0, W, H, fov);
+    expect(projCenterPitch.y).toBe(H / 2);
   });
 
   it('should filter out high-frequency sensor jitter from falsely tripping movingTooFast (>45 deg/s)', () => {

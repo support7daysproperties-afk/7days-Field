@@ -82,8 +82,9 @@ export class PhotoSphereOrientation {
 
     // In portrait orientation:
     // When held vertically pointing forward, beta is ~90.
-    // In Photo Sphere coordinate system, horizontal horizon is pitch = 0°, zenith is +90°, nadir is -90°.
-    // Thus rawPitch = beta - 90
+    // In camera optical space:
+    // - Tilting phone UP (beta increases, e.g. 90 -> 105) tilts the camera up (pitch > 0).
+    //   Thus rawPitch = beta - 90.
     let rawPitch = beta - 90;
     rawPitch = Math.max(-90, Math.min(90, rawPitch));
 
@@ -94,8 +95,12 @@ export class PhotoSphereOrientation {
       pitch = Math.max(-90, Math.min(90, pitch));
     }
 
-    // Calculate relative yaw based on reference heading
-    let rawYaw = normalizeAngle(alpha);
+    // In W3C DeviceOrientationEvent:
+    // alpha increases counter-clockwise (turning left increases alpha; turning right decreases alpha).
+    // In spherical camera space:
+    // Looking straight is yaw = 0. Turning right is positive yaw (+yaw).
+    // Therefore, camera yaw = normalizeAngle(360 - alpha) (or -alpha).
+    let rawYaw = normalizeAngle(360 - alpha);
     let relYaw = rawYaw;
     if (this.referenceHeading !== null) {
       relYaw = normalizeAngle(rawYaw - this.referenceHeading);
