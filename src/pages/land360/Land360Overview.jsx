@@ -1,25 +1,21 @@
 /**
  * Land360Overview.jsx
  *
- * Orchestrator component for the Land 360° capture step inside the inspection workflow.
- * Manages:
- * 1. List of 360° capture points (e.g. Center, Boundaries, Entrance, Interior viewpoints).
- * 2. Launching the guided 360° capture camera.
- * 3. Handling completion, review, and retakes.
+ * Workflow orchestrator for 360° Photo Sphere capture inside InspectionSession.
+ * Delegates 100% of 360° capture and stitching to the new, decoupled
+ * PhotoSphereCaptureScreen module (src/features/photo-sphere/).
  */
 
-import { useState, useCallback, useEffect } from 'react';
-import { Camera, Plus, CheckCircle, Navigation, Eye, MapPin } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Camera, Plus, CheckCircle, Navigation, Eye } from 'lucide-react';
 import { land360Service } from '../../services/Land360Service';
-import Land360Capture from './Land360Capture';
-import Land360Review from './Land360Review';
-import { DEFAULT_CAPTURE_CONFIG } from '../../lib/land360/CaptureConfig';
+import { PhotoSphereCaptureScreen, PanoramaViewer } from '../../features/photo-sphere';
 
 export default function Land360Overview({ inspectionId, points = [], onPointsUpdated, onNext }) {
-  const [mode, setMode] = useState('list'); // 'list' | 'capture' | 'review'
+  const [mode, setMode] = useState('list'); // 'list' | 'capture' | 'viewer'
   const [activePointId, setActivePointId] = useState(null);
-  const [retakeTargetId, setRetakeTargetId] = useState(null);
-  const [reviewData, setReviewData] = useState({ targets: [], frames: [] });
+  const [viewingPanoramaUri, setViewingPanoramaUri] = useState(null);
+  const [viewingCoverage, setViewingCoverage] = useState(100);
 
   const refreshPoints = useCallback(async () => {
     if (!inspectionId) return;
@@ -33,135 +29,110 @@ export default function Land360Overview({ inspectionId, points = [], onPointsUpd
     try {
       const targetInspectionId = inspectionId || 'temp_inspection';
       const newPoint = await land360Service.createCapturePoint(targetInspectionId, {
-        name: `Capture Point ${points.length + 1}`,
-        type: 'General',
+        name: `Viewpoint ${points.length + 1}`,
+        type: '360 Photo Sphere',
         latitude: null,
         longitude: null,
       });
       await refreshPoints();
       setActivePointId(newPoint.id);
-      setRetakeTargetId(null);
       setMode('capture');
     } catch (err) {
       console.error('Failed to create capture point:', err);
-      // Fallback: start capture with a generated point id
-      const fallbackId = `cp_${Date.now()}`;
-      setActivePointId(fallbackId);
-      setRetakeTargetId(null);
+      setActivePointId(`cp_${Date.now()}`);
       setMode('capture');
     }
   };
 
   const handleStartCapture = (pointId) => {
     setActivePointId(pointId);
-    setRetakeTargetId(null);
     setMode('capture');
   };
 
-  const handleCaptureComplete = async () => {
+  const handleCaptureComplete = async (result) => {
+    if (activePointId) {
+      await land360Service.updateCapturePointStatus(activePointId, 'Completed');
+    }
     await refreshPoints();
-    const session = await land360Service.getLatestSessionForCapturePoint(activePointId);
-    if (session) {
-      const targets = await land360Service.getTargetsForSession(session.id);
-      const frames = await land360Service.getActiveFramesForSession(session.id);
-      const normalised = targets.map((t) => ({ ...t, id: t.originalTargetId || t.id }));
-      setReviewData({ targets: normalised, frames });
-    }
-    setMode('review');
+    setMode('list');
   };
 
-  const handleReviewPoint = async (pointId) => {
-    setActivePointId(pointId);
-    const session = await land360Service.getLatestSessionForCapturePoint(pointId);
-    if (session) {
-      const targets = await land360Service.getTargetsForSession(session.id);
-      const frames = await land360Service.getActiveFramesForSession(session.id);
-      const normalised = targets.map((t) => ({ ...t, id: t.originalTargetId || t.id }));
-      setReviewData({ targets: normalised, frames });
-    } else {
-      setReviewData({ targets: [], frames: [] });
-    }
-    setMode('review');
+  const handleViewPoint = async (point) => {
+    // Check if panorama is already stored
+    setActivePointId(point.id);
+    setViewingPanoramaUri(point.panoramaUri || null);
+    setViewingCoverage(point.coveragePercent || 100);
+    setMode('viewer');
   };
 
-  const handleRetake = (targetId) => {
-    setRetakeTargetId(targetId);
-    setMode('capture');
-  };
-
+  // ── Mode: Capture ──
   if (mode === 'capture') {
     return (
-      <Land360Capture
-        capturePointId={activePointId}
+      <PhotoSphereCaptureScreen
+        inspectionId={inspectionId}
+        propertyId={activePointId}
         onComplete={handleCaptureComplete}
         onCancel={() => {
           refreshPoints();
           setMode('list');
         }}
-        retakeTargetId={retakeTargetId}
       />
     );
   }
 
-  if (mode === 'review') {
+  // ── Mode: Viewer ──
+  if (mode === 'viewer' && viewingPanoramaUri) {
     return (
-      <Land360Review
-        targets={reviewData.targets}
-        frames={reviewData.frames}
-        config={DEFAULT_CAPTURE_CONFIG}
-        onRetake={handleRetake}
-        onContinueCapture={() => setMode('capture')}
-        onBack={() => {
-          refreshPoints();
-          setMode('list');
-        }}
+      <PanoramaViewer
+        panoramaDataUri={viewingPanoramaUri}
+        coveragePercent={viewingCoverage}
+        onBack={() => setMode('list')}
+        onSaveAndReturn={() => setMode('list')}
       />
     );
   }
 
-  // ── Mode: 'list' ──
+  // ── Mode: List ──
   const completedCount = points.filter((p) => p.status === 'Completed').length;
 
   return (
     <div className="land360-overview" style={{ paddingBottom: '32px' }}>
       <div className="card mb-md">
         <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '8px' }}>
-          360° Spherical Photo Capture
+          360° Photo Sphere Capture
         </h3>
         <p className="text-secondary text-sm mb-md">
-          Capture 360° photo spheres of the land or property using real-time orientation guidance.
+          Capture high-fidelity spherical panoramas with real orientation tracking, centered reticle, and guided auto-capture.
         </p>
 
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            className="btn btn-primary"
-            style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-            onClick={handleAddPoint}
-            id="add-360-point-btn"
-          >
-            <Plus size={18} /> Add 360° Viewpoint
-          </button>
-        </div>
+        <button
+          className="btn btn-primary"
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+          onClick={handleAddPoint}
+          id="add-360-viewpoint-btn"
+        >
+          <Plus size={18} /> Add 360° Viewpoint
+        </button>
       </div>
 
       <div className="points-list mb-lg">
         <div className="flex justify-between items-center mb-sm">
           <span className="text-sm font-bold text-secondary">
-            CAPTURE POINTS ({points.length})
+            VIEWPOINTS ({points.length})
           </span>
           {points.length > 0 && (
             <span className="text-xs text-secondary">
-              {completedCount} of {points.length} captured
+              {completedCount} of {points.length} completed
             </span>
           )}
         </div>
 
         {points.length === 0 ? (
-          <div className="card text-center p-lg" style={{ opacity: 0.8 }}>
+          <div className="card text-center p-lg" style={{ opacity: 0.85 }}>
             <Camera size={36} className="text-secondary mx-auto mb-sm" />
             <p className="text-sm text-secondary mb-md">No 360° viewpoints added yet.</p>
             <button className="btn btn-secondary text-sm" onClick={handleAddPoint}>
-              Add First Point
+              Add First Viewpoint
             </button>
           </div>
         ) : (
@@ -175,7 +146,7 @@ export default function Land360Overview({ inspectionId, points = [], onPointsUpd
               >
                 <div>
                   <div className="font-bold text-sm flex items-center gap-xs">
-                    {point.name || `Capture Point ${index + 1}`}
+                    {point.name || `Viewpoint ${index + 1}`}
                   </div>
                   <div
                     className="text-xs flex items-center gap-xs mt-xs"
@@ -194,9 +165,9 @@ export default function Land360Overview({ inspectionId, points = [], onPointsUpd
                     <button
                       className="btn btn-secondary text-xs"
                       style={{ padding: '6px 12px' }}
-                      onClick={() => handleReviewPoint(point.id)}
+                      onClick={() => handleStartCapture(point.id)}
                     >
-                      <Eye size={14} style={{ marginRight: '4px' }} /> Review
+                      <Camera size={14} style={{ marginRight: '4px' }} /> Retake
                     </button>
                   ) : (
                     <button
