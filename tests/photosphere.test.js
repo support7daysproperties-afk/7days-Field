@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   generateSphericalTargets,
   projectTargetToViewport,
+  selectNextTarget,
   angularDistance,
   normalizeAngle,
   signedAngleDiff,
@@ -67,5 +68,24 @@ describe('PhotoSphereTargets', () => {
     expect(Math.round(angularDistance(0, 0, 90, 0))).toBe(90);
     expect(Math.round(angularDistance(0, 0, 0, 90))).toBe(90);
     expect(Math.round(angularDistance(0, 45, 0, -45))).toBe(90);
+  });
+
+  it('should select adjacent targets on the same ring before transitioning', () => {
+    const targets = generateSphericalTargets();
+    const firstTarget = targets[0]; // target_0 (yaw: 0, pitch: 0)
+    firstTarget.status = 'captured';
+
+    // selectNextTarget should pick the nearest pending target on horizon
+    const next = selectNextTarget(targets, firstTarget, 10, 0);
+    expect(next).not.toBeNull();
+    expect(next.ring).toBe('horizon');
+    expect(next.status).toBe('pending');
+  });
+
+  it('should return null when all targets have been captured', () => {
+    const targets = generateSphericalTargets();
+    targets.forEach((t) => (t.status = 'captured'));
+    const next = selectNextTarget(targets, targets[targets.length - 1], 0, 0);
+    expect(next).toBeNull();
   });
 });

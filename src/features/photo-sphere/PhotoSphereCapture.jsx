@@ -3,6 +3,7 @@ import { X, AlertCircle, Camera, Check, RefreshCw, Undo2, Loader2, ShieldAlert }
 import {
   generateSphericalTargets,
   projectTargetToViewport,
+  selectNextTarget,
 } from './PhotoSphereTargets';
 import { PhotoSphereOrientation } from './PhotoSphereOrientation';
 import { PhotoSphereStitcher } from './PhotoSphereStitcher';
@@ -25,12 +26,11 @@ export const CAMERA_STATES = {
  *
  * Dedicated Photo Sphere capture experience matching Google Camera Photo Sphere.
  *
- * Explicit Camera States:
- * - REQUESTING_PERMISSION: Initializing permission check
- * - INITIALIZING: Requesting hardware video stream & attaching preview
- * - READY: Live camera feed verified playing with valid dimensions
- * - PERMISSION_DENIED: Explicit permission denied feedback
- * - ERROR: Camera access error with retry button
+ * Requirements:
+ * - One single active blue target dot at a time.
+ * - Real orientation-driven movement toward stationary center reticle.
+ * - Automatic capture and progression to adjacent target.
+ * - 360x180 complete spherical coverage preserved.
  */
 export default function PhotoSphereCapture({
   taskId,
@@ -51,8 +51,9 @@ export default function PhotoSphereCapture({
   const orientationTrackerRef = useRef(null);
   const [orientation, setOrientation] = useState({ yaw: 0, pitch: 0, roll: 0, angularVelocity: 0, isMovingTooFast: false });
   const [targets, setTargets] = useState(() => generateSphericalTargets());
-  const [activeTargetId, setActiveTargetId] = useState('target_0');
+  const [activeTargetId, setActiveTargetId] = useState(null);
   const [capturedFrames, setCapturedFrames] = useState([]);
+  const hasInitializedFirstTargetRef = useRef(false);
 
   // Auto-capture gating
   const [alignmentProgress, setAlignmentProgress] = useState(0); // 0 to 100%
@@ -209,6 +210,14 @@ export default function PhotoSphereCapture({
   useEffect(() => {
     const tracker = new PhotoSphereOrientation((newOrientation) => {
       setOrientation(newOrientation);
+
+      // On first orientation reading (before first capture), calibrate reference heading
+      // and set the initial target directly at the user's initial viewpoint
+      if (!hasInitializedFirstTargetRef.current) {
+        hasInitializedFirstTargetRef.current = true;
+        tracker.setReferenceHeading(newOrientation.rawYaw);
+        setActiveTargetId('target_0'); // target_0 is (yaw: 0, pitch: 0) relative to first orientation
+      }
     });
 
     tracker.requestPermission().then(() => {
@@ -272,9 +281,10 @@ export default function PhotoSphereCapture({
       await photoSphereStorage.saveFrame(frameRecord);
 
       // Update Target State
-      setTargets((prev) =>
-        prev.map((t) => (t.id === target.id ? { ...t, status: 'captured' } : t))
+      const updatedTargets = targets.map((t) =>
+        t.id === target.id ? { ...t, status: 'captured' } : t
       );
+      setTargets(updatedTargets);
 
       setCapturedFrames((prev) => [...prev, frameRecord]);
 
@@ -283,13 +293,18 @@ export default function PhotoSphereCapture({
         orientationTrackerRef.current.setReferenceHeading(orientation.rawYaw);
       }
 
-      // Advance to next target (nearest pending target)
-      const nextPending = targets.find(
-        (t) => t.id !== target.id && t.status === 'pending'
+      // Advance to the NEXT single target using reference Photo Sphere sequence
+      const nextTarget = selectNextTarget(
+        updatedTargets,
+        target,
+        orientation.yaw,
+        orientation.pitch
       );
-      if (nextPending) {
-        setActiveTargetId(nextPending.id);
+
+      if (nextTarget) {
+        setActiveTargetId(nextTarget.id);
       } else {
+        // Complete sphere captured!
         setActiveTargetId(null);
       }
 
@@ -301,25 +316,26 @@ export default function PhotoSphereCapture({
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
     }
-  }, [cameraState, isCapturing, orientation.rawYaw, orientation.roll, targets]);
+  }, [cameraState, isCapturing, orientation.pitch, orientation.rawYaw, orientation.roll, orientation.yaw, targets]);
 
   // Project targets onto viewport and Check Alignment Tick
   const isCameraReady = cameraState === CAMERA_STATES.READY;
 
-  const projectedTargets = targets.map((t) => {
-    const proj = projectTargetToViewport(
-      t.yaw,
-      t.pitch,
+  // Project ONLY the active target for maximum performance & single-target guidance
+  const rawActiveTarget = targets.find((t) => t.id === activeTargetId);
+  const activeTarget = isCameraReady && rawActiveTarget ? {
+    ...rawActiveTarget,
+    projected: projectTargetToViewport(
+      rawActiveTarget.yaw,
+      rawActiveTarget.pitch,
       orientation.yaw,
       orientation.pitch,
       viewportSize.width,
       viewportSize.height,
       65
-    );
-    return { ...t, projected: proj };
-  });
+    )
+  } : null;
 
-  const activeTarget = isCameraReady ? projectedTargets.find((t) => t.id === activeTargetId) : null;
   const activeDist = activeTarget ? activeTarget.projected.angularDistance : 999;
   const isAligned = isCameraReady && activeTarget && activeDist <= 3.8;
 
@@ -420,6 +436,7 @@ export default function PhotoSphereCapture({
     setCapturedFrames([]);
     setTargets(generateSphericalTargets());
     setActiveTargetId('target_0');
+    hasInitializedFirstTargetRef.current = false;
     if (orientationTrackerRef.current) {
       orientationTrackerRef.current.referenceHeading = null;
     }
@@ -715,8 +732,12 @@ export default function PhotoSphereCapture({
             </div>
           )}
 
-          {/* Blue Target Dots Layer */}
-          <TargetDotsOverlay targets={projectedTargets} activeTargetId={activeTargetId} />
+          {/* Blue Target Dot (Single Active Target Guidance) */}
+          <TargetDotsOverlay
+            activeTarget={activeTarget}
+            viewportWidth={viewportSize.width}
+            viewportHeight={viewportSize.height}
+          />
 
           {/* Stationary Center Alignment Reticle */}
           <AlignmentReticle

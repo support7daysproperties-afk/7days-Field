@@ -164,3 +164,59 @@ export function projectTargetToViewport(
     dPitch,
   };
 }
+
+/**
+ * Select the next target to capture based on the reference Photo Sphere sequence:
+ * Prefers adjacent targets on the same ring (e.g. completing horizon ring first),
+ * then transitions to upper ring, zenith, lower ring, and nadir.
+ *
+ * @param {Array<object>} targets Array of targets
+ * @param {object|null} lastTarget The most recently captured target
+ * @param {number} currentYaw Current camera yaw
+ * @param {number} currentPitch Current camera pitch
+ * @returns {object|null} The next active target
+ */
+export function selectNextTarget(targets, lastTarget = null, currentYaw = 0, currentPitch = 0) {
+  const pendingTargets = targets.filter((t) => t.status === 'pending');
+  if (pendingTargets.length === 0) return null;
+
+  // 1. If we have a last target, prefer pending targets in the same ring
+  if (lastTarget) {
+    const sameRingPending = pendingTargets.filter((t) => t.ring === lastTarget.ring);
+    if (sameRingPending.length > 0) {
+      // Find the one closest in azimuth to current yaw
+      let closest = sameRingPending[0];
+      let minDist = angularDistance(currentYaw, currentPitch, closest.yaw, closest.pitch);
+      for (let i = 1; i < sameRingPending.length; i++) {
+        const d = angularDistance(currentYaw, currentPitch, sameRingPending[i].yaw, sameRingPending[i].pitch);
+        if (d < minDist) {
+          minDist = d;
+          closest = sameRingPending[i];
+        }
+      }
+      return closest;
+    }
+  }
+
+  // 2. Ring order priority: horizon -> upper -> zenith -> lower -> nadir
+  const ringOrder = ['horizon', 'upper', 'zenith', 'lower', 'nadir'];
+  for (const ring of ringOrder) {
+    const ringPending = pendingTargets.filter((t) => t.ring === ring);
+    if (ringPending.length > 0) {
+      // Pick nearest in angular distance to current orientation
+      let closest = ringPending[0];
+      let minDist = angularDistance(currentYaw, currentPitch, closest.yaw, closest.pitch);
+      for (let i = 1; i < ringPending.length; i++) {
+        const d = angularDistance(currentYaw, currentPitch, ringPending[i].yaw, ringPending[i].pitch);
+        if (d < minDist) {
+          minDist = d;
+          closest = ringPending[i];
+        }
+      }
+      return closest;
+    }
+  }
+
+  return pendingTargets[0];
+}
+
