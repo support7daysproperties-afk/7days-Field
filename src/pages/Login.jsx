@@ -7,13 +7,13 @@ import GoogleDriveService from '../services/GoogleDriveService';
 
 
 export default function Login() {
-  const { authError, authenticated, driveAuthorized, authorizeDrive } = useAuth();
+  const { authError, authenticated, driveAuthorized, connectDrive } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   
   // For the Drive step
-  const [driveStatus, setDriveStatus] = useState('idle');
+  const [driveStepStatus, setDriveStepStatus] = useState('idle');
   const [driveErrorMsg, setDriveErrorMsg] = useState('');
 
   useEffect(() => {
@@ -29,19 +29,19 @@ export default function Login() {
     try {
       localStorage.setItem('pending_drive_onboarding', 'true');
       
-        const { error } = await supabase.auth.signInWithOAuth({
-          provider: 'google',
-          options: {
-            redirectTo: window.location.origin, 
-            scopes: 'https://www.googleapis.com/auth/drive.file',
-            queryParams: {
-              access_type: 'offline',
-              prompt: 'consent',
-            }
+      const { error: signInError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin, 
+          scopes: 'https://www.googleapis.com/auth/drive.file',
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
           }
-        });
-        
-        if (error) throw error;
+        }
+      });
+      
+      if (signInError) throw signInError;
     } catch (err) {
       setError(err.message || 'Failed to sign in with Google');
       setIsLoading(false);
@@ -49,19 +49,17 @@ export default function Login() {
   };
 
   const handleDriveConnect = async () => {
-    setDriveStatus('loading');
+    setDriveStepStatus('loading');
     setDriveErrorMsg('');
     try {
-      await GoogleDriveService.init();
-      await GoogleDriveService.requestDriveAccess();
-      await GoogleDriveService.getOrCreateFolder('7Days Field');
-      authorizeDrive();
-      setDriveStatus('success');
+      await connectDrive({ prompt: 'consent' });
+      setDriveStepStatus('success');
+      setTimeout(() => navigate('/', { replace: true }), 400);
     } catch (err) {
       console.error(err);
-      setDriveStatus('error');
+      setDriveStepStatus('error');
       if (err?.message?.includes('origin_mismatch') || err?.message?.includes('redirect_uri_mismatch')) {
-        setDriveErrorMsg('Google Drive could not be connected because the application URL is not registered correctly.');
+        setDriveErrorMsg('Google Drive could not be connected because the application URL is not registered in Google Cloud Console.');
       } else {
         setDriveErrorMsg(err?.message || 'Connection failed. Please try again.');
       }
@@ -212,11 +210,11 @@ export default function Login() {
           /* Drive Authorization Step directly inside Login */
           <>
             <div className="w-16 h-16 rounded-full bg-slate-800 mb-6 flex items-center justify-center border border-slate-700">
-              {driveStatus === 'loading' ? (
+              {driveStepStatus === 'loading' ? (
                 <Loader2 size={32} className="text-blue-400 animate-spin" />
-              ) : driveStatus === 'success' ? (
+              ) : driveStepStatus === 'success' ? (
                 <CheckCircle2 size={32} className="text-emerald-400" />
-              ) : driveStatus === 'error' ? (
+              ) : driveStepStatus === 'error' ? (
                 <AlertTriangle size={32} className="text-red-400" />
               ) : (
                 <HardDrive size={32} className="text-blue-400" />
@@ -230,7 +228,7 @@ export default function Login() {
               Keep your inspection files safely connected to your Drive.
             </p>
 
-            {driveStatus === 'error' && (
+            {driveStepStatus === 'error' && (
               <div className="w-full bg-red-500 bg-opacity-20 text-red-400 p-3 rounded-md mb-6 text-sm border border-red-500/50">
                 {driveErrorMsg}
               </div>
@@ -238,7 +236,7 @@ export default function Login() {
 
             <button 
               onClick={handleDriveConnect}
-              disabled={driveStatus === 'loading'}
+              disabled={driveStepStatus === 'loading'}
               style={{ 
                 width: '100%',
                 padding: '12px 24px',
@@ -251,11 +249,11 @@ export default function Login() {
                 cursor: 'pointer'
               }}
             >
-              {driveStatus === 'loading' ? 'Connecting...' : driveStatus === 'error' ? 'Try Again' : 'Connect Drive'}
+              {driveStepStatus === 'loading' ? 'Connecting...' : driveStepStatus === 'error' ? 'Try Again' : 'Connect Drive'}
             </button>
             <button 
               onClick={handleDriveSkip}
-              disabled={driveStatus === 'loading'}
+              disabled={driveStepStatus === 'loading'}
               style={{ 
                 width: '100%',
                 padding: '12px 24px',

@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = '7days_offline_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 class DatabaseService {
   constructor() {
@@ -42,6 +42,13 @@ class DatabaseService {
             const boundaryStore = db.createObjectStore('boundaries', { keyPath: 'id' });
             boundaryStore.createIndex('inspection_id', 'inspection_id');
             boundaryStore.createIndex('sync_status', 'sync_status');
+          }
+        }
+
+        // Version 4: add drive_auth store (supervisor-scoped)
+        if (oldVersion < 4) {
+          if (!db.objectStoreNames.contains('drive_auth')) {
+            db.createObjectStore('drive_auth', { keyPath: 'userId' });
           }
         }
       },

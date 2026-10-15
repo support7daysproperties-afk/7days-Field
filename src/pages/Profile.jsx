@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 
 export default function Profile() {
   const navigate = useNavigate();
-  const { user, signOut, driveAuthorized } = useAuth();
+  const { user, signOut, driveAuthorized, driveStatus, driveEmail } = useAuth();
   
   const name = user?.supervisorProfile?.name || 'Field Supervisor';
   const email = user?.email || 'N/A';
@@ -38,17 +38,28 @@ export default function Profile() {
         <div 
           className="flex justify-between items-center py-sm cursor-pointer hover-effect" 
           onClick={() => navigate('/google-drive-access')}
-          style={{ transition: 'all 0.2s ease', padding: '8px -8px' }}
+          style={{ transition: 'all 0.2s ease', padding: '8px 0' }}
         >
           <div className="flex items-center gap-sm">
             <HardDrive size={18} className="text-primary" />
-            <span style={{ fontWeight: 500 }}>Google Drive</span>
+            <div>
+              <div style={{ fontWeight: 500 }}>Google Drive</div>
+              {driveEmail && (
+                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                  {driveEmail}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-xs">
             {driveAuthorized ? (
               <div className="flex items-center gap-xs text-success text-sm font-medium">
                 <CheckCircle2 size={16} />
                 <span>Connected</span>
+              </div>
+            ) : driveStatus === 'RECONNECT_REQUIRED' ? (
+              <div className="flex items-center gap-xs text-warning text-sm font-medium" style={{ color: 'var(--warning-color)' }}>
+                <span>Reconnect</span>
               </div>
             ) : (
               <div className="flex items-center gap-xs text-danger text-sm font-medium">

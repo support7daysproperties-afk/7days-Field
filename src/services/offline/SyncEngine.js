@@ -206,7 +206,10 @@ class SyncEngine {
 
     } catch (err) {
       console.error(`[SyncEngine] Job ${job.id} failed:`, err);
-      if (err.code === 'NEEDS_DRIVE_AUTH') {
+      if (err.code === 'NETWORK_OFFLINE' || !ConnectivityService.online) {
+        // Temporary network loss, retain job as QUEUED or PARTIALLY_SYNCED to retry automatically when online
+        await SyncJobRepository.upsertJob({ ...job, status: 'QUEUED', last_error: 'Network connection interrupted. Will retry when online.' });
+      } else if (err.code === 'NEEDS_DRIVE_AUTH') {
         await this._markNeedsDriveAuth(job, inspection, err.message);
       } else {
         await SyncJobRepository.upsertJob({ ...job, status: 'FAILED', last_error: err.message });

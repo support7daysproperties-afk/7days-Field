@@ -4,15 +4,71 @@ const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 // Threshold above which we use resumable upload (5 MB)
 const RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
+export const DRIVE_STATUS = {
+  CHECKING: 'CHECKING',
+  CONNECTED: 'CONNECTED',
+  TOKEN_REFRESHING: 'TOKEN_REFRESHING',
+  OFFLINE: 'OFFLINE',
+  RECONNECT_REQUIRED: 'RECONNECT_REQUIRED',
+  PERMISSION_REVOKED: 'PERMISSION_REVOKED',
+  ACCOUNT_MISMATCH: 'ACCOUNT_MISMATCH',
+  ERROR: 'ERROR',
+  DISCONNECTED: 'DISCONNECTED',
+};
+
 class GoogleDriveService {
   constructor() {
     this.tokenClient = null;
     this._accessToken = null;
     this._tokenExpiresAt = null; // timestamp (ms)
+    this._tokenEmail = null;
     this.isInitialized = false;
-    // Listeners waiting for a new token
-    this._tokenRefreshCallbacks = [];
+
+    // Single-flight lock for token refresh/request
     this._tokenRefreshInProgress = false;
+    this._tokenRefreshCallbacks = [];
+
+    // State machine listeners
+    this._statusListeners = new Set();
+    this._currentStatus = DRIVE_STATUS.DISCONNECTED;
+    this._statusDetails = '';
+  }
+
+  // ─── Status & State Machine ──────────────────────────────────────────────────
+
+  getStatus() {
+    return {
+      status: this._currentStatus,
+      email: this._tokenEmail,
+      expiresAt: this._tokenExpiresAt,
+      details: this._statusDetails,
+    };
+  }
+
+  setStatus(status, details = '', email = undefined) {
+    this._currentStatus = status;
+    this._statusDetails = details;
+    if (email !== undefined) {
+      this._tokenEmail = email;
+    }
+    this._notifyStatus();
+  }
+
+  subscribeStatus(listener) {
+    this._statusListeners.add(listener);
+    listener(this.getStatus());
+    return () => this._statusListeners.delete(listener);
+  }
+
+  _notifyStatus() {
+    const state = this.getStatus();
+    this._statusListeners.forEach((listener) => {
+      try {
+        listener(state);
+      } catch (err) {
+        console.error('Error in drive status listener:', err);
+      }
+    });
   }
 
   // ─── Token management ──────────────────────────────────────────────────────
@@ -21,80 +77,148 @@ class GoogleDriveService {
     return this._accessToken;
   }
 
-  set accessToken(token) {
-    this._accessToken = token;
-    if (token) {
-      // Google OAuth tokens live ~1 hour; track expiry with a 5-min safety margin
-      this._tokenExpiresAt = Date.now() + 55 * 60 * 1000;
+  get tokenEmail() {
+    return this._tokenEmail;
+  }
+
+  setTokenData({ accessToken, expiresInSec = 3600, expiresAt = null, email = null }) {
+    this._accessToken = accessToken || null;
+    if (accessToken) {
+      if (expiresAt) {
+        this._tokenExpiresAt = expiresAt;
+      } else {
+        // Expire with a 5-minute safety buffer
+        const bufferMs = 5 * 60 * 1000;
+        const durationMs = Math.max((expiresInSec * 1000) - bufferMs, 60 * 1000);
+        this._tokenExpiresAt = Date.now() + durationMs;
+      }
+      if (email) {
+        this._tokenEmail = email;
+      }
+      this.setStatus(DRIVE_STATUS.CONNECTED, '', this._tokenEmail);
     } else {
       this._tokenExpiresAt = null;
+      this._tokenEmail = null;
+      this.setStatus(DRIVE_STATUS.DISCONNECTED);
     }
   }
 
   isTokenValid() {
     if (!this._accessToken) return false;
-    if (!this._tokenExpiresAt) return true; // provider_token from Supabase – assume valid
+    if (!this._tokenExpiresAt) return true;
     return Date.now() < this._tokenExpiresAt;
   }
 
   /**
    * Returns a valid access token, or throws with code 'NEEDS_DRIVE_AUTH'
    * if the user needs to re-authorize Drive.
+   * Employs a single-flight mutex so parallel uploads do not trigger race conditions.
    */
   async getValidToken() {
     if (this.isTokenValid()) return this._accessToken;
 
-    // If a refresh is already in progress, queue up
+    if (!navigator.onLine) {
+      this.setStatus(DRIVE_STATUS.OFFLINE, 'Internet connection offline');
+      const offlineErr = new Error('Network offline');
+      offlineErr.code = 'NETWORK_OFFLINE';
+      throw offlineErr;
+    }
+
+    // Single-flight queue
     if (this._tokenRefreshInProgress) {
       return new Promise((resolve, reject) => {
         this._tokenRefreshCallbacks.push({ resolve, reject });
       });
     }
 
-    // Try to request a new token silently (no prompt)
+    this._tokenRefreshInProgress = true;
+    this.setStatus(DRIVE_STATUS.TOKEN_REFRESHING, 'Refreshing Drive access token...');
+
     try {
-      await this._silentTokenRefresh();
+      await this.init();
+      const tokenResponse = await this._silentTokenRefresh();
+      
+      const expiresInSec = tokenResponse.expires_in ? parseInt(tokenResponse.expires_in, 10) : 3600;
+      this.setTokenData({
+        accessToken: tokenResponse.access_token,
+        expiresInSec,
+        email: this._tokenEmail
+      });
+
+      // Verify connection and verify identity if needed
+      await this.verifyConnection();
+
+      this._tokenRefreshCallbacks.forEach(cb => cb.resolve(this._accessToken));
+      this._tokenRefreshCallbacks = [];
+      this._tokenRefreshInProgress = false;
       return this._accessToken;
     } catch (err) {
-      const authErr = new Error('Google Drive authorization expired. Please reconnect.');
+      this._tokenRefreshInProgress = false;
+      const isOffline = !navigator.onLine || err.message?.includes('network') || err.message?.includes('Failed to fetch');
+      
+      if (isOffline) {
+        this.setStatus(DRIVE_STATUS.OFFLINE, 'Network connection unavailable');
+        this._tokenRefreshCallbacks.forEach(cb => cb.reject(err));
+        this._tokenRefreshCallbacks = [];
+        throw err;
+      }
+
+      this.setStatus(DRIVE_STATUS.RECONNECT_REQUIRED, err.message || 'Authorization expired');
+      const authErr = new Error('Google Drive authorization expired or revoked. Please reconnect.');
       authErr.code = 'NEEDS_DRIVE_AUTH';
+      authErr.originalError = err;
+      this._tokenRefreshCallbacks.forEach(cb => cb.reject(authErr));
+      this._tokenRefreshCallbacks = [];
       throw authErr;
     }
   }
 
   _silentTokenRefresh() {
     return new Promise((resolve, reject) => {
-      if (!this.isInitialized || !this.tokenClient) {
+      if (!this.isInitialized) {
         reject(new Error('GIS not initialized'));
         return;
       }
-      this._tokenRefreshInProgress = true;
+
+      if (!this.tokenClient) {
+        this._buildTokenClient();
+      }
 
       const originalCallback = this.tokenClient.callback;
+      const originalErrorCallback = this.tokenClient.error_callback;
+
       this.tokenClient.callback = (tokenResponse) => {
-        this._tokenRefreshInProgress = false;
+        this.tokenClient.callback = originalCallback;
+        this.tokenClient.error_callback = originalErrorCallback;
         if (tokenResponse?.access_token) {
-          this.accessToken = tokenResponse.access_token;
-          this._tokenRefreshCallbacks.forEach(cb => cb.resolve(this._accessToken));
-          this._tokenRefreshCallbacks = [];
           resolve(tokenResponse);
         } else {
-          const err = new Error('Failed to silently refresh Drive token');
-          this._tokenRefreshCallbacks.forEach(cb => cb.reject(err));
-          this._tokenRefreshCallbacks = [];
+          const err = new Error(tokenResponse?.error || 'Failed to silently renew Drive access');
           reject(err);
         }
-        this.tokenClient.callback = originalCallback;
       };
 
-      // prompt: '' means no consent screen if already granted
-      this.tokenClient.requestAccessToken({ prompt: '' });
+      this.tokenClient.error_callback = (err) => {
+        this.tokenClient.callback = originalCallback;
+        this.tokenClient.error_callback = originalErrorCallback;
+        reject(err);
+      };
+
+      // prompt: '' enables silent renewal without modal when user has previously granted consent
+      const requestConfig = { prompt: '' };
+      if (this._tokenEmail) {
+        requestConfig.hint = this._tokenEmail;
+      }
+      this.tokenClient.requestAccessToken(requestConfig);
     });
   }
 
   get clientId() {
-    // Hardcoded to ensure we always use the Web Client ID for GIS, 
-    // regardless of what is in the .env file.
+    const envId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (envId && envId.includes('.apps.googleusercontent.com')) {
+      const cleaned = envId.split('.com')[0] + '.com';
+      return cleaned.trim();
+    }
     return '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com';
   }
 
@@ -106,76 +230,235 @@ class GoogleDriveService {
 
   loadGisScript() {
     return new Promise((resolve, reject) => {
-      if (window.google?.accounts) { resolve(); return; }
+      if (window.google?.accounts?.oauth2) {
+        resolve();
+        return;
+      }
+      const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+      if (existing) {
+        existing.addEventListener('load', resolve);
+        existing.addEventListener('error', reject);
+        return;
+      }
       const script = document.createElement('script');
       script.src = 'https://accounts.google.com/gsi/client';
       script.async = true;
       script.defer = true;
-      script.onload = resolve;
-      script.onerror = reject;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
       document.body.appendChild(script);
     });
   }
 
   async init() {
-    if (this.isInitialized) return;
+    if (this.isInitialized && window.google?.accounts?.oauth2) return;
     try {
       await this.loadGisScript();
       this.isInitialized = true;
+      this._buildTokenClient();
     } catch (error) {
-      console.error('Failed to load Google Identity Services', error);
+      console.error('Failed to load Google Identity Services:', error);
       throw new Error('Could not load Google authentication service.');
     }
   }
 
-  requestDriveAccess() {
+  _buildTokenClient(customCallback = null, customErrorCallback = null) {
+    if (!window.google?.accounts?.oauth2) return null;
+    this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: this.clientId,
+      scope: SCOPES,
+      callback: (tokenResponse) => {
+        if (customCallback) customCallback(tokenResponse);
+      },
+      error_callback: (error) => {
+        if (customErrorCallback) customErrorCallback(error);
+      }
+    });
+    return this.tokenClient;
+  }
+
+  /**
+   * Interactive Drive authorization request.
+   * Can pass { loginHint, prompt }
+   */
+  requestDriveAccess({ loginHint = null, prompt = 'consent' } = {}) {
     return new Promise((resolve, reject) => {
-      if (!this.isInitialized) { reject(new Error('GIS not initialized')); return; }
-      if (!this.clientId) { reject(new Error('VITE_GOOGLE_CLIENT_ID is not set.')); return; }
+      this.init().then(() => {
+        if (!this.clientId) {
+          reject(new Error('VITE_GOOGLE_CLIENT_ID is not configured.'));
+          return;
+        }
 
-      this.tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: this.clientId,
-        scope: SCOPES,
-        callback: (tokenResponse) => {
-          if (tokenResponse?.access_token) {
-            this.accessToken = tokenResponse.access_token;
-            resolve(tokenResponse);
-          } else {
-            reject(new Error('Failed to obtain access token'));
+        this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+          client_id: this.clientId,
+          scope: SCOPES,
+          callback: async (tokenResponse) => {
+            if (tokenResponse?.access_token) {
+              const expiresInSec = tokenResponse.expires_in ? parseInt(tokenResponse.expires_in, 10) : 3600;
+              this.setTokenData({
+                accessToken: tokenResponse.access_token,
+                expiresInSec,
+              });
+
+              // Fetch user profile from Google to get the authorized Google email
+              try {
+                const profile = await this.fetchUserProfile(tokenResponse.access_token);
+                if (profile?.email) {
+                  this._tokenEmail = profile.email;
+                }
+              } catch (profileErr) {
+                console.warn('Could not fetch Google profile email:', profileErr);
+                if (loginHint) this._tokenEmail = loginHint;
+              }
+
+              this.setStatus(DRIVE_STATUS.CONNECTED, '', this._tokenEmail);
+              resolve({
+                ...tokenResponse,
+                email: this._tokenEmail,
+              });
+            } else {
+              const errorDesc = tokenResponse?.error_description || tokenResponse?.error || 'Failed to obtain access token';
+              this.setStatus(DRIVE_STATUS.ERROR, errorDesc);
+              reject(new Error(errorDesc));
+            }
+          },
+          error_callback: (error) => {
+            console.error('GIS Error callback:', error);
+            this.setStatus(DRIVE_STATUS.ERROR, error?.message || 'Drive authorization failed');
+            reject(error);
           }
-        },
-        error_callback: (error) => { reject(error); }
-      });
+        });
 
-      this.tokenClient.requestAccessToken({ prompt: 'consent' });
+        const reqOptions = { prompt };
+        if (loginHint) {
+          reqOptions.hint = loginHint;
+        }
+        this.tokenClient.requestAccessToken(reqOptions);
+      }).catch(reject);
     });
   }
 
-  revokeAccess() {
-    if (this._accessToken && window.google) {
-      window.google.accounts.oauth2.revoke(this._accessToken, () => {
-        console.log('Drive access revoked');
+  async fetchUserProfile(token) {
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      throw new Error('Failed to retrieve user profile from Google');
+    }
+    return await res.json();
+  }
+
+  async verifyConnection() {
+    this.setStatus(DRIVE_STATUS.CHECKING);
+    try {
+      const token = this._accessToken;
+      if (!token) throw new Error('No access token available');
+      
+      const res = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)', {
+        headers: { Authorization: `Bearer ${token}` }
       });
+
+      if (res.status === 401) {
+        // Expired or invalid token
+        const err = new Error('Token expired');
+        err.status = 401;
+        throw err;
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Google Drive check failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.user?.emailAddress) {
+        this._tokenEmail = data.user.emailAddress;
+      }
+
+      this.setStatus(DRIVE_STATUS.CONNECTED, '', this._tokenEmail);
+      return data;
+    } catch (err) {
+      if (err.status === 401) {
+        this.setStatus(DRIVE_STATUS.RECONNECT_REQUIRED, 'Authorization expired');
+      } else if (!navigator.onLine) {
+        this.setStatus(DRIVE_STATUS.OFFLINE, 'Network offline');
+      } else {
+        this.setStatus(DRIVE_STATUS.ERROR, err.message);
+      }
+      throw err;
+    }
+  }
+
+  revokeAccess() {
+    if (this._accessToken && window.google?.accounts?.oauth2) {
+      try {
+        window.google.accounts.oauth2.revoke(this._accessToken, () => {
+          console.log('Drive access token revoked successfully');
+        });
+      } catch (e) {
+        console.warn('Revoke token error:', e);
+      }
     }
     this._accessToken = null;
     this._tokenExpiresAt = null;
+    this._tokenEmail = null;
+    this.setStatus(DRIVE_STATUS.DISCONNECTED);
   }
 
   // ─── Folder management ───────────────────────────────────────────────────────
 
   /**
+   * Helper that executes a Drive API call with automatic 401 retry (once)
+   */
+  async _fetchWithRetry(url, options = {}, retries = 1) {
+    let token = await this.getValidToken();
+    let res;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const headers = {
+          ...(options.headers || {}),
+          Authorization: `Bearer ${token}`,
+        };
+
+        res = await fetch(url, { ...options, headers });
+
+        if (res.status === 401 && attempt < retries) {
+          // Token might have just expired during request; force refresh and retry once
+          this._accessToken = null;
+          this._tokenExpiresAt = null;
+          token = await this.getValidToken();
+          continue;
+        }
+
+        // Retry transient server errors 500, 503
+        if ((res.status === 500 || res.status === 503) && attempt < retries) {
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+          continue;
+        }
+
+        return res;
+      } catch (err) {
+        if (!navigator.onLine) {
+          this.setStatus(DRIVE_STATUS.OFFLINE, 'Network disconnected');
+          throw err;
+        }
+        if (attempt === retries) throw err;
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+    return res;
+  }
+
+  /**
    * Get or create a Drive folder by name under an optional parent.
-   * Uses a stable ID stored in the folder itself to prevent duplicates.
    */
   async getOrCreateFolder(folderName, parentId = null) {
-    const token = await this.getValidToken();
-
     let q = `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
     if (parentId) q += ` and '${parentId}' in parents`;
 
-    const searchRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&spaces=drive&fields=files(id,name)`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const searchRes = await this._fetchWithRetry(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&spaces=drive&fields=files(id,name)`
     );
     const searchData = await searchRes.json();
     if (!searchRes.ok) throw new Error(searchData.error?.message || 'Drive search failed');
@@ -188,9 +471,9 @@ class GoogleDriveService {
       ...(parentId && { parents: [parentId] })
     };
 
-    const res = await fetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+    const res = await this._fetchWithRetry('https://www.googleapis.com/drive/v3/files?fields=id', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(metadata)
     });
     const data = await res.json();
@@ -200,8 +483,6 @@ class GoogleDriveService {
 
   /**
    * Build the full inspection folder structure and return folder IDs.
-   * My Drive / 7Days Field / Inspections / <propertyLabel> / <inspectionId>
-   *   Photos / Videos / Signatures / Other
    */
   async ensureInspectionFolders({ propertyId, propertyName, inspectionId }) {
     const root = await this.getOrCreateFolder('7Days Field');
@@ -225,14 +506,11 @@ class GoogleDriveService {
 
   /**
    * Check if a file with the given name already exists under a parent folder.
-   * Returns the existing file's { id, webViewLink } or null.
    */
   async findExistingFile(filename, parentFolderId) {
-    const token = await this.getValidToken();
     const q = `name='${filename}' and '${parentFolderId}' in parents and trashed=false`;
-    const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,webViewLink)&spaces=drive`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const res = await this._fetchWithRetry(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,webViewLink)&spaces=drive`
     );
     const data = await res.json();
     if (!res.ok) return null;
@@ -241,15 +519,6 @@ class GoogleDriveService {
 
   // ─── Upload ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Upload a file to Drive. Automatically chooses resumable for large files.
-   * @param {Blob} fileBlob
-   * @param {string} filename
-   * @param {string} mimeType
-   * @param {string} parentFolderId
-   * @param {function} onProgress  - called with { loaded, total, percent }
-   * @returns {{ id, webViewLink, webContentLink }}
-   */
   async uploadFile(fileBlob, filename, mimeType, parentFolderId, onProgress = null) {
     if (fileBlob.size >= RESUMABLE_THRESHOLD_BYTES) {
       return this.uploadFileResumable(fileBlob, filename, mimeType, parentFolderId, onProgress);
@@ -258,8 +527,6 @@ class GoogleDriveService {
   }
 
   async uploadFileMultipart(fileBlob, filename, mimeType, parentFolderId) {
-    const token = await this.getValidToken();
-
     const metadata = {
       name: filename,
       mimeType,
@@ -270,30 +537,25 @@ class GoogleDriveService {
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
     form.append('file', fileBlob);
 
-    const res = await fetch(
+    const res = await this._fetchWithRetry(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,webContentLink',
-      { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+      { method: 'POST', body: form }
     );
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error?.message || 'Drive multipart upload failed');
     return data;
   }
 
-  /**
-   * Resumable upload — safe for large videos on mobile networks.
-   * Uploads in 5 MB chunks with retry on each chunk.
-   */
   async uploadFileResumable(fileBlob, filename, mimeType, parentFolderId, onProgress = null) {
-    const token = await this.getValidToken();
+    let token = await this.getValidToken();
 
-    // Step 1: Initiate session
+    // Step 1: Initiate session with retry
     const metadata = { name: filename, mimeType, parents: [parentFolderId] };
-    const initRes = await fetch(
+    const initRes = await this._fetchWithRetry(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink,webContentLink',
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
           'X-Upload-Content-Type': mimeType,
           'X-Upload-Content-Length': fileBlob.size,
@@ -313,7 +575,7 @@ class GoogleDriveService {
     // Step 2: Upload in chunks
     const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
     let offset = 0;
-    let fileData = null; // { id, webViewLink }
+    let fileData = null;
 
     while (offset < fileBlob.size) {
       const chunk = fileBlob.slice(offset, offset + CHUNK_SIZE);
@@ -322,20 +584,23 @@ class GoogleDriveService {
       const chunkRes = await this._uploadChunkWithRetry(uploadUrl, chunk, offset, end, fileBlob.size, token);
 
       if (chunkRes.status === 200 || chunkRes.status === 201) {
-        // Upload complete
         fileData = await chunkRes.json();
         break;
       } else if (chunkRes.status === 308) {
-        // Incomplete — advance offset
         const rangeHeader = chunkRes.headers.get('Range');
         if (rangeHeader) {
           const match = rangeHeader.match(/bytes=0-(\d+)/);
-          if (match) offset = parseInt(match[1]) + 1;
+          if (match) offset = parseInt(match[1], 10) + 1;
           else offset = end + 1;
         } else {
           offset = end + 1;
         }
         if (onProgress) onProgress({ loaded: offset, total: fileBlob.size, percent: Math.round((offset / fileBlob.size) * 100) });
+      } else if (chunkRes.status === 401) {
+        // Token expired during chunk upload
+        this._accessToken = null;
+        token = await this.getValidToken();
+        continue;
       } else {
         const errBody = await chunkRes.json().catch(() => ({}));
         throw new Error(errBody.error?.message || `Chunk upload failed with status ${chunkRes.status}`);
@@ -358,22 +623,22 @@ class GoogleDriveService {
           },
           body: chunk
         });
-        // 308, 200, 201 are all valid
         if (res.status === 308 || res.status === 200 || res.status === 201) return res;
         if (res.status === 503 || res.status === 500) {
-          // Retry on server errors
           await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
           continue;
         }
-        return res; // Return other statuses for caller to handle
+        return res;
       } catch (netErr) {
+        if (!navigator.onLine) {
+          this.setStatus(DRIVE_STATUS.OFFLINE, 'Upload interrupted: device offline');
+          throw netErr;
+        }
         if (attempt === maxRetries) throw netErr;
         await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
       }
     }
   }
-
-  // ─── Utility ──────────────────────────────────────────────────────────────────
 
   async uploadJson(data, filename, parentFolderId) {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });

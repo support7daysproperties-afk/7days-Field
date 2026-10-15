@@ -205,7 +205,7 @@ function MediaTypeRow({ icon: Icon, label, items }) {
 
 export default function Sync() {
   const navigate = useNavigate();
-  const { driveAuthorized, setIntendedRoute } = useAuth();
+  const { driveAuthorized, driveEmail, driveStatus, setIntendedRoute } = useAuth();
   const [inspections, setInspections] = useState([]);
   const [mediaMap, setMediaMap] = useState({});
   const [jobMap, setJobMap] = useState({});
@@ -349,23 +349,56 @@ export default function Sync() {
         </button>
       </div>
 
-      {/* Drive not connected banner */}
-      {!driveAuthorized && (
+      {/* Drive status banner */}
+      {driveAuthorized ? (
         <div style={{
-          padding: '14px 16px', borderRadius: '12px', marginBottom: '16px',
-          backgroundColor: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
-          display: 'flex', alignItems: 'center', gap: '12px'
+          padding: '12px 16px', borderRadius: '12px', marginBottom: '16px',
+          backgroundColor: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px'
         }}>
-          <HardDrive size={20} style={{ color: 'var(--warning-color)', flexShrink: 0 }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: '600', fontSize: '13px', marginBottom: '2px' }}>Google Drive not connected</div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Connect to enable media uploads</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <HardDrive size={18} style={{ color: 'var(--success-color)', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontWeight: '600', fontSize: '13px' }}>Google Drive connected</div>
+              {driveEmail && (
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Connected as <strong>{driveEmail}</strong>
+                </div>
+              )}
+            </div>
           </div>
           <button
             onClick={() => { setIntendedRoute('/sync'); navigate('/google-drive-access'); }}
-            style={{ padding: '6px 12px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--warning-color)', color: 'white', fontSize: '12px', fontWeight: '600', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            style={{ padding: '4px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', backgroundColor: 'transparent', color: 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer' }}
           >
-            Connect
+            Manage
+          </button>
+        </div>
+      ) : (
+        <div style={{
+          padding: '14px 16px', borderRadius: '12px', marginBottom: '16px',
+          backgroundColor: driveStatus === 'RECONNECT_REQUIRED' ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+          border: driveStatus === 'RECONNECT_REQUIRED' ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(245,158,11,0.3)',
+          display: 'flex', alignItems: 'center', gap: '12px'
+        }}>
+          <HardDrive size={20} style={{ color: driveStatus === 'RECONNECT_REQUIRED' ? 'var(--danger-color)' : 'var(--warning-color)', flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: '600', fontSize: '13px', marginBottom: '2px' }}>
+              {driveStatus === 'RECONNECT_REQUIRED' ? 'Drive connection needs attention' : 'Google Drive not connected'}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              {driveStatus === 'RECONNECT_REQUIRED' ? 'Reconnect Google Drive to resume media uploads' : 'Connect to enable media uploads'}
+            </div>
+          </div>
+          <button
+            onClick={() => { setIntendedRoute('/sync'); navigate('/google-drive-access'); }}
+            style={{
+              padding: '6px 12px', borderRadius: '8px', border: 'none',
+              backgroundColor: driveStatus === 'RECONNECT_REQUIRED' ? 'var(--danger-color)' : 'var(--warning-color)',
+              color: 'white', fontSize: '12px', fontWeight: '600', cursor: 'pointer', whiteSpace: 'nowrap'
+            }}
+          >
+            {driveStatus === 'RECONNECT_REQUIRED' ? 'Reconnect' : 'Connect'}
           </button>
         </div>
       )}

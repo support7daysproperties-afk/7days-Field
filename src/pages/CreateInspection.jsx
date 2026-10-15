@@ -55,18 +55,27 @@ export default function CreateInspection() {
     setLocationError('');
     try {
       const pos = await locationService.getCurrentPosition();
-      setLocation({
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
-        altitude: pos.coords.altitude || null
-      });
+      const lat = pos?.coords?.latitude ?? pos?.latitude;
+      const lng = pos?.coords?.longitude ?? pos?.longitude;
+      const acc = pos?.coords?.accuracy ?? pos?.accuracy;
+      const alt = pos?.coords?.altitude ?? pos?.altitude ?? null;
+
+      if (lat != null && lng != null) {
+        setLocation({
+          latitude: lat,
+          longitude: lng,
+          accuracy: acc,
+          altitude: alt
+        });
+      } else {
+        throw new Error('Location coordinates were empty');
+      }
     } catch (err) {
-      console.error(err);
+      console.error('Location capture error:', err);
       let errMsg = 'Could not capture location. Please try again or skip.';
       if (err.code === 1) errMsg = 'Location permission denied. Please allow location access in your browser.';
-      if (err.code === 2) errMsg = 'Location information is unavailable.';
-      if (err.code === 3) errMsg = 'Location request timed out.';
+      if (err.code === 2) errMsg = 'Location information is unavailable. Please check your device GPS.';
+      if (err.code === 3) errMsg = 'Location request timed out. Please try again.';
       if (!navigator.geolocation) errMsg = 'Geolocation is not supported by your browser (or requires HTTPS).';
       setLocationError(errMsg);
     } finally {
