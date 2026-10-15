@@ -19,8 +19,9 @@ const CameraStream = forwardRef(function CameraStream({ onStreamReady, onError }
           audio: false,
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            advanced: [{ zoom: 1 }]
           }
         };
 
@@ -29,13 +30,31 @@ const CameraStream = forwardRef(function CameraStream({ onStreamReady, onError }
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           setStreamActive(true);
+
+          // Ensure hardware zoom is set to 1 (unzoomed / widest optical view)
+          const track = stream.getVideoTracks()[0];
+          if (track && typeof track.getCapabilities === 'function') {
+            const capabilities = track.getCapabilities();
+            if (capabilities.zoom) {
+              try {
+                await track.applyConstraints({
+                  advanced: [{ zoom: capabilities.zoom.min || 1 }]
+                });
+              } catch (e) {
+                // Ignore if zoom constraint not accepted
+              }
+            }
+          }
+
           if (onStreamReady) onStreamReady(videoRef.current);
         }
       } catch (err) {
         console.warn("Camera getUserMedia failed or rejected, trying fallback:", err);
         try {
-          // Fallback without width/height ideal constraints
-          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false
+          });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             await videoRef.current.play();
