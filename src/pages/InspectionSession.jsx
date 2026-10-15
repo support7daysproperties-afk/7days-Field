@@ -3,6 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark } from 'lucide-react';
 import FieldCamera from '../components/FieldCamera';
 import VideoCamera from '../components/VideoCamera';
+import PhotoSphereCapture from '../features/photo-sphere/PhotoSphereCapture';
+import VRViewer from '../features/photo-sphere/components/VRViewer';
+import MotionSensorViewer from '../features/photo-sphere/components/MotionSensorViewer';
 import SignaturePad from '../components/SignaturePad';
 import PropertyBoundary from './PropertyBoundary';
 import { EvidenceService } from '../services/EvidenceService';
@@ -22,6 +25,8 @@ export default function InspectionSession() {
   const [submitError, setSubmitError] = useState(null);
   const [showPhotoCamera, setShowPhotoCamera] = useState(false);
   const [showVideoCamera, setShowVideoCamera] = useState(false);
+  const [showPhotoSphere, setShowPhotoSphere] = useState(false);
+  const [viewerMode, setViewerMode] = useState(null); // { mode: 'vr' | 'motion', url: string }
   const [evidenceSummary, setEvidenceSummary] = useState({ location: null, photos: 0, videos: 0, total: 0 });
   const [evidenceList, setEvidenceList] = useState([]);
   const [expandedFolder, setExpandedFolder] = useState('photos');
@@ -329,17 +334,25 @@ export default function InspectionSession() {
 
   const renderEvidenceContent = () => {
     const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
+    const photoSpheres = evidenceList.filter(e => e.mediaType === 'photo_sphere');
     const videos = evidenceList.filter(e => e.mediaType === 'video');
 
     return (
       <>
         <div className="flex gap-sm mb-md">
           <button className="btn btn-primary flex-1 flex flex-col gap-xs py-sm" style={{ height: 'auto' }} onClick={() => setShowPhotoCamera(true)}>
-            <Camera size={24} />
+            <Camera size={22} />
             <span className="text-sm">Add Photo</span>
           </button>
+          <button className="btn btn-primary flex-1 flex flex-col gap-xs py-sm" style={{ height: 'auto', backgroundColor: '#2563eb' }} onClick={() => setShowPhotoSphere(true)}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#60a5fa' }} />
+              <Camera size={22} />
+            </div>
+            <span className="text-sm">Photo Sphere</span>
+          </button>
           <button className="btn btn-secondary flex-1 flex flex-col gap-xs py-sm border-color" style={{ height: 'auto', border: '1px solid var(--border-color)' }} onClick={() => setShowVideoCamera(true)}>
-            <Video size={24} />
+            <Video size={22} />
             <span className="text-sm">Add Video</span>
           </button>
         </div>
@@ -347,7 +360,7 @@ export default function InspectionSession() {
         <div className="card">
           <div className="flex justify-between items-center mb-md">
             <h3>Captured Media</h3>
-            <span className="text-sm text-secondary">{photos.length} Photos • {videos.length} Videos</span>
+            <span className="text-sm text-secondary">{photos.length} Photos • {photoSpheres.length} 360° Spheres • {videos.length} Videos</span>
           </div>
 
           <div className="flex gap-md mb-md">
@@ -362,6 +375,15 @@ export default function InspectionSession() {
             </div>
             <div 
               className="flex-1 flex flex-col items-center justify-center p-md bg-bg-color rounded-lg cursor-pointer transition-all" 
+              style={{ border: expandedFolder === 'photospheres' ? '2px solid #2563eb' : '1px solid var(--border-color)' }}
+              onClick={() => setExpandedFolder(expandedFolder === 'photospheres' ? null : 'photospheres')}
+            >
+              <Folder size={32} className={expandedFolder === 'photospheres' ? "text-primary mb-xs" : "text-secondary mb-xs"} fill="#2563eb" fillOpacity={expandedFolder === 'photospheres' ? 0.4 : 0.1} />
+              <span className="font-bold text-sm">Photo Spheres</span>
+              <span className="text-xs text-secondary">{photoSpheres.length} items</span>
+            </div>
+            <div 
+              className="flex-1 flex flex-col items-center justify-center p-md bg-bg-color rounded-lg cursor-pointer transition-all" 
               style={{ border: expandedFolder === 'videos' ? '2px solid var(--primary-color)' : '1px solid var(--border-color)' }}
               onClick={() => setExpandedFolder(expandedFolder === 'videos' ? null : 'videos')}
             >
@@ -370,6 +392,28 @@ export default function InspectionSession() {
               <span className="text-xs text-secondary">{videos.length} items</span>
             </div>
           </div>
+
+          {expandedFolder === 'photospheres' && (
+            <div className="animate-fade-in mb-sm p-sm bg-bg-color rounded-lg border border-color">
+              <h4 className="text-sm mb-sm flex justify-between font-semibold">360° Photo Spheres <span className="text-secondary">{photoSpheres.length}</span></h4>
+              {photoSpheres.length === 0 ? <p className="text-center text-xs text-secondary py-sm">No photo spheres captured</p> : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+                  {photoSpheres.map((ps) => (
+                    <div 
+                      key={ps.id} 
+                      onClick={() => setSelectedMediaIndex(evidenceList.findIndex(e => e.id === ps.id))} 
+                      style={{ aspectRatio: '2/1', backgroundColor: '#000', borderRadius: '8px', overflow: 'hidden', position: 'relative', cursor: 'pointer', border: '1px solid #334155' }}
+                    >
+                      <img src={ps.originalImage} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="Photo Sphere" />
+                      <div style={{ position: 'absolute', bottom: 4, left: 4, backgroundColor: 'rgba(0,0,0,0.6)', padding: '2px 6px', borderRadius: '4px', color: '#60a5fa', fontSize: '10px', fontWeight: 'bold' }}>
+                        360°
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {expandedFolder === 'photos' && (
             <div className="animate-fade-in mb-sm p-sm bg-bg-color rounded-lg border border-color">
@@ -569,6 +613,27 @@ export default function InspectionSession() {
   return (
     <div className="inspection-session bg-bg-color" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {showPhotoCamera && <FieldCamera taskId={id} evidenceType={activeStepId === 'location' ? 'Location Verification' : 'Exterior'} onSave={handleMediaSave} onCancel={() => setShowPhotoCamera(false)} />}
+      {showPhotoSphere && (
+        <PhotoSphereCapture
+          taskId={id}
+          onSaveEvidence={async (data) => {
+            await EvidenceService.saveEvidence({
+              taskId: id,
+              mediaType: 'photo_sphere',
+              evidenceType: '360 Photo Sphere',
+              original_blob: data.blob,
+              geotagged_blob: data.blob,
+              metadata: {
+                framesCount: data.framesCount,
+                sessionId: data.sessionId,
+              },
+            });
+            setShowPhotoSphere(false);
+            await loadEvidence();
+          }}
+          onClose={() => setShowPhotoSphere(false)}
+        />
+      )}
       {showVideoCamera && <VideoCamera taskId={id} evidenceType="Exterior Video" onSave={handleMediaSave} onCancel={() => setShowVideoCamera(false)} />}
       {showBoundaryMap && (
         <PropertyBoundary
@@ -851,15 +916,51 @@ export default function InspectionSession() {
 
           {/* Indicator */}
           <div style={{ position: 'absolute', top: '24px', left: '50%', transform: 'translateX(-50%)', color: 'white', backgroundColor: 'rgba(0,0,0,0.5)', padding: '4px 12px', borderRadius: '16px', fontSize: '14px', zIndex: 10000 }}>
-            {evidenceList[selectedMediaIndex].evidenceType === 'Location Verification' ? 'Location Photo' : (evidenceList[selectedMediaIndex].mediaType === 'photo' ? 'Photo' : 'Video')}
+            {evidenceList[selectedMediaIndex].evidenceType === 'Location Verification' ? 'Location Photo' : (evidenceList[selectedMediaIndex].mediaType === 'photo_sphere' ? '360° Photo Sphere' : (evidenceList[selectedMediaIndex].mediaType === 'photo' ? 'Photo' : 'Video'))}
           </div>
 
           {evidenceList[selectedMediaIndex].mediaType === 'video' ? (
             <video key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].originalImage} controls autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+          ) : evidenceList[selectedMediaIndex].mediaType === 'photo_sphere' ? (
+            <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+              <img key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage} alt="Photo Sphere" style={{ width: '100%', maxHeight: '75vh', objectFit: 'contain' }} />
+              
+              {/* Overlay with 2 prominent viewing buttons */}
+              <div style={{ position: 'absolute', bottom: '32px', display: 'flex', gap: '16px', zIndex: 10001 }}>
+                <button
+                  className="btn"
+                  style={{ backgroundColor: '#7c3aed', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '24px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  onClick={() => {
+                    const imgUrl = evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage;
+                    setViewerMode({ mode: 'vr', url: imgUrl });
+                  }}
+                >
+                  VR View
+                </button>
+                <button
+                  className="btn"
+                  style={{ backgroundColor: '#0284c7', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '24px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  onClick={() => {
+                    const imgUrl = evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage;
+                    setViewerMode({ mode: 'motion', url: imgUrl });
+                  }}
+                >
+                  Motion Sensor View
+                </button>
+              </div>
+            </div>
           ) : (
             <img key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage} alt="Fullscreen Evidence" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           )}
         </div>
+      )}
+
+      {/* Fullscreen VR / Motion Viewer modal when opened from gallery */}
+      {viewerMode?.mode === 'vr' && (
+        <VRViewer panoramaUrl={viewerMode.url} onClose={() => setViewerMode(null)} />
+      )}
+      {viewerMode?.mode === 'motion' && (
+        <MotionSensorViewer panoramaUrl={viewerMode.url} onClose={() => setViewerMode(null)} />
       )}
     </div>
   );

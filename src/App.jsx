@@ -18,7 +18,13 @@ function ProtectedRoute() {
   const location = useLocation();
   
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center bg-bg text-text">Loading...</div>;
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ width: '32px', height: '32px', border: '3px solid rgba(59, 130, 246, 0.3)', borderTopColor: '#3b82f6', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+        <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>Loading 7Days Field...</span>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
   }
   
   if (!authenticated) {

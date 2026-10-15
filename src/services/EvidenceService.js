@@ -54,7 +54,8 @@ export const EvidenceService = {
     const list = await EvidenceService.getEvidenceForTask(taskId);
     const location = list.find(e => e.evidenceType === 'Location Verification');
     const photos = list.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification').length;
+    const photoSpheres = list.filter(e => e.mediaType === 'photo_sphere').length;
     const videos = list.filter(e => e.mediaType === 'video').length;
-    return { location, photos, videos, total: photos + videos };
+    return { location, photos, photoSpheres, videos, total: photos + photoSpheres + videos };
   }
 };
