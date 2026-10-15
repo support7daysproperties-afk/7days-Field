@@ -188,11 +188,28 @@ export default function Land360Capture({
       }
 
       // 4. Save frame to IndexedDB
-      await land360Service.saveFrame(frameRecord);
+      await land360Service.saveFrame(
+        engine.sessionId,
+        capturePointId,
+        target.id,
+        {
+          sequenceNumber: target.sequenceNumber,
+          targetYaw: target.relativeYaw,
+          targetPitch: target.pitch,
+          capturedYaw: relYaw,
+          capturedPitch: reading.pitch,
+          localUri: photoUri,
+          latitude: gpsData?.latitude,
+          longitude: gpsData?.longitude,
+          gpsAccuracy: gpsData?.accuracy,
+          qualityStatus: frameRecord.qualityStatus,
+          qualityWarnings: frameRecord.qualityWarnings,
+        }
+      );
 
       // 5. Update target status in engine and IndexedDB
       engine.markCaptured(target.id, frameRecord.id);
-      await land360Service.saveTarget(target);
+      await land360Service.updateTarget(target);
 
       // 6. Save updated session snapshot
       await land360Service.saveSession(engine.getSessionSnapshot());
@@ -303,7 +320,7 @@ export default function Land360Capture({
           const { sessionId: newSessionId, targets } = engine.startSession(capturePointId, initialHeading);
 
           await land360Service.saveSession(engine.getSessionSnapshot());
-          await land360Service.saveTargets(targets);
+          await land360Service.saveTargets(newSessionId, targets);
           if (mounted) {
             setSessionId(newSessionId);
             setCapturedFrames([]);

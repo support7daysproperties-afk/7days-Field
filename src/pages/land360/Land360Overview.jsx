@@ -30,16 +30,26 @@ export default function Land360Overview({ inspectionId, points = [], onPointsUpd
   }, [inspectionId, onPointsUpdated]);
 
   const handleAddPoint = async () => {
-    const newPoint = await land360Service.createCapturePoint(inspectionId, {
-      name: `Capture Point ${points.length + 1}`,
-      type: 'General',
-      latitude: null,
-      longitude: null,
-    });
-    await refreshPoints();
-    setActivePointId(newPoint.id);
-    setRetakeTargetId(null);
-    setMode('capture');
+    try {
+      const targetInspectionId = inspectionId || 'temp_inspection';
+      const newPoint = await land360Service.createCapturePoint(targetInspectionId, {
+        name: `Capture Point ${points.length + 1}`,
+        type: 'General',
+        latitude: null,
+        longitude: null,
+      });
+      await refreshPoints();
+      setActivePointId(newPoint.id);
+      setRetakeTargetId(null);
+      setMode('capture');
+    } catch (err) {
+      console.error('Failed to create capture point:', err);
+      // Fallback: start capture with a generated point id
+      const fallbackId = `cp_${Date.now()}`;
+      setActivePointId(fallbackId);
+      setRetakeTargetId(null);
+      setMode('capture');
+    }
   };
 
   const handleStartCapture = (pointId) => {
