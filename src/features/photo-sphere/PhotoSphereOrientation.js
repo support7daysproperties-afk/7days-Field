@@ -14,6 +14,7 @@ export class PhotoSphereOrientation {
   constructor(onUpdate) {
     this.onUpdate = onUpdate;
     this.referenceHeading = null;
+    this.referencePitch = null;
     this.currentOrientation = {
       yaw: 0,
       pitch: 0,
@@ -25,6 +26,7 @@ export class PhotoSphereOrientation {
     this.lastTimestamp = null;
     this.lastYaw = null;
     this.lastPitch = null;
+    this.smoothedVelocity = 0;
     this.isRunning = false;
     this.permissionState = 'unknown'; // 'granted' | 'denied' | 'prompt'
 
@@ -61,8 +63,11 @@ export class PhotoSphereOrientation {
     window.removeEventListener('deviceorientation', this._handleOrientation, true);
   }
 
-  setReferenceHeading(heading) {
+  setReferenceHeading(heading, pitch = null) {
     this.referenceHeading = normalizeAngle(heading);
+    if (pitch !== null) {
+      this.referencePitch = Math.max(-90, Math.min(90, pitch));
+    }
   }
 
   _handleOrientation(event) {
@@ -78,10 +83,16 @@ export class PhotoSphereOrientation {
     // In portrait orientation:
     // When held vertically pointing forward, beta is ~90.
     // In Photo Sphere coordinate system, horizontal horizon is pitch = 0°, zenith is +90°, nadir is -90°.
-    // Thus pitch = beta - 90 (when vertical, pitch is 0; tilting up makes beta > 90 -> pitch > 0; tilting down makes beta < 90 -> pitch < 0)
-    let pitch = beta - 90;
-    // Bound pitch to [-90, 90]
-    pitch = Math.max(-90, Math.min(90, pitch));
+    // Thus rawPitch = beta - 90
+    let rawPitch = beta - 90;
+    rawPitch = Math.max(-90, Math.min(90, rawPitch));
+
+    // Calculate relative pitch if reference pitch is calibrated
+    let pitch = rawPitch;
+    if (this.referencePitch !== null) {
+      pitch = rawPitch - this.referencePitch;
+      pitch = Math.max(-90, Math.min(90, pitch));
+    }
 
     // Calculate relative yaw based on reference heading
     let rawYaw = normalizeAngle(alpha);
@@ -90,8 +101,9 @@ export class PhotoSphereOrientation {
       relYaw = normalizeAngle(rawYaw - this.referenceHeading);
     }
 
-    // Compute angular velocity (deg/s)
-    let angularVelocity = 0;
+    // Compute angular velocity (deg/s) with low-pass filter (Kalman/EMA emulation)
+    // Prevents single-frame sensor jitter from falsely tripping speed guard
+    let instantaneousVelocity = 0;
     if (this.lastTimestamp && this.lastYaw !== null && this.lastPitch !== null) {
       const dt = (now - this.lastTimestamp) / 1000;
       if (dt > 0.005) {
@@ -99,23 +111,41 @@ export class PhotoSphereOrientation {
         if (dYaw > 180) dYaw = 360 - dYaw;
         const dPitch = Math.abs(pitch - this.lastPitch);
         const totalDelta = Math.hypot(dYaw, dPitch);
-        angularVelocity = totalDelta / dt;
+
+        // Filter out microscopic sensor noise under 0.08 degrees
+        if (totalDelta > 0.08) {
+          instantaneousVelocity = totalDelta / dt;
+        } else {
+          instantaneousVelocity = 0;
+        }
       }
     }
+
+    // Exponential Moving Average filter (alpha = 0.20)
+    this.smoothedVelocity = this.smoothedVelocity === 0
+      ? instantaneousVelocity
+      : 0.80 * this.smoothedVelocity + 0.20 * instantaneousVelocity;
 
     this.lastTimestamp = now;
     this.lastYaw = relYaw;
     this.lastPitch = pitch;
 
-    // Fast movement threshold: > 45 deg/sec causes blur and GCam shows "Moving too fast"
-    const isMovingTooFast = angularVelocity > 45;
+    // Fast movement threshold with hysteresis to prevent display flickering:
+    // Trip above 50 deg/sec; only clear once user slows down below 32 deg/sec.
+    let isMovingTooFast = this.currentOrientation.isMovingTooFast;
+    if (this.smoothedVelocity > 50) {
+      isMovingTooFast = true;
+    } else if (this.smoothedVelocity < 32) {
+      isMovingTooFast = false;
+    }
 
     this.currentOrientation = {
       yaw: relYaw,
       rawYaw,
       pitch,
+      rawPitch,
       roll: gamma || 0,
-      angularVelocity,
+      angularVelocity: Math.round(this.smoothedVelocity * 10) / 10,
       isMovingTooFast,
     };
 

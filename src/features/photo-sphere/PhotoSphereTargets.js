@@ -259,17 +259,23 @@ export function projectTargetToViewport(
   }
 
   // 5. Perspective Projection
+  // In Google Camera (gof.java: m1017663474ff5f2bm):
+  // When viewport is portrait (width < height), the field of view along the narrower axis (width)
+  // is preserved (tanHalfFov), and the field of view along the taller axis (height) is:
+  // tan(vfov / 2) = tan(hfov / 2) * (viewportHeight / viewportWidth)
   const toRad = Math.PI / 180;
   const halfFovRad = (hFovDeg / 2) * toRad;
-  const tanHalfFov = Math.tan(halfFovRad);
+  const tanHalfFovX = Math.tan(halfFovRad);
 
-  // Aspect ratio
-  const aspect = viewportWidth / Math.max(1, viewportHeight);
-  const tanHalfVfov = tanHalfFov / aspect;
+  // In portrait (width < height), viewportHeight > viewportWidth:
+  // tanHalfFovY = tanHalfFovX * (viewportHeight / viewportWidth)
+  // In landscape (width >= height):
+  // tanHalfFovX is preserved for width, tanHalfFovY = tanHalfFovX * (viewportHeight / viewportWidth)
+  const tanHalfFovY = tanHalfFovX * (viewportHeight / Math.max(1, viewportWidth));
 
   // Normalized coordinates in camera plane (-1 to +1)
-  const xNorm = xc / (-zc * tanHalfFov);
-  const yNorm = yc / (-zc * tanHalfVfov);
+  const xNorm = xc / (-zc * tanHalfFovX);
+  const yNorm = yc / (-zc * tanHalfFovY);
 
   // Convert to screen pixel coordinates
   const screenX = (viewportWidth / 2) + (xNorm * (viewportWidth / 2));

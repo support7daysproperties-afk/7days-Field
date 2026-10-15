@@ -122,3 +122,85 @@ describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
     expect(next).toBeNull();
   });
 });
+
+import { PhotoSphereOrientation } from '../src/features/photo-sphere/PhotoSphereOrientation';
+
+describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
+  it('should calibrate both heading and pitch so initial pose is bore sight (0, 0)', () => {
+    let capturedOrientation = null;
+    const tracker = new PhotoSphereOrientation((o) => {
+      capturedOrientation = o;
+    });
+
+    // Simulate phone held tilted up 15° (beta = 105°) and pointing compass 120° (alpha = 120°)
+    tracker._handleOrientation({ alpha: 120, beta: 105, gamma: 0 });
+    expect(capturedOrientation.rawYaw).toBe(120);
+    expect(capturedOrientation.rawPitch).toBe(15);
+    // Before calibration, pitch is 15
+    expect(capturedOrientation.pitch).toBe(15);
+
+    // Calibrate reference frame matching InitTargets
+    tracker.setReferenceHeading(120, 15);
+    tracker._handleOrientation({ alpha: 120, beta: 105, gamma: 0 });
+
+    // After calibration, phone is directly looking at target_0 (yaw = 0, pitch = 0)
+    expect(capturedOrientation.yaw).toBe(0);
+    expect(capturedOrientation.pitch).toBe(0);
+  });
+
+  it('should filter out high-frequency sensor jitter from falsely tripping movingTooFast (>45 deg/s)', () => {
+    let capturedOrientation = null;
+    const tracker = new PhotoSphereOrientation((o) => {
+      capturedOrientation = o;
+    });
+
+    tracker.setReferenceHeading(0, 0);
+
+    // Initial steady reading
+    tracker._handleOrientation({ alpha: 0, beta: 90, gamma: 0 });
+
+    // Microscopic jitter under 0.08 degrees
+    tracker._handleOrientation({ alpha: 0.05, beta: 90.02, gamma: 0 });
+    expect(capturedOrientation.isMovingTooFast).toBe(false);
+    expect(capturedOrientation.angularVelocity).toBe(0);
+
+    // Single 1-degree sensor jitter spike
+    tracker._handleOrientation({ alpha: 1.0, beta: 90, gamma: 0 });
+
+    // EMA smoothing dampens jitter spike, keeping isMovingTooFast false
+    expect(capturedOrientation.isMovingTooFast).toBe(false);
+  });
+
+  it('should correctly project targets in mobile portrait orientation (width < height)', () => {
+    const width = 390;
+    const height = 844;
+    // Target 15 degrees to the right in portrait
+    const projRight = projectTargetToViewport(15, 0, 0, 0, width, height, 65);
+    expect(projRight.visible).toBe(true);
+    expect(projRight.x).toBeGreaterThan(width / 2);
+    expect(Math.round(projRight.y)).toBe(height / 2);
+
+    // Target 15 degrees up in portrait
+    const projUp = projectTargetToViewport(0, 15, 0, 0, width, height, 65);
+    expect(projUp.visible).toBe(true);
+    expect(Math.round(projUp.x)).toBe(width / 2);
+    expect(projUp.y).toBeLessThan(height / 2);
+  });
+
+  it('should correctly project targets in landscape orientation (width > height)', () => {
+    const width = 844;
+    const height = 390;
+    // Target 15 degrees to the right in landscape
+    const projRight = projectTargetToViewport(15, 0, 0, 0, width, height, 65);
+    expect(projRight.visible).toBe(true);
+    expect(projRight.x).toBeGreaterThan(width / 2);
+    expect(Math.round(projRight.y)).toBe(height / 2);
+
+    // Target 15 degrees up in landscape
+    const projUp = projectTargetToViewport(0, 15, 0, 0, width, height, 65);
+    expect(projUp.visible).toBe(true);
+    expect(Math.round(projUp.x)).toBe(width / 2);
+    expect(projUp.y).toBeLessThan(height / 2);
+  });
+});
+

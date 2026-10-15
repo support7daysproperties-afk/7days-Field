@@ -58,6 +58,7 @@ export default function PhotoSphereCapture({
   // Auto-capture gating
   const [alignmentProgress, setAlignmentProgress] = useState(0); // 0 to 100%
   const [isCapturing, setIsCapturing] = useState(false);
+  const isCapturingRef = useRef(false);
   const alignmentStartRef = useRef(null);
   const sessionIdRef = useRef(null);
 
@@ -211,12 +212,13 @@ export default function PhotoSphereCapture({
     const tracker = new PhotoSphereOrientation((newOrientation) => {
       setOrientation(newOrientation);
 
-      // On first orientation reading (before first capture), calibrate reference heading
-      // and set the initial target directly at the user's initial viewpoint
+      // On first orientation reading (before first capture), calibrate reference frame
+      // so initial target 0 is positioned at camera bore sight [0, 0, -1]
+      // matching Google Camera LightCycleNative.InitTargets(cameraMatrix)
       if (!hasInitializedFirstTargetRef.current) {
         hasInitializedFirstTargetRef.current = true;
-        tracker.setReferenceHeading(newOrientation.rawYaw);
-        setActiveTargetId('target_0'); // target_0 is (yaw: 0, pitch: 0) relative to first orientation
+        tracker.setReferenceHeading(newOrientation.rawYaw, newOrientation.rawPitch);
+        setActiveTargetId('target_0'); // target_0 is (yaw: 0, pitch: 0) dead center
       }
     });
 
@@ -232,7 +234,8 @@ export default function PhotoSphereCapture({
 
   // Capture Current Frame Helper
   const captureFrame = useCallback(async (target) => {
-    if (!videoRef.current || isCapturing || cameraState !== CAMERA_STATES.READY) return null;
+    if (!videoRef.current || isCapturingRef.current || isCapturing || cameraState !== CAMERA_STATES.READY) return null;
+    isCapturingRef.current = true;
     setIsCapturing(true);
 
     try {
@@ -288,9 +291,9 @@ export default function PhotoSphereCapture({
 
       setCapturedFrames((prev) => [...prev, frameRecord]);
 
-      // Set reference heading if this was first capture
+      // Set reference heading & pitch if this was first capture
       if (orientationTrackerRef.current && orientationTrackerRef.current.referenceHeading === null) {
-        orientationTrackerRef.current.setReferenceHeading(orientation.rawYaw);
+        orientationTrackerRef.current.setReferenceHeading(orientation.rawYaw, orientation.rawPitch);
       }
 
       // Advance to the NEXT single target using reference Photo Sphere sequence
@@ -312,11 +315,12 @@ export default function PhotoSphereCapture({
     } catch (err) {
       console.error('Frame capture failed', err);
     } finally {
+      isCapturingRef.current = false;
       setIsCapturing(false);
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
     }
-  }, [cameraState, isCapturing, orientation.pitch, orientation.rawYaw, orientation.roll, orientation.yaw, targets]);
+  }, [cameraState, isCapturing, orientation.pitch, orientation.rawPitch, orientation.rawYaw, orientation.roll, orientation.yaw, targets]);
 
   // Project targets onto viewport and Check Alignment Tick
   const isCameraReady = cameraState === CAMERA_STATES.READY;
@@ -342,7 +346,7 @@ export default function PhotoSphereCapture({
 
   // Auto-capture logic when aligned and steady
   useEffect(() => {
-    if (!isCameraReady || !activeTarget || isCapturing || isStitching || stitchedPanorama) {
+    if (!isCameraReady || !activeTarget || isCapturingRef.current || isCapturing || isStitching || stitchedPanorama) {
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
       return;
@@ -708,6 +712,7 @@ export default function PhotoSphereCapture({
       {isCameraReady && (
         <>
           {/* Motion Stability Warning: "Hold camera still / Moving too fast" */}
+          {/* Motion Warning Alert - Displayed when angular speed exceeds stable tracking threshold */}
           {orientation.isMovingTooFast && (
             <div
               style={{
