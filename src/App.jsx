@@ -9,6 +9,7 @@ import Sync from './pages/Sync';
 import Profile from './pages/Profile';
 import GoogleDriveAccess from './pages/GoogleDriveAccess';
 import Login from './pages/Login';
+import SensorMonitor from './pages/SensorMonitor';
 import { useAuth } from './context/AuthContext';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
@@ -39,8 +40,9 @@ function App() {
     <Router>
       <div className="app-container">
         <Routes>
-          {/* Public Route */}
+          {/* Public Diagnostic Route */}
           <Route path="/login" element={<Login />} />
+          <Route path="/sensor-monitor" element={<SensorMonitor />} />
           
           {/* Protected Routes */}
           <Route element={<ProtectedRoute />}>
