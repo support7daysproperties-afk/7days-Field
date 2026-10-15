@@ -1,9 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { X, AlertCircle, Camera, Check, RefreshCw, Undo2, ArrowLeft } from 'lucide-react';
+import { X, AlertCircle, Camera, Check, RefreshCw, Undo2, Loader2, ShieldAlert } from 'lucide-react';
 import {
   generateSphericalTargets,
   projectTargetToViewport,
-  angularDistance,
 } from './PhotoSphereTargets';
 import { PhotoSphereOrientation } from './PhotoSphereOrientation';
 import { PhotoSphereStitcher } from './PhotoSphereStitcher';
@@ -12,23 +11,26 @@ import AlignmentReticle from './components/AlignmentReticle';
 import TargetDotsOverlay from './components/TargetDotsOverlay';
 import PanoramaResultScreen from './components/PanoramaResultScreen';
 
+// Explicit camera lifecycle states
+export const CAMERA_STATES = {
+  REQUESTING_PERMISSION: 'REQUESTING_PERMISSION',
+  INITIALIZING: 'INITIALIZING',
+  READY: 'READY',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
+  ERROR: 'ERROR',
+};
+
 /**
  * PhotoSphereCapture.jsx
  *
  * Dedicated Photo Sphere capture experience matching Google Camera Photo Sphere.
  *
- * Requirements:
- * - Live camera preview
- * - Stationary center alignment reticle (4 quadrants animating inwards)
- * - Blue target dots guiding user toward next capture directions
- * - Real-time device-orientation tracking (DeviceOrientationEvent)
- * - Automatic capture when target is accurately aligned (< 3.5°) and phone is steady
- * - Clear warning when device moves too fast ("Hold camera still / Moving too fast")
- * - Full spherical 360° x 180° progression (horizon, upper, zenith, lower, nadir)
- * - Visible progress indicator & safe cancel
- * - Safe persistence of raw captures in IndexedDB before and during stitching
- * - Genuine equirectangular panorama stitching
- * - Post-stitching Panorama Result Screen with VR View & Motion Sensor View buttons
+ * Explicit Camera States:
+ * - REQUESTING_PERMISSION: Initializing permission check
+ * - INITIALIZING: Requesting hardware video stream & attaching preview
+ * - READY: Live camera feed verified playing with valid dimensions
+ * - PERMISSION_DENIED: Explicit permission denied feedback
+ * - ERROR: Camera access error with retry button
  */
 export default function PhotoSphereCapture({
   taskId,
@@ -39,9 +41,10 @@ export default function PhotoSphereCapture({
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Stream & Hardware
+  // Camera & Stream State
+  const [cameraState, setCameraState] = useState(CAMERA_STATES.INITIALIZING);
+  const [cameraErrorDetails, setCameraErrorDetails] = useState('');
   const [stream, setStream] = useState(null);
-  const [cameraError, setCameraError] = useState(null);
   const [viewportSize, setViewportSize] = useState({ width: window.innerWidth, height: window.innerHeight });
 
   // Orientation & Targets
@@ -79,40 +82,113 @@ export default function PhotoSphereCapture({
     return () => { active = false; };
   }, [taskId, targets.length]);
 
-  // Start Camera Stream
-  useEffect(() => {
-    let mediaStream = null;
+  // Camera Initialization Function
+  const initializeCamera = useCallback(async () => {
+    setCameraState(CAMERA_STATES.INITIALIZING);
+    setCameraErrorDetails('');
 
-    const startCamera = async () => {
+    // 1. Verify Secure Context (Chrome/Android blocks camera if not HTTPS or localhost)
+    if (window.isSecureContext === false) {
+      setCameraState(CAMERA_STATES.ERROR);
+      setCameraErrorDetails('Camera access requires a secure connection (HTTPS).');
+      return;
+    }
+
+    // 2. Verify mediaDevices support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraState(CAMERA_STATES.ERROR);
+      setCameraErrorDetails('Camera API is not supported by this browser.');
+      return;
+    }
+
+    // Stop existing stream tracks if any before re-requesting
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      setStream(null);
+    }
+
+    try {
+      setCameraState(CAMERA_STATES.REQUESTING_PERMISSION);
+
+      // Strategy 1: Ideal environment camera with HD resolution
+      let mediaStream;
       try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+            width: { ideal: 1920, min: 640 },
+            height: { ideal: 1080, min: 480 },
           },
           audio: false,
         });
-
-        setStream(mediaStream);
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
-          videoRef.current.play().catch(console.error);
+      } catch (hdErr) {
+        console.warn('HD camera constraint failed, attempting relaxed constraint:', hdErr);
+        // Strategy 2: Exact environment or fallback to simple video: true
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' },
+            audio: false,
+          });
+        } catch (envErr) {
+          console.warn('Environment facingMode failed, falling back to default video:', envErr);
+          // Strategy 3: Any available video device
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
         }
-      } catch (err) {
-        console.error('Camera access error:', err);
-        setCameraError('Unable to access rear camera. Please ensure camera permissions are allowed.');
       }
-    };
 
-    startCamera();
+      setStream(mediaStream);
+
+      // Attach to video element
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+        
+        // Wait for video metadata & playback start to guarantee real feed is live
+        await new Promise((resolve) => {
+          if (videoRef.current.readyState >= 2) {
+            resolve();
+          } else {
+            videoRef.current.onloadedmetadata = () => resolve();
+          }
+        });
+
+        await videoRef.current.play();
+      }
+
+      setCameraState(CAMERA_STATES.READY);
+    } catch (err) {
+      console.error('Camera initialization error:', err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError') {
+        setCameraState(CAMERA_STATES.PERMISSION_DENIED);
+        setCameraErrorDetails('Camera permission was denied in your browser settings.');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraState(CAMERA_STATES.ERROR);
+        setCameraErrorDetails('No camera found on this device.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setCameraState(CAMERA_STATES.ERROR);
+        setCameraErrorDetails('Camera is in use by another application or tab.');
+      } else {
+        setCameraState(CAMERA_STATES.ERROR);
+        setCameraErrorDetails(err.message || 'Unable to access rear camera.');
+      }
+    }
+  }, [stream]);
+
+  // Mount effect to start camera
+  useEffect(() => {
+    initializeCamera();
 
     return () => {
-      if (mediaStream) {
-        mediaStream.getTracks().forEach((track) => track.stop());
+      // Cleanup all media stream tracks on unmount
+      if (videoRef.current && videoRef.current.srcObject) {
+        const currentTracks = videoRef.current.srcObject.getTracks();
+        currentTracks.forEach((t) => t.stop());
+        videoRef.current.srcObject = null;
       }
     };
-  }, []);
+  }, []); // Run once on mount
 
   // Update Viewport Dimensions on resize
   useEffect(() => {
@@ -147,19 +223,36 @@ export default function PhotoSphereCapture({
 
   // Capture Current Frame Helper
   const captureFrame = useCallback(async (target) => {
-    if (!videoRef.current || isCapturing) return null;
+    if (!videoRef.current || isCapturing || cameraState !== CAMERA_STATES.READY) return null;
     setIsCapturing(true);
 
     try {
       const video = videoRef.current;
+      const vWidth = video.videoWidth;
+      const vHeight = video.videoHeight;
+
+      // Validate dimensions
+      if (!vWidth || !vHeight || vWidth === 0 || vHeight === 0) {
+        throw new Error('Video frame not ready');
+      }
+
       const canvas = canvasRef.current || document.createElement('canvas');
-      canvas.width = video.videoWidth || 1920;
-      canvas.height = video.videoHeight || 1080;
+      canvas.width = vWidth;
+      canvas.height = vHeight;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       // Create JPEG Blob
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (b) => {
+            if (b && b.size > 0) resolve(b);
+            else reject(new Error('Captured image is empty'));
+          },
+          'image/jpeg',
+          0.9
+        );
+      });
 
       const frameRecord = {
         id: `frame_${target.id}_${Date.now()}`,
@@ -197,7 +290,6 @@ export default function PhotoSphereCapture({
       if (nextPending) {
         setActiveTargetId(nextPending.id);
       } else {
-        // All targets captured!
         setActiveTargetId(null);
       }
 
@@ -209,9 +301,11 @@ export default function PhotoSphereCapture({
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
     }
-  }, [isCapturing, orientation.rawYaw, orientation.roll, targets]);
+  }, [cameraState, isCapturing, orientation.rawYaw, orientation.roll, targets]);
 
   // Project targets onto viewport and Check Alignment Tick
+  const isCameraReady = cameraState === CAMERA_STATES.READY;
+
   const projectedTargets = targets.map((t) => {
     const proj = projectTargetToViewport(
       t.yaw,
@@ -225,13 +319,13 @@ export default function PhotoSphereCapture({
     return { ...t, projected: proj };
   });
 
-  const activeTarget = projectedTargets.find((t) => t.id === activeTargetId);
+  const activeTarget = isCameraReady ? projectedTargets.find((t) => t.id === activeTargetId) : null;
   const activeDist = activeTarget ? activeTarget.projected.angularDistance : 999;
-  const isAligned = activeTarget && activeDist <= 3.8; // aligned within 3.8 degrees
+  const isAligned = isCameraReady && activeTarget && activeDist <= 3.8;
 
   // Auto-capture logic when aligned and steady
   useEffect(() => {
-    if (!activeTarget || isCapturing || isStitching || stitchedPanorama) {
+    if (!isCameraReady || !activeTarget || isCapturing || isStitching || stitchedPanorama) {
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
       return;
@@ -261,7 +355,7 @@ export default function PhotoSphereCapture({
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
     }
-  }, [activeTarget, captureFrame, isAligned, isCapturing, isStitching, orientation.isMovingTooFast, stitchedPanorama]);
+  }, [activeTarget, captureFrame, isAligned, isCameraReady, isCapturing, isStitching, orientation.isMovingTooFast, stitchedPanorama]);
 
   // Trigger Stitching Pipeline
   const handleStartStitching = async () => {
@@ -380,7 +474,7 @@ export default function PhotoSphereCapture({
       {/* Hidden processing canvas */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-      {/* Live Camera Viewfinder */}
+      {/* Live Camera Viewfinder Element */}
       <video
         ref={videoRef}
         playsInline
@@ -390,7 +484,7 @@ export default function PhotoSphereCapture({
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          display: 'block',
+          display: isCameraReady ? 'block' : 'none',
         }}
       />
 
@@ -416,8 +510,8 @@ export default function PhotoSphereCapture({
               width: '10px',
               height: '10px',
               borderRadius: '50%',
-              backgroundColor: '#3b82f6',
-              boxShadow: '0 0 8px #3b82f6',
+              backgroundColor: isCameraReady ? '#3b82f6' : '#94a3b8',
+              boxShadow: isCameraReady ? '0 0 8px #3b82f6' : 'none',
             }}
           />
           <span style={{ fontSize: '15px', fontWeight: 'bold', letterSpacing: '0.02em' }}>
@@ -444,66 +538,194 @@ export default function PhotoSphereCapture({
         </button>
       </div>
 
-      {/* Camera Error Message Banner */}
-      {cameraError && (
+      {/* ── STATE: INITIALIZING / REQUESTING PERMISSION ── */}
+      {(cameraState === CAMERA_STATES.INITIALIZING || cameraState === CAMERA_STATES.REQUESTING_PERMISSION) && (
         <div
           style={{
             position: 'absolute',
-            top: '80px',
-            left: '20px',
-            right: '20px',
-            backgroundColor: 'rgba(239, 68, 68, 0.95)',
-            color: '#ffffff',
-            padding: '12px 16px',
-            borderRadius: '10px',
+            inset: 0,
             display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
-            gap: '10px',
-            fontSize: '14px',
-            zIndex: 40,
+            justifyContent: 'center',
+            backgroundColor: '#0a0f1d',
+            zIndex: 25,
+            padding: '24px',
+            color: '#ffffff',
           }}
         >
-          <AlertCircle size={20} />
-          <span>{cameraError}</span>
+          <Loader2 size={44} color="#3b82f6" style={{ animation: 'spin 1s linear infinite', marginBottom: '16px' }} />
+          <h3 style={{ fontSize: '17px', fontWeight: 'bold', marginBottom: '6px' }}>
+            Initializing Rear Camera...
+          </h3>
+          <p style={{ fontSize: '13px', color: '#94a3b8', textAlign: 'center' }}>
+            Requesting camera stream and setting up viewfinder.
+          </p>
         </div>
       )}
 
-      {/* Motion Stability Warning: "Hold camera still / Moving too fast" */}
-      {orientation.isMovingTooFast && (
+      {/* ── STATE: PERMISSION DENIED ── */}
+      {cameraState === CAMERA_STATES.PERMISSION_DENIED && (
         <div
           style={{
             position: 'absolute',
-            top: '76px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            backgroundColor: 'rgba(239, 68, 68, 0.9)',
-            color: '#ffffff',
-            padding: '8px 18px',
-            borderRadius: '20px',
-            fontSize: '13px',
-            fontWeight: '600',
+            inset: 0,
             display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
-            gap: '6px',
-            zIndex: 35,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-            animation: 'pulse 1s infinite',
+            justifyContent: 'center',
+            backgroundColor: '#0f172a',
+            zIndex: 25,
+            padding: '28px',
+            color: '#ffffff',
+            textAlign: 'center',
           }}
         >
-          <AlertCircle size={16} />
-          <span>Hold camera still • Moving too fast</span>
+          <div
+            style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: '16px',
+            }}
+          >
+            <ShieldAlert size={36} color="#ef4444" />
+          </div>
+          <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>
+            Camera Permission Required
+          </h3>
+          <p style={{ fontSize: '14px', color: '#94a3b8', marginBottom: '24px', maxWidth: '320px', lineHeight: 1.5 }}>
+            Photo Sphere mode needs access to your rear camera to capture spherical photographs.
+            Please allow camera access in your browser settings.
+          </p>
+          <div style={{ display: 'flex', gap: '12px', width: '100%', maxWidth: '300px' }}>
+            <button
+              onClick={onClose}
+              style={{
+                flex: 1,
+                padding: '12px',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                border: 'none',
+                color: '#ffffff',
+                fontWeight: '600',
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={initializeCamera}
+              style={{
+                flex: 2,
+                padding: '12px',
+                borderRadius: '8px',
+                backgroundColor: '#2563eb',
+                border: 'none',
+                color: '#ffffff',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+              }}
+            >
+              <RefreshCw size={16} /> Allow Camera
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Blue Target Dots Layer */}
-      <TargetDotsOverlay targets={projectedTargets} activeTargetId={activeTargetId} />
+      {/* ── STATE: CAMERA ERROR ── */}
+      {cameraState === CAMERA_STATES.ERROR && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: '#0f172a',
+            zIndex: 25,
+            padding: '28px',
+            color: '#ffffff',
+            textAlign: 'center',
+          }}
+        >
+          <AlertCircle size={44} color="#f59e0b" style={{ marginBottom: '16px' }} />
+          <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>
+            Camera Unavailable
+          </h3>
+          <p style={{ fontSize: '14px', color: '#94a3b8', marginBottom: '24px', maxWidth: '320px', lineHeight: 1.5 }}>
+            {cameraErrorDetails || 'Unable to open camera stream. Another application may be using the camera.'}
+          </p>
+          <button
+            onClick={initializeCamera}
+            style={{
+              padding: '12px 24px',
+              borderRadius: '8px',
+              backgroundColor: '#2563eb',
+              border: 'none',
+              color: '#ffffff',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <RefreshCw size={16} /> Retry Camera
+          </button>
+        </div>
+      )}
 
-      {/* Stationary Center Alignment Reticle */}
-      <AlignmentReticle
-        isAligned={isAligned}
-        isTooFast={orientation.isMovingTooFast}
-        progress={alignmentProgress}
-      />
+      {/* ── ONLY RENDER CAPTURE GUIDANCE WHEN CAMERA IS READY ── */}
+      {isCameraReady && (
+        <>
+          {/* Motion Stability Warning: "Hold camera still / Moving too fast" */}
+          {orientation.isMovingTooFast && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '76px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                backgroundColor: 'rgba(239, 68, 68, 0.9)',
+                color: '#ffffff',
+                padding: '8px 18px',
+                borderRadius: '20px',
+                fontSize: '13px',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                zIndex: 35,
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                animation: 'pulse 1s infinite',
+              }}
+            >
+              <AlertCircle size={16} />
+              <span>Hold camera still • Moving too fast</span>
+            </div>
+          )}
+
+          {/* Blue Target Dots Layer */}
+          <TargetDotsOverlay targets={projectedTargets} activeTargetId={activeTargetId} />
+
+          {/* Stationary Center Alignment Reticle */}
+          <AlignmentReticle
+            isAligned={isAligned}
+            isTooFast={orientation.isMovingTooFast}
+            progress={alignmentProgress}
+          />
+        </>
+      )}
 
       {/* Shutter flash animation on capture */}
       {isCapturing && (
@@ -520,7 +742,7 @@ export default function PhotoSphereCapture({
         />
       )}
 
-      {/* Bottom Floating Control Panel */}
+      {/* Bottom Floating Control Panel (Only active when camera is READY) */}
       <div
         style={{
           position: 'absolute',
@@ -534,6 +756,8 @@ export default function PhotoSphereCapture({
           alignItems: 'center',
           gap: '16px',
           zIndex: 30,
+          opacity: isCameraReady ? 1 : 0.4,
+          pointerEvents: isCameraReady ? 'auto' : 'none',
         }}
       >
         {/* Progress Bar & Counter */}
@@ -579,7 +803,7 @@ export default function PhotoSphereCapture({
           {/* Undo Button */}
           <button
             onClick={handleUndo}
-            disabled={capturedCount === 0 || isStitching}
+            disabled={!isCameraReady || capturedCount === 0 || isStitching}
             style={{
               backgroundColor: 'rgba(255, 255, 255, 0.15)',
               border: 'none',
@@ -600,21 +824,21 @@ export default function PhotoSphereCapture({
           {/* Manual Capture Shutter Fallback */}
           <button
             onClick={() => {
-              if (activeTarget) {
+              if (isCameraReady && activeTarget) {
                 captureFrame(activeTarget);
               }
             }}
-            disabled={isCapturing || isStitching}
+            disabled={!isCameraReady || isCapturing || isStitching}
             style={{
               width: '70px',
               height: '70px',
               borderRadius: '50%',
-              backgroundColor: '#ffffff',
+              backgroundColor: isCameraReady ? '#ffffff' : '#94a3b8',
               border: '4px solid rgba(255, 255, 255, 0.4)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              cursor: 'pointer',
+              cursor: isCameraReady ? 'pointer' : 'not-allowed',
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.5)',
             }}
           >
@@ -631,7 +855,7 @@ export default function PhotoSphereCapture({
           {/* Stitch / Finish Button (available once 3+ shots or complete) */}
           <button
             onClick={handleStartStitching}
-            disabled={capturedCount < 3 || isStitching}
+            disabled={!isCameraReady || capturedCount < 3 || isStitching}
             style={{
               backgroundColor: capturedCount >= 3 ? '#10b981' : 'rgba(255, 255, 255, 0.1)',
               border: 'none',
