@@ -38,14 +38,16 @@ export default function TargetOverlay({
       const height = window.innerHeight;
 
       // Always ensure canvas resolution matches physical screen pixels
-      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
-        canvas.width = width * dpr;
-        canvas.height = height * dpr;
+      if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
       }
 
-      ctx.save();
+      // Reset transform and clear using buffer dimensions
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Scale by DPR for standard CSS coordinate system
       ctx.scale(dpr, dpr);
-      ctx.clearRect(0, 0, width, height);
 
       const centerX = width / 2;
       const centerY = height / 2;
@@ -218,7 +220,6 @@ export default function TargetOverlay({
         }
       }
 
-      ctx.restore();
       animId = requestAnimationFrame(render);
     };
 
