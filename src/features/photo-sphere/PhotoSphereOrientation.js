@@ -139,6 +139,10 @@ export class PhotoSphereOrientation {
       isMovingTooFast = false;
     }
 
+    const screenOrientation = typeof window !== 'undefined' && window.screen && window.screen.orientation
+      ? window.screen.orientation.angle || 0
+      : (typeof window !== 'undefined' ? window.orientation || 0 : 0);
+
     this.currentOrientation = {
       yaw: relYaw,
       rawYaw,
@@ -147,6 +151,12 @@ export class PhotoSphereOrientation {
       roll: gamma || 0,
       angularVelocity: Math.round(this.smoothedVelocity * 10) / 10,
       isMovingTooFast,
+      rawSensor: {
+        alpha: Math.round(alpha * 10) / 10,
+        beta: Math.round(beta * 10) / 10,
+        gamma: Math.round((gamma || 0) * 10) / 10,
+      },
+      screenOrientationAngle: screenOrientation,
     };
 
     if (this.onUpdate) {

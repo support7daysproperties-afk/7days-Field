@@ -12,6 +12,7 @@ import { photoSphereStorage } from './storage/PhotoSphereStorage';
 import AlignmentReticle from './components/AlignmentReticle';
 import TargetDotsOverlay from './components/TargetDotsOverlay';
 import PanoramaResultScreen from './components/PanoramaResultScreen';
+import PhotoSphereDiagnosticsOverlay from './components/PhotoSphereDiagnosticsOverlay';
 
 // Explicit camera lifecycle states
 export const CAMERA_STATES = {
@@ -361,6 +362,28 @@ export default function PhotoSphereCapture({
 
   const activeDist = activeTarget ? activeTarget.projected.angularDistance : 999;
   const isAligned = isCameraReady && activeTarget && activeDist <= 3.0;
+
+  // Compute diagnostic capture decision reason for live HUD
+  const captureDecision = {
+    accepted: false,
+    reason: 'Waiting for camera ready',
+  };
+  if (!isCameraReady) {
+    captureDecision.reason = 'Camera not ready';
+  } else if (!activeTarget) {
+    captureDecision.reason = 'No active target in range';
+  } else if (isCapturing || isCapturingRef.current) {
+    captureDecision.reason = 'Capture in progress';
+  } else if (orientation.isMovingTooFast) {
+    captureDecision.reason = `Moving too fast (${orientation.angularVelocity}°/s > 50°/s)`;
+  } else if (!isAligned) {
+    captureDecision.reason = `Aligning dot (${Math.round(activeDist * 10) / 10}° > 3.0°)`;
+  } else if (alignmentProgress < 100) {
+    captureDecision.reason = `Holding steady (${alignmentProgress}%)`;
+  } else {
+    captureDecision.accepted = true;
+    captureDecision.reason = 'Aligned & steady: trigger capture';
+  }
 
   // Auto-capture logic when aligned and steady
   useEffect(() => {
@@ -770,6 +793,19 @@ export default function PhotoSphereCapture({
             isAligned={isAligned}
             isTooFast={orientation.isMovingTooFast}
             progress={alignmentProgress}
+          />
+
+          {/* Development / Diagnostics Live HUD */}
+          <PhotoSphereDiagnosticsOverlay
+            orientation={orientation}
+            activeTarget={activeTarget}
+            unlockedCount={projectedUnlockedTargets.length}
+            totalTargets={targets.length}
+            capturedCount={capturedFrames.length}
+            viewportSize={viewportSize}
+            alignmentProgress={alignmentProgress}
+            captureDecision={captureDecision}
+            isCameraReady={isCameraReady}
           />
         </>
       )}

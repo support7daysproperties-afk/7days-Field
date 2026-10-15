@@ -255,6 +255,7 @@ export function projectTargetToViewport(
       dYaw,
       dPitch,
       isBehind: true,
+      cameraSpaceVector: [Math.round(xc * 1000) / 1000, Math.round(yc * 1000) / 1000, Math.round(zc * 1000) / 1000],
     };
   }
 
@@ -296,6 +297,7 @@ export function projectTargetToViewport(
     dYaw,
     dPitch,
     isBehind: false,
+    cameraSpaceVector: [Math.round(xc * 1000) / 1000, Math.round(yc * 1000) / 1000, Math.round(zc * 1000) / 1000],
   };
 }
 
