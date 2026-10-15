@@ -15,7 +15,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'Land360DB';
-const DB_VERSION = 2;
+const DB_VERSION = 5;
 
 class Land360Service {
   constructor() {
@@ -60,6 +60,31 @@ class Land360Service {
           const framesStore = transaction.objectStore('frames');
           if (!framesStore.indexNames.contains('session_id')) {
             framesStore.createIndex('session_id', 'sessionId');
+          }
+        }
+
+        // ── v3 additions (Phase 4 — Universal Property 360°) ──────
+        if (oldVersion < 3) {
+          if (!db.objectStoreNames.contains('property360_sessions')) {
+            db.createObjectStore('property360_sessions', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains('property360_scenes')) {
+            const sceneStore = db.createObjectStore('property360_scenes', { keyPath: 'id' });
+            sceneStore.createIndex('session_id', 'sessionId');
+          }
+          const panoStore2 = transaction.objectStore('panoramas');
+          if (!panoStore2.indexNames.contains('scene_id')) {
+            panoStore2.createIndex('scene_id', 'sceneId');
+          }
+        }
+
+        // ── v5 additions (Phase 6 — Offline Sync Queue) ───────────
+        if (oldVersion < 5) {
+          if (!db.objectStoreNames.contains('property360_sync_queue')) {
+            const queueStore = db.createObjectStore('property360_sync_queue', { keyPath: 'id' });
+            queueStore.createIndex('session_id', 'sessionId');
+            queueStore.createIndex('status', 'status');
+            queueStore.createIndex('session_item_type', ['sessionId', 'itemType']);
           }
         }
       },
