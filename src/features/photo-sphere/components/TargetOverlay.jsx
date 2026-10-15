@@ -1,25 +1,27 @@
 /**
  * TargetOverlay.jsx
  *
- * Implements the exact HUD and visual elements shown in the reference video:
- * - Fixed center aiming circle with framing bracket guide
- * - Real-time animated blue target dot moving according to device attitude
- * - Dynamic edge chevrons / arrows pointing toward off-screen targets
- * - Smooth dwell progress arc filling around center reticle when aligned
- * - Visual flash / haptic shutter feedback
+ * Implements the EXACT HUD and visual elements shown in the reference video:
+ * - High-performance 60fps requestAnimationFrame continuous render loop
+ * - Handles device pixel ratio and dynamic resizing so it NEVER draws blank
+ * - Fixed Center Aiming Circle with rectangular viewfinder framing bracket
+ * - Vivid Blue Target Dot with pulsing glow and specular highlight
+ * - Dynamic off-screen chevron arrows guiding the user to rotate towards target
+ * - Dwell progress arc around center reticle when aligned
+ * - Stitched frame preview wireframe patches
  */
 
 import React, { useRef, useEffect } from 'react';
 import { SphereProjection } from '../orientation/SphereProjection.js';
 
 export default function TargetOverlay({
-  orientation,
+  orientationRef, // Pass as ref or object for zero-overhead 60fps reads
   plan,
   activeIndex,
   capturedSet,
   alignmentGateState,
   isCapturing,
-  onTargetClick
+  capturedFrames = []
 }) {
   const canvasRef = useRef(null);
 
@@ -28,148 +30,212 @@ export default function TargetOverlay({
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
-    const width = canvas.width = canvas.parentElement.clientWidth || window.innerWidth;
-    const height = canvas.height = canvas.parentElement.clientHeight || window.innerHeight;
+    let animId;
 
-    ctx.clearRect(0, 0, width, height);
+    const render = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
 
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const focalPx = SphereProjection.focalLengthPx(width, height, 65, 80);
+      // Always ensure canvas resolution matches physical screen pixels
+      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+      }
 
-    const cameraBasis = orientation.cameraBasis;
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, width, height);
 
-    // 1. Draw Fixed Center Aiming Reticle (Google Camera Photo Sphere Style)
-    const reticleRadius = 38;
-    const isAligned = alignmentGateState?.isAligned;
-    const progress = alignmentGateState?.progress || 0;
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const focalPx = SphereProjection.focalLengthPx(width, height, 65, 80);
 
-    // Center Outer Ring (White / Translucent)
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, reticleRadius, 0, Math.PI * 2);
-    ctx.lineWidth = 3.5;
-    ctx.strokeStyle = isAligned ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.7)';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
-    ctx.shadowBlur = 6;
-    ctx.stroke();
-
-    // Dwell Progress Ring (fills around center ring as user holds steady)
-    if (progress > 0) {
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, reticleRadius + 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = '#2563EB'; // Vibrant Royal Blue
-      ctx.lineCap = 'round';
-      ctx.stroke();
-    }
-
-    // Center Crosshair / Aiming Mark
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 3, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-    ctx.fill();
-    ctx.restore();
-
-    // 2. Project and Draw Targets on Viewport
-    if (plan && plan.targets) {
-      const activeTarget = plan.targets[activeIndex];
-
-      // Draw all nearby uncaptured targets faintly
-      plan.targets.forEach((target, index) => {
-        if (capturedSet.has(index)) return; // already captured
-
-        const projection = SphereProjection.projectTargetToScreen(target, cameraBasis, width, height, focalPx);
-
-        if (index === activeIndex) return; // Active target is drawn prominently below
-
-        // Only draw pending target if in front and within screen margin
-        if (projection.isInFront && !projection.isOffScreen) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(projection.screenX, projection.screenY, 14, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-          ctx.lineWidth = 2;
-          ctx.fill();
-          ctx.stroke();
-          ctx.restore();
+      // Read current orientation
+      const currentOrientation = orientationRef?.current || {
+        cameraBasis: {
+          right: { x: 1, y: 0, z: 0 },
+          up: { x: 0, y: 1, z: 0 },
+          forward: { x: 0, y: 0, z: 1 }
         }
-      });
+      };
+      const cameraBasis = currentOrientation.cameraBasis;
 
-      // 3. Draw Active Blue Target Dot (Source of Truth from Reference Video)
-      if (activeTarget && !capturedSet.has(activeIndex)) {
-        const activeProj = SphereProjection.projectTargetToScreen(activeTarget, cameraBasis, width, height, focalPx);
+      // ── 1. DRAW FIXED RECTANGULAR VIEWFINDER BRACKET & CENTER RETICLE (FROM VIDEO) ──
+      // In the reference video: A white rectangular guide frame centered on screen
+      const boxW = Math.min(width * 0.46, 220);
+      const boxH = Math.min(height * 0.32, 280);
 
-        if (activeProj.isInFront && !activeProj.isOffScreen) {
-          // Inside Screen Viewport
-          const dotRadius = isAligned ? 28 : 24;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(centerX - boxW / 2, centerY - boxH / 2, boxW, boxH);
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+      ctx.shadowBlur = 4;
+      ctx.stroke();
 
-          ctx.save();
-          // Subtle glow
-          ctx.shadowColor = '#3B82F6';
-          ctx.shadowBlur = 16;
+      // Fixed Center Aiming Circle
+      const reticleRadius = 36;
+      const isAligned = alignmentGateState?.isAligned;
+      const progress = alignmentGateState?.progress || 0;
 
-          // Outer pulsing ring
-          ctx.beginPath();
-          ctx.arc(activeProj.screenX, activeProj.screenY, dotRadius + 6, 0, Math.PI * 2);
-          ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
-          ctx.lineWidth = 2;
-          ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, reticleRadius, 0, Math.PI * 2);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = isAligned ? 'rgba(59, 130, 246, 0.95)' : 'rgba(255, 255, 255, 0.8)';
+      ctx.stroke();
 
-          // Main Solid Blue Dot
-          ctx.beginPath();
-          ctx.arc(activeProj.screenX, activeProj.screenY, dotRadius, 0, Math.PI * 2);
-          ctx.fillStyle = '#2563EB'; // Vivid Reference Blue
-          ctx.fill();
+      // Dwell Progress Arc (fills around circle as phone is held steady)
+      if (progress > 0) {
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, reticleRadius + 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#2563EB'; // Royal Blue
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
 
-          // Inner Specular Dot / Center core
-          ctx.beginPath();
-          ctx.arc(activeProj.screenX, activeProj.screenY, 7, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-          ctx.fill();
+      // Center crosshair dot
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.fill();
+      ctx.restore();
 
-          ctx.restore();
-        } else {
-          // Off-screen -> Directional Indicator Arrow / Chevron pointing toward target
-          ctx.save();
-          const angle = activeProj.angleRad;
-          const arrowDist = Math.min(centerX, centerY) * 0.82;
-          const arrowX = centerX + Math.cos(angle) * arrowDist;
-          const arrowY = centerY + Math.sin(angle) * arrowDist;
+      // ── 2. DRAW CAPTURED PATCHES AS 3D WIREFRAME SQUARES (FROM VIDEO) ──
+      if (capturedFrames.length > 0) {
+        ctx.save();
+        capturedFrames.forEach(frame => {
+          const proj = SphereProjection.projectTargetToScreen(
+            { yawDegrees: frame.yawDegrees, pitchDegrees: frame.pitchDegrees },
+            cameraBasis,
+            width,
+            height,
+            focalPx
+          );
 
-          ctx.translate(arrowX, arrowY);
-          ctx.rotate(angle);
+          if (proj.isInFront && !proj.isOffScreen) {
+            ctx.beginPath();
+            ctx.rect(proj.screenX - 25, proj.screenY - 32, 50, 64);
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.fillStyle = 'rgba(37, 99, 235, 0.15)';
+            ctx.fill();
+            ctx.stroke();
+          }
+        });
+        ctx.restore();
+      }
 
-          // Draw Chevron
-          ctx.beginPath();
-          ctx.moveTo(-16, -14);
-          ctx.lineTo(8, 0);
-          ctx.lineTo(-16, 14);
-          ctx.lineWidth = 4;
-          ctx.strokeStyle = '#3B82F6';
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          ctx.shadowColor = '#1D4ED8';
-          ctx.shadowBlur = 10;
-          ctx.stroke();
+      // ── 3. DRAW BLUE TARGET DOT & GUIDANCE (CORE VIDEO FEATURE) ──
+      if (plan && plan.targets) {
+        const activeTarget = plan.targets[activeIndex];
 
-          // Small Blue Dot near Arrow
-          ctx.beginPath();
-          ctx.arc(-26, 0, 8, 0, Math.PI * 2);
-          ctx.fillStyle = '#2563EB';
-          ctx.fill();
+        // Draw uncaptured target dots faintly
+        plan.targets.forEach((target, index) => {
+          if (capturedSet.has(index) || index === activeIndex) return;
 
-          ctx.restore();
+          const proj = SphereProjection.projectTargetToScreen(target, cameraBasis, width, height, focalPx);
+          if (proj.isInFront && !proj.isOffScreen) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(proj.screenX, proj.screenY, 12, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+          }
+        });
+
+        // Draw Active Solid Blue Target Dot
+        if (activeTarget && !capturedSet.has(activeIndex)) {
+          const activeProj = SphereProjection.projectTargetToScreen(activeTarget, cameraBasis, width, height, focalPx);
+
+          if (activeProj.isInFront && !activeProj.isOffScreen) {
+            // Inside Viewport: Solid Blue Dot with Glow
+            const dotRadius = isAligned ? 30 : 25;
+
+            ctx.save();
+            ctx.shadowColor = '#3B82F6';
+            ctx.shadowBlur = 18;
+
+            // Outer ring
+            ctx.beginPath();
+            ctx.arc(activeProj.screenX, activeProj.screenY, dotRadius + 6, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Main Blue Dot (Matches reference video)
+            ctx.beginPath();
+            ctx.arc(activeProj.screenX, activeProj.screenY, dotRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#2563EB'; // Vibrant Royal Blue
+            ctx.fill();
+
+            // Inner specular white dot
+            ctx.beginPath();
+            ctx.arc(activeProj.screenX, activeProj.screenY, 8, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.fill();
+
+            ctx.restore();
+          } else {
+            // Outside Viewport: Directional chevron guide arrow pointing toward target
+            ctx.save();
+            const angle = activeProj.angleRad;
+            const arrowRadius = Math.min(centerX, centerY) * 0.78;
+            const arrowX = centerX + Math.cos(angle) * arrowRadius;
+            const arrowY = centerY + Math.sin(angle) * arrowRadius;
+
+            ctx.translate(arrowX, arrowY);
+            ctx.rotate(angle);
+
+            // Glowing chevron arrow
+            ctx.shadowColor = '#2563EB';
+            ctx.shadowBlur = 12;
+
+            ctx.beginPath();
+            ctx.moveTo(-18, -14);
+            ctx.lineTo(8, 0);
+            ctx.lineTo(-18, 14);
+            ctx.lineWidth = 4.5;
+            ctx.strokeStyle = '#3B82F6';
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+
+            // Accompanying blue dot
+            ctx.beginPath();
+            ctx.arc(-28, 0, 9, 0, Math.PI * 2);
+            ctx.fillStyle = '#2563EB';
+            ctx.fill();
+
+            ctx.restore();
+          }
         }
       }
-    }
 
-  }, [orientation, plan, activeIndex, capturedSet, alignmentGateState]);
+      ctx.restore();
+      animId = requestAnimationFrame(render);
+    };
+
+    animId = requestAnimationFrame(render);
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [plan, activeIndex, capturedSet, alignmentGateState, capturedFrames]);
 
   return (
     <div className="absolute inset-0 pointer-events-none select-none z-20">
-      <canvas ref={canvasRef} className="w-full h-full block" />
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full block"
+        style={{ width: '100vw', height: '100vh' }}
+      />
 
       {/* Shutter Exposure Flash Effect */}
       {isCapturing && (

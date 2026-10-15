@@ -1,8 +1,8 @@
 /**
  * OrientationTracker.js
  *
- * Captures device orientation using AbsoluteOrientationSensor / DeviceOrientationEvent.
- * Provides smoothed orientation (yaw, pitch, roll) and camera orthogonal basis matrix.
+ * Robust device orientation tracking for modern Chrome Mobile, Safari iOS, and desktop fallback.
+ * Uses both deviceorientation and deviceorientationabsolute with auto-permission request.
  */
 
 import { eulerToRotationMatrix, normalizeDegrees } from './OrientationMath.js';
@@ -21,36 +21,46 @@ export class OrientationTracker {
     };
 
     this.initialYawOffset = null;
-    this.handleDeviceOrientation = this.handleDeviceOrientation.bind(this);
+    this.handleOrientation = this.handleOrientation.bind(this);
+  }
+
+  async requestPermissionAndStart() {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      try {
+        const state = await DeviceOrientationEvent.requestPermission();
+        if (state === 'granted') {
+          this.start();
+          return true;
+        }
+      } catch (err) {
+        console.warn("DeviceOrientation permission error:", err);
+      }
+    }
+    this.start();
+    return true;
   }
 
   start() {
     if (this.isActive) return;
     this.isActive = true;
 
-    // Request permission on iOS 13+ if needed
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      DeviceOrientationEvent.requestPermission()
-        .then(permissionState => {
-          if (permissionState === 'granted') {
-            window.addEventListener('deviceorientation', this.handleDeviceOrientation, true);
-          }
-        })
-        .catch(console.error);
-    } else {
-      window.addEventListener('deviceorientation', this.handleDeviceOrientation, true);
+    // Listen on both standard and absolute events for cross-Android/iOS compatibility
+    if ('ondeviceorientationabsolute' in window) {
+      window.addEventListener('deviceorientationabsolute', this.handleOrientation, true);
     }
+    window.addEventListener('deviceorientation', this.handleOrientation, true);
   }
 
   stop() {
     this.isActive = false;
-    window.removeEventListener('deviceorientation', this.handleDeviceOrientation, true);
+    window.removeEventListener('deviceorientationabsolute', this.handleOrientation, true);
+    window.removeEventListener('deviceorientation', this.handleOrientation, true);
   }
 
-  handleDeviceOrientation(event) {
+  handleOrientation(event) {
     if (!this.isActive) return;
 
-    let { alpha, beta, gamma } = event; // alpha: compass [0..360], beta: pitch [-180..180], gamma: roll [-90..90]
+    let { alpha, beta, gamma } = event;
     if (alpha === null && beta === null && gamma === null) return;
 
     alpha = alpha || 0;
@@ -59,20 +69,20 @@ export class OrientationTracker {
 
     // Convert Android / Web sensor coordinates to Photo Sphere Camera Frame:
     // When held upright facing horizon:
-    // yaw = alpha
+    // yaw = alpha (compass azimuth)
     // pitch = beta - 90 (0° at horizon, negative tilting up, positive tilting down)
     // roll = gamma
     let yaw = alpha;
     let pitch = beta - 90;
     let roll = gamma;
 
-    // Handle initial bearing calibration (so the user starts facing 0° yaw)
+    // Anchor first heading so the user starts facing 0° yaw
     if (this.initialYawOffset === null) {
       this.initialYawOffset = yaw;
     }
     yaw = normalizeDegrees(yaw - this.initialYawOffset);
 
-    // Calculate basis matrix
+    // Compute basis matrix
     const cameraBasis = eulerToRotationMatrix(yaw, pitch, roll);
 
     this.currentData = {
@@ -88,8 +98,7 @@ export class OrientationTracker {
     }
   }
 
-  // Fallback / manual simulator for testing in desktop browser
-  setSimulatedOrientation(yaw, pitch, roll = 0) {
+  setOrientationManual(yaw, pitch, roll = 0) {
     const cameraBasis = eulerToRotationMatrix(yaw, pitch, roll);
     this.currentData = {
       yawDegrees: yaw,

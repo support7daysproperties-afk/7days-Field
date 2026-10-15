@@ -3,11 +3,12 @@
  *
  * Full-screen guided 360° Photo Sphere capture experience matching the reference video:
  * - Live camera viewfinder
- * - Center aiming reticle
+ * - Center aiming reticle and white framing box
  * - Physics-driven blue target dot
  * - Automatic shutter capture on alignment & steady hold
  * - Captured frame counter & progress
  * - Dynamic directional guide arrows
+ * - Stitched frame preview wireframe patches
  * - Automatic progression until full sphere or user finishes
  */
 
@@ -24,10 +25,11 @@ import { Check, X, Undo, RefreshCw, Layers } from 'lucide-react';
 
 export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
   const cameraRef = useRef(null);
-  const alignmentGateRef = useRef(new AlignmentGate());
+  const alignmentGateRef = useRef(new AlignmentGate(3.2, 320));
   const trackerRef = useRef(null);
 
-  const [orientation, setOrientation] = useState({
+  // Fast orientation ref for 60fps canvas rendering without React re-render lags
+  const orientationRef = useRef({
     yawDegrees: 0,
     pitchDegrees: 0,
     rollDegrees: 0,
@@ -52,10 +54,10 @@ export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
   // Initialize Orientation Tracker
   useEffect(() => {
     const tracker = new OrientationTracker((data) => {
-      setOrientation(data);
+      orientationRef.current = data;
     });
     trackerRef.current = tracker;
-    tracker.start();
+    tracker.requestPermissionAndStart();
 
     return () => {
       tracker.stop();
@@ -102,21 +104,21 @@ export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
     setIsCapturing(true);
     playShutterSound();
 
-    // Haptic feedback on mobile if supported
     if (navigator.vibrate) {
       navigator.vibrate(40);
     }
 
     setTimeout(() => {
       const dataUrl = cameraRef.current.captureFrame();
+      const currentOri = orientationRef.current;
 
       if (dataUrl) {
         const frameData = {
           id: activeIndex,
           dataUrl,
-          yawDegrees: orientation.yawDegrees,
-          pitchDegrees: orientation.pitchDegrees,
-          rollDegrees: orientation.rollDegrees,
+          yawDegrees: currentOri.yawDegrees,
+          pitchDegrees: currentOri.pitchDegrees,
+          rollDegrees: currentOri.rollDegrees,
           timestamp: Date.now()
         };
 
@@ -138,41 +140,54 @@ export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
 
       setIsCapturing(false);
     }, 120);
-  }, [activeIndex, orientation, isCapturing, plan, playShutterSound]);
+  }, [activeIndex, isCapturing, plan, playShutterSound]);
 
-  // Main Alignment & Auto-Capture Loop (Display Rate)
+  // 60Hz Alignment & Free-Form Target Selection Loop
   useEffect(() => {
-    if (isCapturing || isStitching || panoramaUrl) return;
+    let animId;
 
-    // Check free-form target claim (if user aims close to another uncaptured target)
-    const newActive = TargetSelection.selectActiveTarget(plan, orientation, activeIndex, capturedSet);
-    if (newActive !== activeIndex) {
-      setActiveIndex(newActive);
-      alignmentGateRef.current.reset();
-    }
+    const checkAlignment = () => {
+      if (!isCapturing && !isStitching && !panoramaUrl) {
+        const currentOri = orientationRef.current;
 
-    // Evaluate Alignment Gate
-    const activeTarget = plan.targets[activeIndex];
-    if (activeTarget && !capturedSet.has(activeIndex)) {
-      // Calculate angular distance to active target
-      const targetDir = {
-        x: Math.sin(activeTarget.yawDegrees * Math.PI / 180) * Math.cos(-activeTarget.pitchDegrees * Math.PI / 180),
-        y: Math.cos(activeTarget.yawDegrees * Math.PI / 180) * Math.cos(-activeTarget.pitchDegrees * Math.PI / 180),
-        z: Math.sin(-activeTarget.pitchDegrees * Math.PI / 180)
-      };
+        // Check free-form target claim (user points camera directly at another dot)
+        const newActive = TargetSelection.selectActiveTarget(plan, currentOri, activeIndex, capturedSet);
+        if (newActive !== activeIndex) {
+          setActiveIndex(newActive);
+          alignmentGateRef.current.reset();
+        }
 
-      const forward = orientation.cameraBasis.forward;
-      const dot = Math.min(Math.max(targetDir.x * forward.x + targetDir.y * forward.y + targetDir.z * forward.z, -1), 1);
-      const angleDeg = Math.acos(dot) * (180 / Math.PI);
+        // Evaluate Alignment Gate
+        const activeTarget = plan.targets[activeIndex];
+        if (activeTarget && !capturedSet.has(activeIndex)) {
+          const targetDir = {
+            x: Math.sin(activeTarget.yawDegrees * Math.PI / 180) * Math.cos(-activeTarget.pitchDegrees * Math.PI / 180),
+            y: Math.cos(activeTarget.yawDegrees * Math.PI / 180) * Math.cos(-activeTarget.pitchDegrees * Math.PI / 180),
+            z: Math.sin(-activeTarget.pitchDegrees * Math.PI / 180)
+          };
 
-      const gate = alignmentGateRef.current.update(angleDeg);
-      setGateState(gate);
+          const forward = currentOri.cameraBasis.forward;
+          const dot = Math.min(Math.max(targetDir.x * forward.x + targetDir.y * forward.y + targetDir.z * forward.z, -1), 1);
+          const angleDeg = Math.acos(dot) * (180 / Math.PI);
 
-      if (gate.shouldCapture) {
-        handleCapture();
+          const gate = alignmentGateRef.current.update(angleDeg);
+          setGateState(gate);
+
+          if (gate.shouldCapture) {
+            handleCapture();
+          }
+        }
       }
-    }
-  }, [orientation, activeIndex, plan, capturedSet, isCapturing, isStitching, panoramaUrl, handleCapture]);
+
+      animId = requestAnimationFrame(checkAlignment);
+    };
+
+    animId = requestAnimationFrame(checkAlignment);
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [activeIndex, plan, capturedSet, isCapturing, isStitching, panoramaUrl, handleCapture]);
 
   // Trigger Panorama Stitching
   const handleStitchPanorama = async () => {
@@ -218,17 +233,18 @@ export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
 
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col select-none touch-none overflow-hidden font-sans">
-      {/* 1. Live Camera Stream */}
+      {/* 1. Full-screen Camera Stream */}
       <CameraStream ref={cameraRef} />
 
-      {/* 2. Target HUD Overlay */}
+      {/* 2. Target HUD Overlay with 60fps orientationRef */}
       <TargetOverlay
-        orientation={orientation}
+        orientationRef={orientationRef}
         plan={plan}
         activeIndex={activeIndex}
         capturedSet={capturedSet}
         alignmentGateState={gateState}
         isCapturing={isCapturing}
+        capturedFrames={capturedFrames}
       />
 
       {/* 3. Top Status Bar & Controls */}
@@ -240,7 +256,7 @@ export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
           <X className="w-5 h-5" />
         </button>
 
-        {/* Instruction Banner matching Reference Video */}
+        {/* Text prompt matching Reference Video */}
         <div className="text-center">
           <div className="text-white font-medium text-sm drop-shadow-md tracking-wide">
             {capturedFrames.length === 0
@@ -282,7 +298,7 @@ export default function PhotoSphereCaptureScreen({ onFinish, onCancel }) {
           <Undo className="w-5 h-5" />
         </button>
 
-        {/* Manual capture trigger fallback if user wants to snap instantly */}
+        {/* Manual capture trigger fallback */}
         <button
           onClick={handleCapture}
           className="w-16 h-16 rounded-full border-4 border-white/80 bg-white/20 backdrop-blur-md flex items-center justify-center active:scale-95 transition shadow-lg"
