@@ -332,12 +332,13 @@ export default function PhotoSphereCapture({
       orientation.pitch,
       viewportSize.width,
       viewportSize.height,
-      65
+      65,
+      orientation.roll || 0
     )
   } : null;
 
   const activeDist = activeTarget ? activeTarget.projected.angularDistance : 999;
-  const isAligned = isCameraReady && activeTarget && activeDist <= 3.8;
+  const isAligned = isCameraReady && activeTarget && activeDist <= 3.0;
 
   // Auto-capture logic when aligned and steady
   useEffect(() => {

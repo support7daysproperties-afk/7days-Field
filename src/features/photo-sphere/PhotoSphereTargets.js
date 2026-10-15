@@ -1,13 +1,19 @@
 /**
  * PhotoSphereTargets.js
  *
- * Generates a full 360° x 180° spherical target grid following the Google Camera Photo Sphere
- * layout (equatorial ring, upper ring, zenith overhead, lower ring, nadir downward).
+ * Implements Google Camera Photo Sphere 3D target coordinates,
+ * rigid rotation matrix camera space transformation, frustum culling,
+ * perspective projection, and single-target sequence progression.
  *
- * Math & Coordinate Conventions:
- * - Yaw: 0° to 360° (or -180° to +180°)
- * - Pitch: -90° (nadir / directly downward) to +90° (zenith / directly overhead)
- * - Reference heading: established on 1st shot, aligning subsequent targets relatively.
+ * Coordinate Convention (Right-Handed):
+ * - World Space:
+ *   +X: Right (East)
+ *   +Y: Up (Zenith)
+ *   -Z: Forward (initial bore sight heading)
+ * - Camera Space:
+ *   +X_c: Screen Right
+ *   +Y_c: Screen Up
+ *   -Z_c: Camera lens pointing direction (straight out through back of phone)
  */
 
 export function normalizeAngle(angle) {
@@ -15,20 +21,6 @@ export function normalizeAngle(angle) {
   if (n < 0) n += 360;
   if (Math.abs(n - 360) < 1e-9 || n === 0) return 0;
   return Math.round(n * 1000) / 1000;
-}
-
-export function angularDistance(yaw1, pitch1, yaw2, pitch2) {
-  const toRad = Math.PI / 180;
-  const dYaw = (yaw2 - yaw1) * toRad;
-  const dPitch = (pitch2 - pitch1) * toRad;
-  const p1 = pitch1 * toRad;
-  const p2 = pitch2 * toRad;
-
-  const a =
-    Math.sin(dPitch / 2) ** 2 +
-    Math.cos(p1) * Math.cos(p2) * Math.sin(dYaw / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
-  return (c * 180) / Math.PI;
 }
 
 export function signedAngleDiff(a, b) {
@@ -39,8 +31,104 @@ export function signedAngleDiff(a, b) {
 }
 
 /**
- * Generate full spherical capture targets.
- * Standard full 360x180 sphere:
+ * Computes angular distance in degrees between two spherical directions
+ */
+export function angularDistance(yaw1, pitch1, yaw2, pitch2) {
+  const toRad = Math.PI / 180;
+  const p1 = pitch1 * toRad;
+  const p2 = pitch2 * toRad;
+  const dYaw = (yaw2 - yaw1) * toRad;
+  const dPitch = (pitch2 - pitch1) * toRad;
+
+  const a =
+    Math.sin(dPitch / 2) ** 2 +
+    Math.cos(p1) * Math.cos(p2) * Math.sin(dYaw / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+  return (c * 180) / Math.PI;
+}
+
+/**
+ * Converts spherical (yaw, pitch) to 3D unit vector in World Space.
+ * Yaw 0°, Pitch 0° corresponds to looking straight along -Z.
+ * Yaw +90° turns right (+X).
+ * Pitch +90° turns up (+Y).
+ */
+export function sphericalToVector(yawDeg, pitchDeg) {
+  const toRad = Math.PI / 180;
+  const y = yawDeg * toRad;
+  const p = pitchDeg * toRad;
+  const cosP = Math.cos(p);
+
+  return [
+    Math.sin(y) * cosP,  // X
+    Math.sin(p),         // Y
+    -Math.cos(y) * cosP  // Z
+  ];
+}
+
+/**
+ * Constructs 3x3 camera orientation matrix from Euler angles (yaw, pitch, roll in degrees).
+ * R_cam maps camera local coordinates to world coordinates.
+ * Inverse (R_cam^T) maps world vectors to camera frame.
+ */
+export function createCameraMatrix(yawDeg, pitchDeg, rollDeg = 0) {
+  const toRad = Math.PI / 180;
+  const y = yawDeg * toRad;
+  const p = pitchDeg * toRad;
+  const r = rollDeg * toRad;
+
+  const cy = Math.cos(y);
+  const sy = Math.sin(y);
+  const cp = Math.cos(p);
+  const sp = Math.sin(p);
+  const cr = Math.cos(r);
+  const sr = Math.sin(r);
+
+  // In camera coordinates:
+  // Forward vector is [0, 0, -1]. Looking at (yaw=y, pitch=p) means:
+  // Forward_world = [sin(y)*cos(p), sin(p), -cos(y)*cos(p)]
+  // Therefore column 2 of R (which multiplies [0, 0, -1] to get -Forward_world) is:
+  // col2 = [-sin(y)*cos(p), -sin(p), cos(y)*cos(p)]
+  // Column 0 is Camera Right (+Xc)
+  // Column 1 is Camera Up (+Yc)
+  // R = [col0 col1 col2]
+  // With roll r around forward axis:
+  const col0 = [
+    cy * cr + sy * sp * sr,
+    cp * sr,
+    sy * cr - cy * sp * sr
+  ];
+  const col1 = [
+    -cy * sr + sy * sp * cr,
+    cp * cr,
+    -sy * sr - cy * sp * cr
+  ];
+  const col2 = [
+    -sy * cp,
+    -sp,
+    cy * cp
+  ];
+
+  return [
+    [col0[0], col1[0], col2[0]],
+    [col0[1], col1[1], col2[1]],
+    [col0[2], col1[2], col2[2]],
+  ];
+}
+
+/**
+ * Multiplies transpose of 3x3 matrix by 3D vector: V_cam = R^T * V_world
+ */
+export function transformVectorInverse(R, v) {
+  return [
+    R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
+    R[0][1] * v[0] + R[1][1] * v[1] + R[2][1] * v[2],
+    R[0][2] * v[0] + R[1][2] * v[1] + R[2][2] * v[2],
+  ];
+}
+
+/**
+ * Generate full spherical capture targets following Google Camera LightCycle layout:
  * - Horizon (0°): 10 shots (every 36°)
  * - Upper (+35°): 8 shots (every 45°)
  * - Zenith (+78°): 2 shots (opposite yaw)
@@ -60,7 +148,7 @@ export function generateSphericalTargets() {
       yaw: i * 36,
       pitch: 0,
       ring: 'horizon',
-      status: 'pending', // pending | capturing | captured
+      status: 'pending',
     });
   }
 
@@ -116,16 +204,17 @@ export function generateSphericalTargets() {
 }
 
 /**
- * Convert 3D spherical coordinates (yaw, pitch relative to camera center)
- * into 2D screen coordinates based on camera FOV and viewport dimensions.
+ * Projects a 3D world target onto 2D camera viewport using camera rotation matrix
+ * and perspective projection matching the APK's LightCycle projection.
  *
- * @param {number} targetYaw Target relative yaw in degrees
- * @param {number} targetPitch Target relative pitch in degrees
- * @param {number} currentYaw Current camera relative yaw in degrees
+ * @param {number} targetYaw Target world yaw in degrees
+ * @param {number} targetPitch Target world pitch in degrees
+ * @param {number} currentYaw Current camera yaw in degrees
  * @param {number} currentPitch Current camera pitch in degrees
+ * @param {number} currentRoll Current camera roll in degrees (default 0)
  * @param {number} viewportWidth Viewport width in pixels
  * @param {number} viewportHeight Viewport height in pixels
- * @param {number} hFovDeg Horizontal field of view in degrees (default ~60°)
+ * @param {number} hFovDeg Camera horizontal field of view in degrees (default 65°)
  */
 export function projectTargetToViewport(
   targetYaw,
@@ -135,56 +224,88 @@ export function projectTargetToViewport(
   viewportWidth,
   viewportHeight,
   hFovDeg = 65,
+  currentRoll = 0,
 ) {
-  const dYaw = signedAngleDiff(targetYaw, currentYaw); // horizontal angular delta
-  const dPitch = targetPitch - currentPitch;           // vertical angular delta
+  // 1. Convert target to 3D world unit vector
+  const vWorld = sphericalToVector(targetYaw, targetPitch);
 
-  // If the target is behind the camera (angular distance > 90° in azimuth), it is culled
-  const isBehind = Math.abs(dYaw) > 85;
+  // 2. Build camera orientation matrix
+  const RCam = createCameraMatrix(currentYaw, currentPitch, currentRoll);
 
+  // 3. Transform to camera space: V_cam = R_cam^T * V_world
+  const [xc, yc, zc] = transformVectorInverse(RCam, vWorld);
+
+  // Angular distance to bore sight [0, 0, -1]
+  // In camera coordinates, looking straight ahead is [0, 0, -1]
+  const cosAngle = Math.max(-1, Math.min(1, -zc));
+  const angularDist = (Math.acos(cosAngle) * 180) / Math.PI;
+
+  const dYaw = signedAngleDiff(targetYaw, currentYaw);
+  const dPitch = targetPitch - currentPitch;
+
+  // 4. Frustum / Plane Culling:
+  // Camera looks down -Z. If zc >= -0.05, the target is behind or parallel to the lens plane!
+  // Behind-camera targets MUST NEVER be projected or rendered on screen.
+  if (zc >= -0.05) {
+    return {
+      x: -9999,
+      y: -9999,
+      visible: false,
+      angularDistance: angularDist,
+      dYaw,
+      dPitch,
+      isBehind: true,
+    };
+  }
+
+  // 5. Perspective Projection
   const toRad = Math.PI / 180;
-  const f = (viewportWidth / 2) / Math.tan((hFovDeg / 2) * toRad);
+  const halfFovRad = (hFovDeg / 2) * toRad;
+  const tanHalfFov = Math.tan(halfFovRad);
 
-  // Perspective projection
-  // x is horizontal offset, y is vertical offset (pointing up is negative in screen y)
-  const tanYaw = Math.tan(dYaw * toRad);
-  const tanPitch = Math.tan(dPitch * toRad);
+  // Aspect ratio
+  const aspect = viewportWidth / Math.max(1, viewportHeight);
+  const tanHalfVfov = tanHalfFov / aspect;
 
-  const screenX = (viewportWidth / 2) + (tanYaw * f);
-  const screenY = (viewportHeight / 2) - (tanPitch * f);
+  // Normalized coordinates in camera plane (-1 to +1)
+  const xNorm = xc / (-zc * tanHalfFov);
+  const yNorm = yc / (-zc * tanHalfVfov);
 
-  const angularDist = angularDistance(currentYaw, currentPitch, targetYaw, targetPitch);
+  // Convert to screen pixel coordinates
+  const screenX = (viewportWidth / 2) + (xNorm * (viewportWidth / 2));
+  const screenY = (viewportHeight / 2) - (yNorm * (viewportHeight / 2));
+
+  // Determine visibility within the viewport (with small 20px padding for smooth entry)
+  const isVisible =
+    screenX >= -20 &&
+    screenX <= viewportWidth + 20 &&
+    screenY >= -20 &&
+    screenY <= viewportHeight + 20;
 
   return {
     x: screenX,
     y: screenY,
-    visible: !isBehind && screenX >= -50 && screenX <= viewportWidth + 50 && screenY >= -50 && screenY <= viewportHeight + 50,
+    visible: isVisible,
     angularDistance: angularDist,
     dYaw,
     dPitch,
+    isBehind: false,
   };
 }
 
 /**
- * Select the next target to capture based on the reference Photo Sphere sequence:
- * Prefers adjacent targets on the same ring (e.g. completing horizon ring first),
- * then transitions to upper ring, zenith, lower ring, and nadir.
- *
- * @param {Array<object>} targets Array of targets
- * @param {object|null} lastTarget The most recently captured target
- * @param {number} currentYaw Current camera yaw
- * @param {number} currentPitch Current camera pitch
- * @returns {object|null} The next active target
+ * Select the next target to capture matching Google Camera's sequence:
+ * Completes equatorial horizon ring first in a circular sweep,
+ * then upper ring, zenith, lower ring, and nadir.
  */
 export function selectNextTarget(targets, lastTarget = null, currentYaw = 0, currentPitch = 0) {
   const pendingTargets = targets.filter((t) => t.status === 'pending');
   if (pendingTargets.length === 0) return null;
 
-  // 1. If we have a last target, prefer pending targets in the same ring
+  // 1. If currently on a ring, select the next adjacent target on the same ring
   if (lastTarget) {
     const sameRingPending = pendingTargets.filter((t) => t.ring === lastTarget.ring);
     if (sameRingPending.length > 0) {
-      // Find the one closest in azimuth to current yaw
       let closest = sameRingPending[0];
       let minDist = angularDistance(currentYaw, currentPitch, closest.yaw, closest.pitch);
       for (let i = 1; i < sameRingPending.length; i++) {
@@ -198,12 +319,11 @@ export function selectNextTarget(targets, lastTarget = null, currentYaw = 0, cur
     }
   }
 
-  // 2. Ring order priority: horizon -> upper -> zenith -> lower -> nadir
+  // 2. Progression order: horizon -> upper -> zenith -> lower -> nadir
   const ringOrder = ['horizon', 'upper', 'zenith', 'lower', 'nadir'];
   for (const ring of ringOrder) {
     const ringPending = pendingTargets.filter((t) => t.ring === ring);
     if (ringPending.length > 0) {
-      // Pick nearest in angular distance to current orientation
       let closest = ringPending[0];
       let minDist = angularDistance(currentYaw, currentPitch, closest.yaw, closest.pitch);
       for (let i = 1; i < ringPending.length; i++) {
@@ -219,4 +339,3 @@ export function selectNextTarget(targets, lastTarget = null, currentYaw = 0, cur
 
   return pendingTargets[0];
 }
-
