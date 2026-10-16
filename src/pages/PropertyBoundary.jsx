@@ -37,7 +37,9 @@ import {
   calcPolygonAreaM2,
   areaFromM2,
   calcPerimeterM,
+  calcEdgeDistances,
   formatPerimeter,
+  formatDistance,
 } from '../services/BoundaryService';
 import { useAuth } from '../context/AuthContext';
 
@@ -101,9 +103,14 @@ export default function PropertyBoundary({
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Derived metrics
-  const hasPolygon  = coords.length >= 3;
+  const isPolygonClosed = mode === 'completed' || mode === 'saved' || mode === 'editing';
+  const hasPolygon = coords.length >= 3;
+  // Calculate geodesic area only when we have at least 3 vertices
   const areaMetrics = hasPolygon ? areaFromM2(calcPolygonAreaM2(coords)) : null;
-  const perimeterM  = hasPolygon ? Math.round(calcPerimeterM(coords)) : 0;
+  // For perimeter: if closed, full closed loop perimeter; if open line (>=2 points), sum of open segments
+  const perimeterM = coords.length >= 2
+    ? Math.round(isPolygonClosed && hasPolygon ? calcPerimeterM(coords) : calcEdgeDistances(coords, false).reduce((sum, e) => sum + e.distanceM, 0))
+    : 0;
 
   // ── Keep modeRef in sync ──────────────────────────────────────────────────────
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -151,6 +158,43 @@ export default function PropertyBoundary({
         weight: C_LINE_W,
         interactive: false,
       }).addTo(layerGrp.current);
+
+      // Edge distance measurement badges
+      const edges = calcEdgeDistances(pts, isCompleted);
+      edges.forEach((edge) => {
+        const edgeIcon = L.divIcon({
+          className: 'edge-distance-badge-wrap',
+          html: `<div class="edge-distance-badge" style="
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2px 7px;
+            background: rgba(15, 17, 21, 0.88);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            border: 1px solid rgba(59, 130, 246, 0.55);
+            border-radius: 9999px;
+            color: #60a5fa;
+            font-size: 11px;
+            font-weight: 700;
+            font-family: inherit;
+            white-space: nowrap;
+            letter-spacing: 0.02em;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+            pointer-events: none;
+            user-select: none;
+            transform: translate(-50%, -50%);
+          ">${edge.formattedDistance}</div>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+        });
+
+        L.marker(ll(edge.midpoint), {
+          icon: edgeIcon,
+          interactive: false,
+          zIndexOffset: 300,
+        }).addTo(layerGrp.current);
+      });
     }
 
     // 3. Vertices
@@ -548,13 +592,54 @@ export default function PropertyBoundary({
         </div>
       )}
 
-      {/* ── Stats panel ── */}
+      {/* ── Map Summary Bar: Field Area | Completed Area ── */}
+      <div style={S.summaryBar} role="region" aria-label="Area Summary">
+        <div style={S.summaryCol}>
+          <div style={S.summaryLabel}>Field Area</div>
+          <div style={S.summaryValue}>
+            {hasPolygon && areaMetrics ? `${areaMetrics.acres} ac` : coords.length >= 2 ? `${perimeterM} m (open)` : '—'}
+          </div>
+          <div style={S.summarySub}>
+            {hasPolygon && areaMetrics
+              ? `${areaMetrics.hectares} ha · ${areaMetrics.sq_m.toLocaleString()} m²`
+              : coords.length >= 2
+                ? `${coords.length} points`
+                : 'Draw boundary'}
+          </div>
+        </div>
+
+        <div style={S.summaryDivider} />
+
+        <div style={S.summaryCol}>
+          <div style={S.summaryLabel}>Completed Area</div>
+          <div style={{ ...S.summaryValue, color: '#94a3b8' }}>
+            Not recorded
+          </div>
+          <div style={S.summarySub}>
+            No work geometry
+          </div>
+        </div>
+      </div>
+
+      {/* ── Sub-metrics strip (Perimeter, Points, Planned) ── */}
       {coords.length > 0 && (
         <div style={S.stats}>
           <StatItem label="Points" value={coords.length} />
           {propertyAreaAcres && <StatItem label="Planned" value={`${propertyAreaAcres} ac`}/>}
-          {areaMetrics && <StatItem label="Area" value={`${areaMetrics.acres} ac`} sub={`${areaMetrics.sq_ft.toLocaleString()} ft² · ${areaMetrics.cents}¢`}/>}
-          {perimeterM > 0 && <StatItem label="Perimeter" value={formatPerimeter(perimeterM)}/>}
+          {perimeterM > 0 && (
+            <StatItem
+              label={isPolygonClosed && hasPolygon ? 'Perimeter' : 'Length'}
+              value={formatPerimeter(perimeterM)}
+              sub={isPolygonClosed ? 'Closed loop' : 'Open path'}
+            />
+          )}
+          {hasPolygon && areaMetrics && (
+            <StatItem
+              label="Area (m² / ¢)"
+              value={`${areaMetrics.sq_m.toLocaleString()} m²`}
+              sub={`${areaMetrics.cents} cents · ${areaMetrics.sq_ft.toLocaleString()} ft²`}
+            />
+          )}
         </div>
       )}
 
@@ -632,8 +717,16 @@ export default function PropertyBoundary({
 
             <div style={S.savedStats}>
               <div style={S.statRow}>
-                <span style={S.statLabel}>Area</span>
+                <span style={S.statLabel}>Area (Acres)</span>
                 <span style={S.statValue}>{savedBoundary?.area_acres} acres</span>
+              </div>
+              <div style={S.statRow}>
+                <span style={S.statLabel}>Area (Hectares)</span>
+                <span style={S.statValue}>{savedBoundary?.area_hectares ?? (savedBoundary?.area_sq_m ? (savedBoundary.area_sq_m / 10000).toFixed(4) : '—')} ha</span>
+              </div>
+              <div style={S.statRow}>
+                <span style={S.statLabel}>Area (Sq Metres)</span>
+                <span style={S.statValue}>{savedBoundary?.area_sq_m?.toLocaleString()} m²</span>
               </div>
               <div style={S.statRow}>
                 <span style={S.statLabel}>Perimeter</span>
@@ -838,9 +931,36 @@ const S = {
     pointerEvents: 'none',
     filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.5))',
   },
+  summaryBar: {
+    position: 'absolute', top: 56, left: 10, right: 10, zIndex: 400,
+    background: 'rgba(15, 17, 21, 0.90)', backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
+    borderRadius: 12, padding: '9px 14px',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+    pointerEvents: 'none',
+  },
+  summaryCol: {
+    flex: 1, display: 'flex', flexDirection: 'column', gap: 2,
+  },
+  summaryDivider: {
+    width: 1, alignSelf: 'stretch', background: 'rgba(255,255,255,0.1)',
+    margin: '0 12px',
+  },
+  summaryLabel: {
+    fontSize: 10, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+  },
+  summaryValue: {
+    fontSize: 15, fontWeight: 800, color: '#38bdf8', lineHeight: 1.2,
+  },
+  summarySub: {
+    fontSize: 10, color: '#64748b', fontWeight: 500,
+  },
   stats: {
-    position: 'absolute', top: 62, left: 10, right: 60, zIndex: 400,
+    position: 'absolute', top: 124, left: 10, right: 60, zIndex: 400,
     background: 'rgba(15,17,21,0.86)', backdropFilter: 'blur(6px)',
+    WebkitBackdropFilter: 'blur(6px)',
     borderRadius: 10, padding: '7px 12px',
     display: 'flex', gap: 14, flexWrap: 'wrap',
     border: '1px solid rgba(255,255,255,0.06)',

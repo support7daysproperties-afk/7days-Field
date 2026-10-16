@@ -68,21 +68,84 @@ export function calcCentroid(coords) {
   return { lng: sumLng / coords.length, lat: sumLat / coords.length };
 }
 
-/** Convert sq metres to various units */
+export const SQ_M_PER_ACRE = 4046.8564224;
+export const SQ_M_PER_HECTARE = 10000;
+export const ACRES_PER_HECTARE = SQ_M_PER_HECTARE / SQ_M_PER_ACRE; // approx 2.47105381
+
+/** Convert sq metres to various units with deterministic precision */
 export function areaFromM2(m2) {
+  if (!m2 || m2 < 0) {
+    return {
+      sq_m: 0,
+      sq_ft: 0,
+      acres: 0,
+      cents: 0,
+      hectares: 0,
+    };
+  }
   return {
     sq_m: Math.round(m2),
-    sq_ft: Math.round(m2 * 10.7639),
-    acres: +(m2 / 4046.856).toFixed(4),
-    cents: +(m2 / 40.4686).toFixed(2),
-    hectares: +(m2 / 10000).toFixed(4),
+    sq_ft: Math.round(m2 * 10.7639104),
+    acres: +(m2 / SQ_M_PER_ACRE).toFixed(4),
+    cents: +(m2 / 40.4685642).toFixed(2),
+    hectares: +(m2 / SQ_M_PER_HECTARE).toFixed(4),
   };
 }
 
-/** Format metres for display (m / km) */
+/** Format distance in metres for readable display (m / km) */
+export function formatDistance(m) {
+  if (m == null || isNaN(m)) return '0 m';
+  if (m >= 1000) {
+    return `${(m / 1000).toFixed(2)} km`;
+  }
+  if (m >= 100) {
+    return `${Math.round(m)} m`;
+  }
+  return `${m.toFixed(1)} m`;
+}
+
+/** Format perimeter for display (m / km) */
 export function formatPerimeter(m) {
-  if (m >= 1000) return `${(m / 1000).toFixed(2)} km`;
-  return `${Math.round(m)} m`;
+  return formatDistance(m);
+}
+
+/**
+ * Calculate distance along each edge of the polygon / line.
+ * If isClosed is true and coords.length >= 3, also calculates the closing edge (last -> first).
+ * Returns array of { index, from, to, distanceM, formattedDistance, midpoint: [lng, lat] }
+ */
+export function calcEdgeDistances(coords, isClosed = false) {
+  if (!coords || coords.length < 2) return [];
+
+  const edges = [];
+  const count = coords.length;
+  const numEdges = isClosed && count >= 3 ? count : count - 1;
+
+  for (let i = 0; i < numEdges; i++) {
+    const from = coords[i];
+    const to = coords[(i + 1) % count];
+
+    if (!from || !to) continue;
+
+    const dist = haversineM(from, to);
+    // Midpoint in geographic [lng, lat]
+    const midLng = (from[0] + to[0]) / 2;
+    const midLat = (from[1] + to[1]) / 2;
+
+    edges.push({
+      index: i,
+      fromIndex: i,
+      toIndex: (i + 1) % count,
+      from,
+      to,
+      distanceM: dist,
+      formattedDistance: formatDistance(dist),
+      midpoint: [midLng, midLat],
+      isClosingEdge: i === count - 1,
+    });
+  }
+
+  return edges;
 }
 
 // ─── GeoJSON helpers ───────────────────────────────────────────────────────────

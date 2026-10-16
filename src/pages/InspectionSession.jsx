@@ -276,9 +276,15 @@ export default function InspectionSession() {
           {/* Stats Card */}
           <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div className="flex justify-between items-center">
-              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Area</span>
+              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Field Area</span>
               <span style={{ fontWeight: 700, fontSize: '15px' }}>
-                {boundary.area_acres} acres
+                {boundary.area_acres} ac ({boundary.area_hectares ?? (boundary.area_sq_m ? (boundary.area_sq_m / 10000).toFixed(4) : '—')} ha)
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-secondary" style={{ fontSize: '14px', fontWeight: 500 }}>Area (Sq Metres)</span>
+              <span style={{ fontWeight: 700, fontSize: '15px' }}>
+                {boundary.area_sq_m ? `${boundary.area_sq_m.toLocaleString()} m²` : '—'}
               </span>
             </div>
             <div className="flex justify-between items-center">
