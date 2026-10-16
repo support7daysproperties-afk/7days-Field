@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark } from 'lucide-react';
+import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark, CheckSquare, Square } from 'lucide-react';
 import FieldCamera from '../components/FieldCamera';
 import VideoCamera from '../components/VideoCamera';
 import PhotoSphereCapture from '../features/photo-sphere/PhotoSphereCapture';
@@ -30,10 +30,36 @@ export default function InspectionSession() {
   const [evidenceSummary, setEvidenceSummary] = useState({ location: null, photos: 0, videos: 0, total: 0 });
   const [evidenceList, setEvidenceList] = useState([]);
   const [expandedFolder, setExpandedFolder] = useState('photos');
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState(new Set());
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [touchStart, setTouchStart] = useState(null);
   const [touchEnd, setTouchEnd] = useState(null);
+
+  const togglePhotoSelection = (photoId) => {
+    setSelectedPhotoIds(prev => {
+      const next = new Set(prev);
+      if (next.has(photoId)) {
+        next.delete(photoId);
+      } else {
+        next.add(photoId);
+      }
+      return next;
+    });
+  };
+
+  const handleDeleteUnselectedPhotos = async () => {
+    const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
+    const toDelete = photos.filter(p => !selectedPhotoIds.has(p.id));
+    if (toDelete.length === 0) return;
+    
+    if (window.confirm(`Keep ${selectedPhotoIds.size} selected photo(s) and remove ${toDelete.length} unselected photo(s)?`)) {
+      for (const item of toDelete) {
+        await MediaRepository.deleteMedia(item.id);
+      }
+      await loadEvidence();
+    }
+  };
 
   const [isLoading, setIsLoading] = useState(true);
 
@@ -125,6 +151,14 @@ export default function InspectionSession() {
     setEvidenceList(list);
     const summary = await EvidenceService.getEvidenceSummary(id);
     setEvidenceSummary(summary);
+    
+    // Auto-select all photos by default so supervisor can uncheck any they don't want
+    const photoIds = list.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification').map(p => p.id);
+    setSelectedPhotoIds(prev => {
+      const next = new Set(prev);
+      photoIds.forEach(pid => next.add(pid));
+      return next;
+    });
   };
 
   useEffect(() => { loadEvidence(); }, [id]);
@@ -459,15 +493,104 @@ export default function InspectionSession() {
 
           {expandedFolder === 'photos' && (
             <div className="animate-fade-in mb-sm p-sm bg-bg-color rounded-lg border border-color">
-              <h4 className="text-sm mb-sm flex justify-between font-semibold">Photos <span className="text-secondary">{photos.length}</span></h4>
+              <div className="flex justify-between items-center mb-sm">
+                <div>
+                  <h4 className="text-sm font-semibold m-0">Photos ({photos.length})</h4>
+                  <p className="text-xs text-secondary m-0" style={{ marginTop: '2px' }}>
+                    Tap checkbox to select photos to finalize.
+                  </p>
+                </div>
+                {photos.length > 0 && (
+                  <div className="flex items-center gap-xs">
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        const photoIds = photos.map(p => p.id);
+                        const allSelected = photoIds.every(id => selectedPhotoIds.has(id));
+                        setSelectedPhotoIds(prev => {
+                          const next = new Set(prev);
+                          if (allSelected) {
+                            photoIds.forEach(id => next.delete(id));
+                          } else {
+                            photoIds.forEach(id => next.add(id));
+                          }
+                          return next;
+                        });
+                      }}
+                      style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                    >
+                      {photos.every(p => selectedPhotoIds.has(p.id)) ? 'Deselect All' : 'Select All'}
+                    </button>
+                    {selectedPhotoIds.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleDeleteUnselectedPhotos}
+                        style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--danger-color)', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Keep Selected ({photos.filter(p => selectedPhotoIds.has(p.id)).length})
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {photos.length === 0 ? <p className="text-center text-xs text-secondary py-sm">No photos captured</p> : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                  {photos.map((p, idx) => (
-                    <div key={p.id} onClick={() => setSelectedMediaIndex(evidenceList.findIndex(e => e.id === p.id))} style={{ aspectRatio: '1', backgroundColor: '#000', borderRadius: '8px', overflow: 'hidden', position: 'relative', cursor: 'pointer' }}>
-                      <img src={p.originalImage} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="evidence" />
-                      <div style={{ position: 'absolute', bottom: 4, right: 4 }}><ImageIcon size={14} color="white" /></div>
-                    </div>
-                  ))}
+                  {photos.map((p) => {
+                    const isSelected = selectedPhotoIds.has(p.id);
+                    return (
+                      <div 
+                        key={p.id} 
+                        style={{ 
+                          aspectRatio: '1', 
+                          backgroundColor: '#000', 
+                          borderRadius: '8px', 
+                          overflow: 'hidden', 
+                          position: 'relative', 
+                          cursor: 'pointer',
+                          border: isSelected ? '2px solid var(--primary-color)' : '1px solid var(--border-color)'
+                        }}
+                      >
+                        <img 
+                          src={p.originalImage} 
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                          alt="evidence" 
+                          onClick={() => setSelectedMediaIndex(evidenceList.findIndex(e => e.id === p.id))}
+                        />
+                        
+                        {/* Checkbox trigger */}
+                        <div 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            togglePhotoSelection(p.id);
+                          }}
+                          style={{ 
+                            position: 'absolute', 
+                            top: 4, 
+                            left: 4, 
+                            backgroundColor: isSelected ? 'var(--primary-color)' : 'rgba(0,0,0,0.6)', 
+                            borderRadius: '4px',
+                            padding: '3px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer'
+                          }}
+                          title={isSelected ? 'Selected' : 'Select'}
+                        >
+                          {isSelected ? (
+                            <CheckSquare size={16} color="white" />
+                          ) : (
+                            <Square size={16} color="white" />
+                          )}
+                        </div>
+
+                        <div style={{ position: 'absolute', bottom: 4, right: 4, pointerEvents: 'none' }}>
+                          <ImageIcon size={14} color="white" />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

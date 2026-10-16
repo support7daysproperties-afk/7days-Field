@@ -9,21 +9,15 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
   const [stream, setStream] = useState(null);
   const [cameraError, setCameraError] = useState(null);
   const [facingMode, setFacingMode] = useState('environment');
-  const [capturedPhotoUrl, setCapturedPhotoUrl] = useState(null);
-  const [geotaggedPhotoUrl, setGeotaggedPhotoUrl] = useState(null);
   
   const [zoom, setZoom] = useState(1);
   const [zoomCapabilities, setZoomCapabilities] = useState({ min: 1, max: 5, step: 0.1 });
   const [isDigitalZoom, setIsDigitalZoom] = useState(false);
   
-  const originalBlobRef = useRef(null);
-  const geotaggedBlobRef = useRef(null);
-  
   const [liveLocation, setLiveLocation] = useState({
     loading: true, lat: null, lon: null, accuracy: null, timestamp: null, error: null
   });
 
-  const [saving, setSaving] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const watchIdRef = useRef(null);
 
@@ -121,62 +115,92 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
     startCamera(newMode);
   };
 
+  const [capturedCount, setCapturedCount] = useState(0);
+  const [lastThumbnail, setLastThumbnail] = useState(null);
+  const [flashAnimation, setFlashAnimation] = useState(false);
+
   const handleCapture = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || isProcessing) return;
     setIsProcessing(true);
+    setFlashAnimation(true);
+    setTimeout(() => setFlashAnimation(false), 200);
     
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext('2d');
-    
-    if (isDigitalZoom && zoom > 1) {
-      const sw = video.videoWidth / zoom;
-      const sh = video.videoHeight / zoom;
-      const sx = (video.videoWidth - sw) / 2;
-      const sy = (video.videoHeight - sh) / 2;
-      context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-    } else {
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    }
-    
-    canvas.toBlob(async (blob) => {
-      originalBlobRef.current = blob;
-      const originalDataUrl = URL.createObjectURL(blob);
-      setCapturedPhotoUrl(originalDataUrl);
+    try {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
       
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        setStream(null);
+      if (isDigitalZoom && zoom > 1) {
+        const sw = video.videoWidth / zoom;
+        const sh = video.videoHeight / zoom;
+        const sx = (video.videoWidth - sw) / 2;
+        const sy = (video.videoHeight - sh) / 2;
+        context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      } else {
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
       }
       
-      if (evidenceType === 'Location Verification') {
-        // Fetch address at capture time to save API limits
-        let addressDetails = {
-          short: 'Location unavailable',
-          full: 'Unknown'
-        };
-        if (liveLocation.lat) {
-           try {
-             const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${liveLocation.lat}&lon=${liveLocation.lon}&format=json`);
-             const data = await res.json();
-             if (data && data.display_name) {
-               addressDetails.full = data.display_name;
-               const parts = data.display_name.split(', ');
-               addressDetails.short = parts.slice(Math.max(parts.length - 4, 0)).join(', ');
-             }
-           } catch(e) {
-             console.warn("Reverse geocoding failed", e);
-           }
+      canvas.toBlob(async (blob) => {
+        if (!blob) {
+          setIsProcessing(false);
+          return;
         }
-        await generateGeotaggedImage(originalDataUrl, { ...liveLocation, address: addressDetails });
-      }
+
+        const originalDataUrl = URL.createObjectURL(blob);
+        let geotaggedBlob = null;
+
+        if (evidenceType === 'Location Verification') {
+          let addressDetails = {
+            short: 'Location unavailable',
+            full: 'Unknown'
+          };
+          if (liveLocation.lat) {
+            try {
+              const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${liveLocation.lat}&lon=${liveLocation.lon}&format=json`);
+              const data = await res.json();
+              if (data && data.display_name) {
+                addressDetails.full = data.display_name;
+                const parts = data.display_name.split(', ');
+                addressDetails.short = parts.slice(Math.max(parts.length - 4, 0)).join(', ');
+              }
+            } catch (e) {
+              console.warn("Reverse geocoding failed", e);
+            }
+          }
+          geotaggedBlob = await generateGeotaggedImageBlob(originalDataUrl, { ...liveLocation, address: addressDetails });
+        }
+
+        // Save immediately into repository
+        await EvidenceService.saveEvidence({
+          taskId,
+          evidenceType,
+          mediaType: 'photo',
+          original_blob: blob,
+          geotagged_blob: geotaggedBlob || blob,
+          mime_type: 'image/jpeg',
+          size: blob.size,
+          latitude: liveLocation.lat,
+          longitude: liveLocation.lon,
+          accuracy: liveLocation.accuracy,
+          location_captured_at: liveLocation.timestamp || new Date().getTime(),
+          captured_at: new Date().toISOString()
+        });
+
+        // Update thumbnail and count without stopping camera stream
+        setLastThumbnail(originalDataUrl);
+        setCapturedCount(prev => prev + 1);
+        setIsProcessing(false);
+        if (onSave) onSave();
+      }, 'image/jpeg', 0.9);
+    } catch (err) {
+      console.error('Capture error:', err);
       setIsProcessing(false);
-    }, 'image/jpeg', 0.9);
+    }
   };
 
-  const generateGeotaggedImage = (originalUrl, loc) => {
+  const generateGeotaggedImageBlob = (originalUrl, loc) => {
     return new Promise((resolve) => {
       const canvas = document.createElement('canvas');
       const img = new Image();
@@ -187,8 +211,6 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         ctx.drawImage(img, 0, 0);
         
         // Scale metrics proportionally with canvas resolution
-        // Use a baseline where 1080px width has standard scale = 1.0
-        // We use min(width, height) so portrait and landscape maintain consistent, readable text size
         const baseDim = Math.min(canvas.width, canvas.height);
         const scale = Math.max(0.6, baseDim / 1080);
 
@@ -196,12 +218,10 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         const boxPadding = Math.round(18 * scale);
         const overlayWidth = canvas.width - (boxMargin * 2);
 
-        // Responsive font sizes
         const titleFontSize = Math.round(20 * scale);
         const bodyFontSize = Math.round(16 * scale);
         const lineHeight = Math.round(26 * scale);
 
-        // Lines to render
         const lines = [];
         if (loc.lat) {
           lines.push({ 
@@ -211,7 +231,6 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
           });
           
           if (loc.address && loc.address.full) {
-            // Word wrap address to fit overlayWidth with padding
             const maxTextWidth = overlayWidth - (boxPadding * 2);
             const words = loc.address.full.split(' ');
             let currentLine = '';
@@ -270,9 +289,8 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         const boxHeight = (lines.length * lineHeight) + (boxPadding * 2);
         const startY = canvas.height - boxHeight - boxMargin;
 
-        // Draw Rounded Rectangle with crisp translucent dark background
         const radius = Math.round(14 * scale);
-        ctx.fillStyle = 'rgba(25, 23, 18, 0.82)'; // Polished dark backdrop
+        ctx.fillStyle = 'rgba(25, 23, 18, 0.82)';
         ctx.beginPath();
         ctx.moveTo(boxMargin + radius, startY);
         ctx.lineTo(boxMargin + overlayWidth - radius, startY);
@@ -286,7 +304,6 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         ctx.closePath();
         ctx.fill();
         
-        // Draw 7DAYS PROPERTIES Tag above the box
         const tagHeight = Math.round(38 * scale);
         const tagFontSize = Math.round(15 * scale);
         ctx.font = `bold ${tagFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
@@ -309,10 +326,9 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         ctx.closePath();
         ctx.fill();
         
-        ctx.fillStyle = '#60a5fa'; // 7Days blue accent
+        ctx.fillStyle = '#60a5fa';
         ctx.fillText(tagText, tagX + Math.round(18 * scale), tagY + Math.round(25 * scale));
         
-        // Draw Text Lines
         let currentY = startY + boxPadding + Math.round(16 * scale);
         lines.forEach(line => {
           ctx.fillStyle = line.color;
@@ -322,207 +338,162 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         });
         
         canvas.toBlob((blob) => {
-          geotaggedBlobRef.current = blob;
-          setGeotaggedPhotoUrl(URL.createObjectURL(blob));
-          resolve();
+          resolve(blob);
         }, 'image/jpeg', 0.9);
       };
       img.src = originalUrl;
     });
   };
 
-  const handleRetake = () => {
-    if (capturedPhotoUrl) URL.revokeObjectURL(capturedPhotoUrl);
-    if (geotaggedPhotoUrl) URL.revokeObjectURL(geotaggedPhotoUrl);
-    setCapturedPhotoUrl(null);
-    setGeotaggedPhotoUrl(null);
-    originalBlobRef.current = null;
-    geotaggedBlobRef.current = null;
-    startCamera();
-    if (evidenceType === 'Location Verification') {
-      startLocationWatcher();
-    }
+  const handleFinish = () => {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    onCancel();
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    await EvidenceService.saveEvidence({
-      taskId,
-      evidenceType,
-      mediaType: 'photo',
-      original_blob: originalBlobRef.current,
-      geotagged_blob: geotaggedBlobRef.current,
-      mime_type: 'image/jpeg',
-      size: originalBlobRef.current.size,
-      latitude: liveLocation.lat,
-      longitude: liveLocation.lon,
-      accuracy: liveLocation.accuracy,
-      location_captured_at: liveLocation.timestamp || new Date().getTime(),
-      captured_at: new Date().toISOString()
-    });
-    setSaving(false);
-    onSave();
-  };
+  return (
+    <div className="fixed inset-0 bg-black z-50 flex flex-col" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 100 }}>
+      {/* Header */}
+      <div className="flex justify-between items-center p-md" style={{ padding: '16px', color: 'white', zIndex: 20 }}>
+        <button onClick={handleFinish} className="text-white flex items-center gap-xs" style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '20px', padding: '6px 14px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}>
+          <X size={18} /> Done ({capturedCount})
+        </button>
+        <span className="font-medium text-sm" style={{ backgroundColor: 'rgba(0,0,0,0.5)', padding: '4px 12px', borderRadius: '14px' }}>
+          {evidenceType}
+        </span>
+        <button onClick={toggleCamera} className="text-white" style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '50%', width: '38px', height: '38px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <RotateCcw size={18} />
+        </button>
+      </div>
 
-  if (!capturedPhotoUrl) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 flex flex-col" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 100 }}>
-        {/* Header */}
-        <div className="flex justify-between items-center p-md" style={{ padding: '16px', color: 'white' }}>
-          <button onClick={onCancel} className="text-white" style={{ background: 'none', border: 'none' }}><X size={28} /></button>
-          <span className="font-medium">{evidenceType}</span>
-          <button onClick={toggleCamera} className="text-white" style={{ background: 'none', border: 'none' }}><RotateCcw size={24} /></button>
+      {/* Live GPS Status */}
+      {evidenceType === 'Location Verification' && (
+        <div className="absolute w-full z-10 flex justify-center mt-2" style={{ top: '64px' }}>
+          {liveLocation.loading ? (
+             <div className="bg-black bg-opacity-70 text-white px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)'}}>
+               <div className="spinner" style={{ width: '12px', height: '12px', border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+               Acquiring GPS...
+             </div>
+          ) : liveLocation.error ? (
+             <div className="bg-black bg-opacity-70 text-warning px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)', color: 'var(--warning-color)'}}>
+               <AlertTriangle size={16} /> {liveLocation.error}
+             </div>
+          ) : (
+             <div className="bg-black bg-opacity-70 text-success px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)', color: 'var(--success-color)'}}>
+               <MapPin size={16} /> Accuracy ±{Math.round(liveLocation.accuracy)}m
+             </div>
+          )}
         </div>
-
-        {/* Live GPS Status */}
-        {evidenceType === 'Location Verification' && (
-          <div className="absolute w-full z-10 flex justify-center mt-2" style={{ top: '60px' }}>
-            {liveLocation.loading ? (
-               <div className="bg-black bg-opacity-70 text-white px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)'}}>
-                 <div className="spinner" style={{ width: '12px', height: '12px', border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-                 Acquiring GPS...
-               </div>
-            ) : liveLocation.error ? (
-               <div className="bg-black bg-opacity-70 text-warning px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)', color: 'var(--warning-color)'}}>
-                 <AlertTriangle size={16} /> {liveLocation.error}
-               </div>
-            ) : (
-               <div className="bg-black bg-opacity-70 text-success px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)', color: 'var(--success-color)'}}>
-                 <MapPin size={16} /> Accuracy ±{Math.round(liveLocation.accuracy)}m
-               </div>
-            )}
+      )}
+      
+      {/* Viewport preview */}
+      <div className="flex-1 relative flex items-center justify-center bg-black" style={{ minHeight: 0, overflow: 'hidden' }}>
+        {flashAnimation && (
+          <div style={{ position: 'absolute', inset: 0, backgroundColor: 'white', zIndex: 30, opacity: 0.8, pointerEvents: 'none' }} />
+        )}
+        {cameraError ? (
+          <div className="text-center p-md text-white">
+            <AlertTriangle size={48} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 16px auto' }} />
+            <p className="mb-md">{cameraError}</p>
+            <button className="btn btn-outline text-white border-white mt-md" onClick={startCamera}>Try Again</button>
+          </div>
+        ) : (
+          <>
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              style={{ 
+                width: '100%', 
+                height: '100%', 
+                objectFit: 'cover',
+                transform: isDigitalZoom ? `scale(${zoom})` : 'none',
+                transformOrigin: 'center center',
+                transition: 'transform 0.1s ease-out'
+              }} 
+            />
+            <canvas ref={canvasRef} style={{ display: 'none' }} />
+          </>
+        )}
+      </div>
+      
+      {/* Controls Bar */}
+      <div className="flex flex-col items-center justify-end pb-safe bg-black w-full" style={{ padding: '16px 24px 32px 24px', paddingBottom: 'calc(32px + env(safe-area-inset-bottom))' }}>
+        {zoomCapabilities && (
+          <div className="w-full flex flex-col items-center mb-md" style={{ gap: '6px', maxWidth: '280px' }}>
+             <span style={{color: 'white', fontSize: '13px', fontWeight: 'bold'}}>{zoom.toFixed(1)}x</span>
+             <div className="w-full flex items-center gap-sm">
+               <span style={{color: '#aaa', fontSize: '11px', fontWeight: 'bold'}}>1x</span>
+               <input 
+                 type="range" 
+                 min={zoomCapabilities.min} 
+                 max={zoomCapabilities.max} 
+                 step={zoomCapabilities.step}
+                 value={zoom}
+                 onChange={(e) => {
+                   const newZoom = parseFloat(e.target.value);
+                   setZoom(newZoom);
+                   if (stream && !isDigitalZoom) {
+                     const track = stream.getVideoTracks()[0];
+                     if (track.applyConstraints) {
+                       track.applyConstraints({ advanced: [{ zoom: newZoom }] }).catch(err => console.log('Zoom error', err));
+                     }
+                   }
+                 }}
+                 style={{ flex: 1, accentColor: 'white' }}
+               />
+               <span style={{color: '#aaa', fontSize: '11px', fontWeight: 'bold'}}>{zoomCapabilities.max}x</span>
+             </div>
           </div>
         )}
         
-        {/* Preview */}
-        <div className="flex-1 relative flex items-center justify-center bg-black" style={{ minHeight: 0, overflow: 'hidden' }}>
-          {cameraError ? (
-            <div className="text-center p-md text-white">
-              <AlertTriangle size={48} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 16px auto' }} />
-              <p className="mb-md">{cameraError}</p>
-              <button className="btn btn-outline text-white border-white mt-md" onClick={startCamera}>Try Again</button>
-            </div>
-          ) : (
-            <>
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
-                style={{ 
-                  width: '100%', 
-                  height: '100%', 
-                  objectFit: 'cover',
-                  transform: isDigitalZoom ? `scale(${zoom})` : 'none',
-                  transformOrigin: 'center center',
-                  transition: 'transform 0.1s ease-out'
-                }} 
-              />
-              <canvas ref={canvasRef} style={{ display: 'none' }} />
-            </>
-          )}
-        </div>
-        
-        {/* Controls */}
-        <div className="flex flex-col items-center justify-end pb-safe bg-black w-full" style={{ padding: '16px 32px 32px 32px', paddingBottom: 'calc(32px + env(safe-area-inset-bottom))' }}>
-          {zoomCapabilities && (
-            <div className="w-full flex flex-col items-center mb-lg" style={{ gap: '8px', maxWidth: '300px' }}>
-               <span style={{color: 'white', fontSize: '14px', fontWeight: 'bold'}}>{zoom.toFixed(1)}x</span>
-               <div className="w-full flex items-center gap-sm">
-                 <span style={{color: '#aaa', fontSize: '12px', fontWeight: 'bold'}}>1x</span>
-                 <input 
-                   type="range" 
-                   min={zoomCapabilities.min} 
-                   max={zoomCapabilities.max} 
-                   step={zoomCapabilities.step}
-                   value={zoom}
-                   onChange={(e) => {
-                     const newZoom = parseFloat(e.target.value);
-                     setZoom(newZoom);
-                     if (stream && !isDigitalZoom) {
-                       const track = stream.getVideoTracks()[0];
-                       if (track.applyConstraints) {
-                         track.applyConstraints({ advanced: [{ zoom: newZoom }] }).catch(err => console.log('Zoom error', err));
-                       }
-                     }
-                   }}
-                   style={{ flex: 1, accentColor: 'white' }}
-                 />
-                 <span style={{color: '#aaa', fontSize: '12px', fontWeight: 'bold'}}>{zoomCapabilities.max}x</span>
-               </div>
-            </div>
-          )}
-          
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: '320px', padding: '0 12px' }}>
+          {/* Last thumbnail preview */}
+          <div style={{ width: '48px', height: '48px', borderRadius: '8px', overflow: 'hidden', border: '2px solid rgba(255,255,255,0.4)', backgroundColor: '#222', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {lastThumbnail ? (
+              <img src={lastThumbnail} alt="Latest" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <Camera size={20} color="#888" />
+            )}
+          </div>
+
+          {/* Shutter button */}
           <button 
             disabled={!!cameraError || isProcessing}
             onClick={handleCapture}
             style={{
-              width: '72px', height: '72px', borderRadius: '50%', 
+              width: '74px', height: '74px', borderRadius: '50%', 
               backgroundColor: 'white', border: '4px solid #aaa',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               cursor: cameraError ? 'not-allowed' : 'pointer'
             }}
+            aria-label="Take Photo"
           >
             {isProcessing ? 
-              <div style={{ width: '24px', height: '24px', border: '3px solid black', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div> 
-              : <div style={{ width: '56px', height: '56px', borderRadius: '50%', border: '2px solid black' }}></div>
+              <div style={{ width: '26px', height: '26px', border: '3px solid black', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div> 
+              : <div style={{ width: '58px', height: '58px', borderRadius: '50%', border: '2px solid black' }}></div>
             }
           </button>
-        </div>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
-  }
 
-  // Render Review Screen
-  return (
-    <div className="fixed inset-0 bg-surface z-50 flex flex-col overflow-y-auto" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'var(--bg-color)', zIndex: 100 }}>
-      <div className="p-md bg-surface-color border-b border-color" style={{ padding: '16px', backgroundColor: 'var(--surface-color)', borderBottom: '1px solid var(--border-color)' }}>
-        <h2 className="text-center" style={{ fontSize: '18px' }}>PHOTO PREVIEW</h2>
-      </div>
-
-      <div className="flex-1 p-md" style={{ padding: '16px' }}>
-        <div className="card" style={{ padding: '8px', marginBottom: '16px', backgroundColor: '#000' }}>
-          <img src={geotaggedPhotoUrl || capturedPhotoUrl} alt="Captured Evidence" style={{ width: '100%', borderRadius: '8px', display: 'block' }} />
-        </div>
-
-        <div className="card">
-          <div className="flex flex-col gap-sm">
-            {evidenceType === 'Location Verification' && (
-              <>
-                <div className="flex items-center gap-sm py-xs">
-                  {!liveLocation.lat ? <AlertTriangle size={20} className="text-warning"/> : <CheckCircle size={20} className="text-success"/>}
-                  <span className="font-medium text-sm">{!liveLocation.lat ? 'Location unavailable' : 'Location captured'}</span>
-                </div>
-                {liveLocation.lat && (
-                  <>
-                    <div className="flex items-center gap-sm py-xs text-sm text-secondary">
-                      <CheckCircle size={16} /> Accuracy: ±{Math.round(liveLocation.accuracy)} m
-                    </div>
-                    <div className="flex items-center gap-sm py-xs text-sm text-secondary">
-                      <CheckCircle size={16} /> GPS coordinates available
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-            {evidenceType !== 'Location Verification' && (
-              <div className="flex items-center gap-sm py-xs">
-                <CheckCircle size={20} className="text-success"/>
-                <span className="font-medium text-sm">Photo Captured Successfully</span>
-              </div>
-            )}
-          </div>
+          {/* Finish / Done button */}
+          <button 
+            onClick={handleFinish}
+            style={{
+              minWidth: '56px',
+              padding: '8px 12px',
+              borderRadius: '20px',
+              backgroundColor: capturedCount > 0 ? 'var(--primary-color)' : 'rgba(255,255,255,0.2)',
+              color: 'white',
+              border: 'none',
+              fontWeight: 600,
+              fontSize: '13px',
+              cursor: 'pointer'
+            }}
+          >
+            Done
+          </button>
         </div>
       </div>
-
-      <div className="p-md flex gap-md bg-surface-color border-t border-color pb-safe" style={{ padding: '16px', display: 'flex', gap: '16px', backgroundColor: 'var(--surface-color)', borderTop: '1px solid var(--border-color)', paddingBottom: 'calc(16px + env(safe-area-inset-bottom))' }}>
-        <button className="btn btn-secondary flex-1" onClick={handleRetake} disabled={saving}>
-          <RotateCcw size={18} /> Retake
-        </button>
-        <button className="btn btn-primary flex-1" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Confirm & Save'}
-        </button>
-      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
