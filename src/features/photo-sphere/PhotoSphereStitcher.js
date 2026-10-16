@@ -115,86 +115,160 @@ export class PhotoSphereStitcher {
     // Camera estimated horizontal FOV (approx 65 degrees)
     const hFov = (options.fov || 65) * (Math.PI / 180);
 
-    // Create an offscreen buffer for blending individual projected frames
+    // Create equirectangular accumulator buffers for seamless cosine blending
+    const accumR = new Float32Array(panoWidth * panoHeight);
+    const accumG = new Float32Array(panoWidth * panoHeight);
+    const accumB = new Float32Array(panoWidth * panoHeight);
+    const accumW = new Float32Array(panoWidth * panoHeight);
+
+    // Offscreen canvas to extract pixel data from frame ImageBitmaps
     const frameCanvas = document.createElement('canvas');
-    frameCanvas.width = panoWidth;
-    frameCanvas.height = panoHeight;
-    const frameCtx = frameCanvas.getContext('2d', { willReadFrequently: true });
+    const frameCtx = frameCanvas.getContext('2d');
 
-    // Sort frames: horizon first, then upper/lower, then zenith/nadir to ensure natural layering
-    const sortedFrames = [...loadedFrames].sort((a, b) => Math.abs(a.pitch) - Math.abs(b.pitch));
-
-    for (let idx = 0; idx < sortedFrames.length; idx++) {
-      const f = sortedFrames[idx];
+    for (let idx = 0; idx < loadedFrames.length; idx++) {
+      const f = loadedFrames[idx];
       onProgress(
-        0.35 + 0.45 * ((idx + 1) / sortedFrames.length),
-        `Projecting & blending frame ${idx + 1}/${sortedFrames.length} (yaw: ${Math.round(f.yaw)}°, pitch: ${Math.round(f.pitch)}°)...`
+        0.35 + 0.45 * ((idx + 1) / loadedFrames.length),
+        `Projecting & blending frame ${idx + 1}/${loadedFrames.length} (yaw: ${Math.round(f.yaw)}°, pitch: ${Math.round(f.pitch)}°)...`
       );
 
-      // Clear frame canvas
-      frameCtx.clearRect(0, 0, panoWidth, panoHeight);
+      frameCanvas.width = f.w;
+      frameCanvas.height = f.h;
+      frameCtx.drawImage(f.bitmap, 0, 0);
+      const srcData = frameCtx.getImageData(0, 0, f.w, f.h).data;
 
-      // Normalize yaw to [0, 360)
-      let normYaw = f.yaw % 360;
-      if (normYaw < 0) normYaw += 360;
-
-      // Center coordinates on equirectangular map:
-      // x: [0, 360) -> [0, panoWidth)
-      // y: pitch from [+90 (zenith) to -90 (nadir)] -> [0, panoHeight]
-      const centerX = (normYaw / 360) * panoWidth;
-      const centerY = ((90 - f.pitch) / 180) * panoHeight;
-
-      // In equirectangular projection, horizontal angular span is hFov.
-      // Near poles (high pitch), pixels stretch horizontally as 1/cos(pitch).
-      // We clamp cosPitch to 0.12 to prevent division by zero while correctly expanding near the poles
+      // Coordinate axes for this frame
+      const yawRad = (f.yaw * Math.PI) / 180;
       const pitchRad = (f.pitch * Math.PI) / 180;
-      const cosPitch = Math.max(0.12, Math.cos(pitchRad));
-      const projectedW = ((hFov / (2 * Math.PI)) * panoWidth) / cosPitch;
-      const aspect = f.h / f.w;
-      const projectedH = (hFov * aspect / Math.PI) * panoHeight;
+      const rollRad = f.roll ? (f.roll * Math.PI) / 180 : 0;
 
-      // ── Create Soft Vignetted Frame with Cosine Alpha-Feathering ──
-      // This eliminates hard boundary lines where frames overlap without washing out the center.
-      const tempC = document.createElement('canvas');
-      tempC.width = f.w;
-      tempC.height = f.h;
-      const tCtx = tempC.getContext('2d');
-      tCtx.drawImage(f.bitmap, 0, 0);
+      // Forward look vector:
+      const forward = [
+        Math.cos(pitchRad) * Math.sin(yawRad),
+        Math.sin(pitchRad),
+        -Math.cos(pitchRad) * Math.cos(yawRad),
+      ];
 
-      tCtx.globalCompositeOperation = 'destination-in';
-      const grad = tCtx.createRadialGradient(
-        f.w / 2, f.h / 2, Math.min(f.w, f.h) * 0.22,
-        f.w / 2, f.h / 2, Math.min(f.w, f.h) * 0.50
-      );
-      grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
-      grad.addColorStop(0.75, 'rgba(0, 0, 0, 0.92)');
-      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      tCtx.fillStyle = grad;
-      tCtx.fillRect(0, 0, f.w, f.h);
+      // World up reference:
+      let worldUp = [0, 1, 0];
+      if (Math.abs(forward[1]) > 0.98) {
+        worldUp = [Math.sin(yawRad), 0, -Math.cos(yawRad)];
+      }
 
-      // Render onto frameCanvas (handling 360° horizontal wraparound)
-      const renderAtX = (cx) => {
-        frameCtx.save();
-        frameCtx.translate(cx, centerY);
-        if (f.roll) {
-          frameCtx.rotate((-f.roll * Math.PI) / 180);
+      // right = forward x worldUp
+      let right = [
+        forward[1] * worldUp[2] - forward[2] * worldUp[1],
+        forward[2] * worldUp[0] - forward[0] * worldUp[2],
+        forward[0] * worldUp[1] - forward[1] * worldUp[0],
+      ];
+      const rLen = Math.hypot(right[0], right[1], right[2]) || 1;
+      right = [right[0] / rLen, right[1] / rLen, right[2] / rLen];
+
+      // up = right x forward
+      let up = [
+        right[1] * forward[2] - right[2] * forward[1],
+        right[2] * forward[0] - right[0] * forward[2],
+        right[0] * forward[1] - right[1] * forward[0],
+      ];
+
+      if (rollRad !== 0) {
+        const cosR = Math.cos(rollRad);
+        const sinR = Math.sin(rollRad);
+        const newRight = [
+          right[0] * cosR + up[0] * sinR,
+          right[1] * cosR + up[1] * sinR,
+          right[2] * cosR + up[2] * sinR,
+        ];
+        const newUp = [
+          -right[0] * sinR + up[0] * cosR,
+          -right[1] * sinR + up[1] * cosR,
+          -right[2] * sinR + up[2] * cosR,
+        ];
+        right = newRight;
+        up = newUp;
+      }
+
+      const aspect = f.w / f.h;
+      // Calibrated wide-angle smartphone diagonal FOV ~74.0 degrees
+      const tanHalfD = Math.tan(37.0 * (Math.PI / 180));
+      const tanHalfV = tanHalfD / Math.sqrt(1 + aspect * aspect);
+      const tanHalfH = aspect * tanHalfV;
+
+      const angularRadius = Math.atan(tanHalfD);
+      const maxCosRadius = Math.cos(angularRadius * 1.08);
+
+      const minLat = Math.max(-Math.PI / 2, pitchRad - angularRadius * 1.15);
+      const maxLat = Math.min(Math.PI / 2, pitchRad + angularRadius * 1.15);
+
+      const pyMin = Math.max(0, Math.floor((0.5 - maxLat / Math.PI) * panoHeight));
+      const pyMax = Math.min(panoHeight - 1, Math.ceil((0.5 - minLat / Math.PI) * panoHeight));
+
+      for (let py = pyMin; py <= pyMax; py++) {
+        const vTex = 1.0 - (py + 0.5) / panoHeight;
+        const lat = (vTex - 0.5) * Math.PI;
+        const cosLat = Math.cos(lat);
+        const sinLat = Math.sin(lat);
+
+        for (let px = 0; px < panoWidth; px++) {
+          const uTex = (px + 0.5) / panoWidth;
+          const lon = (uTex - 0.5) * 2 * Math.PI;
+
+          const vx = cosLat * Math.sin(lon);
+          const vy = sinLat;
+          const vz = -cosLat * Math.cos(lon);
+
+          const dotZ = vx * forward[0] + vy * forward[1] + vz * forward[2];
+          if (dotZ <= maxCosRadius) continue;
+
+          const projX = (vx * right[0] + vy * right[1] + vz * right[2]) / dotZ;
+          const projY = (vx * up[0] + vy * up[1] + vz * up[2]) / dotZ;
+
+          const normX = projX / tanHalfH;
+          const normY = projY / tanHalfV;
+
+          if (Math.abs(normX) <= 1.0 && Math.abs(normY) <= 1.0) {
+            const srcX = Math.min(f.w - 1, Math.max(0, Math.floor((normX * 0.5 + 0.5) * f.w)));
+            const srcY = Math.min(f.h - 1, Math.max(0, Math.floor((0.5 - normY * 0.5) * f.h)));
+
+            const srcIdx = (srcY * f.w + srcX) * 4;
+            const pIdx = py * panoWidth + px;
+
+            // Continuous 2D cosine weight: 1.0 at optical center, exactly 0.0 at borders
+            const wx = Math.cos((normX * Math.PI) / 2);
+            const wy = Math.cos((normY * Math.PI) / 2);
+            const weight = Math.pow(Math.max(0, wx * wy), 1.4);
+
+            if (weight > 0.001) {
+              accumR[pIdx] += srcData[srcIdx] * weight;
+              accumG[pIdx] += srcData[srcIdx + 1] * weight;
+              accumB[pIdx] += srcData[srcIdx + 2] * weight;
+              accumW[pIdx] += weight;
+            }
+          }
         }
-        frameCtx.drawImage(tempC, -projectedW / 2, -projectedH / 2, projectedW, projectedH);
-        frameCtx.restore();
-      };
-
-      renderAtX(centerX);
-      // Horizontal seam wraparound handling
-      if (centerX - projectedW / 2 < 0) {
-        renderAtX(centerX + panoWidth);
       }
-      if (centerX + projectedW / 2 > panoWidth) {
-        renderAtX(centerX - panoWidth);
-      }
-
-      // Composite onto master equirectangular canvas
-      ctx.drawImage(frameCanvas, 0, 0);
     }
+
+    // Write final normalized pixels to canvas
+    const panoImageData = ctx.getImageData(0, 0, panoWidth, panoHeight);
+    const panoData = panoImageData.data;
+
+    for (let pIdx = 0; pIdx < panoWidth * panoHeight; pIdx++) {
+      const w = accumW[pIdx];
+      const dIdx = pIdx * 4;
+      if (w > 0.0001) {
+        panoData[dIdx] = Math.min(255, Math.round(accumR[pIdx] / w));
+        panoData[dIdx + 1] = Math.min(255, Math.round(accumG[pIdx] / w));
+        panoData[dIdx + 2] = Math.min(255, Math.round(accumB[pIdx] / w));
+        panoData[dIdx + 3] = 255;
+      } else {
+        panoData[dIdx] = 11;
+        panoData[dIdx + 1] = 15;
+        panoData[dIdx + 2] = 25;
+        panoData[dIdx + 3] = 255;
+      }
+    }
+    ctx.putImageData(panoImageData, 0, 0);
 
     onProgress(0.85, 'Encoding equirectangular panorama image...');
 

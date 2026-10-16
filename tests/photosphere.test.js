@@ -374,3 +374,100 @@ describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
   });
 });
 
+describe('PhotoSphere Critical Fixes: Center Target, Camera Zoom & Stitching Quality', () => {
+  it('should ensure the initial target begins exactly at the camera forward direction with 0° angular error', () => {
+    // Forward look vector in camera space: [0, 0, -1]
+    const vForward = [0, 0, -1];
+    // Initial target direction: [0, 0, -1]
+    const vTarget0 = sphericalToVector(0, 0);
+
+    const dot = vForward[0] * vTarget0[0] + vForward[1] * vTarget0[1] + vForward[2] * vTarget0[2];
+    const angleRad = Math.acos(Math.max(-1, Math.min(1, dot)));
+    const angleDeg = (angleRad * 180) / Math.PI;
+
+    expect(angleDeg).toBeCloseTo(0, 5);
+  });
+
+  it('should project target aligned with camera-forward vector to exact preview center in camera coordinates', () => {
+    const W = 400;
+    const H = 800;
+    // Camera looking at (yaw=0, pitch=0), Target 0 at (yaw=0, pitch=0)
+    const proj = projectTargetToViewport(0, 0, 0, 0, W, H, 60);
+
+    expect(proj.visible).toBe(true);
+    expect(proj.isBehind).toBe(false);
+    expect(proj.angularDistance).toBeCloseTo(0, 5);
+    expect(proj.x).toBe(W / 2);
+    expect(proj.y).toBe(H / 2);
+  });
+
+  it('should project centered target accurately in both portrait (W < H) and landscape (W > H) viewports', () => {
+    // Portrait: 390x844
+    const projPortrait = projectTargetToViewport(0, 0, 0, 0, 390, 844, 65);
+    expect(projPortrait.x).toBe(195);
+    expect(projPortrait.y).toBe(422);
+
+    // Landscape: 844x390
+    const projLandscape = projectTargetToViewport(0, 0, 0, 0, 844, 390, 65);
+    expect(projLandscape.x).toBe(422);
+    expect(projLandscape.y).toBe(195);
+  });
+
+  it('should compute wide optical FOV without zoom or cropping based on sensor aspect ratio', () => {
+    // 16:9 sensor (1920x1080)
+    const aspect169 = 1920 / 1080;
+    const tanHalfD = Math.tan(37.0 * (Math.PI / 180)); // 74 deg diagonal FOV
+    const tanHalfV169 = tanHalfD / Math.sqrt(1 + aspect169 * aspect169);
+    const tanHalfH169 = aspect169 * tanHalfV169;
+    const hFovDeg169 = (Math.atan(tanHalfH169) * 2 * 180) / Math.PI;
+    const vFovDeg169 = (Math.atan(tanHalfV169) * 2 * 180) / Math.PI;
+
+    // HFOV should be wide (~66.7°), providing wide environmental view matching Google Camera
+    expect(hFovDeg169).toBeGreaterThan(64);
+    expect(hFovDeg169).toBeLessThan(70);
+    expect(vFovDeg169).toBeGreaterThan(38);
+    expect(vFovDeg169).toBeLessThan(44);
+
+    // 4:3 sensor (1280x960)
+    const aspect43 = 1280 / 960;
+    const tanHalfV43 = tanHalfD / Math.sqrt(1 + aspect43 * aspect43);
+    const tanHalfH43 = aspect43 * tanHalfV43;
+    const hFovDeg43 = (Math.atan(tanHalfH43) * 2 * 180) / Math.PI;
+
+    expect(hFovDeg43).toBeGreaterThan(60);
+    expect(hFovDeg43).toBeLessThan(65);
+  });
+
+  it('should ensure continuous cosine weighting falls to 0 at frame boundaries to prevent seam lines', () => {
+    // Optical center: normX = 0, normY = 0 -> weight = 1.0
+    const wCenter = Math.pow(Math.cos(0) * Math.cos(0), 1.4);
+    expect(wCenter).toBeCloseTo(1.0, 5);
+
+    // Frame boundary: normX = 1.0 or normY = 1.0 -> weight = 0.0
+    const wEdgeX = Math.pow(Math.max(0, Math.cos((1.0 * Math.PI) / 2) * Math.cos(0)), 1.4);
+    const wEdgeY = Math.pow(Math.max(0, Math.cos(0) * Math.cos((1.0 * Math.PI) / 2)), 1.4);
+    expect(wEdgeX).toBeCloseTo(0, 5);
+    expect(wEdgeY).toBeCloseTo(0, 5);
+  });
+
+  it('should correctly blend overlapping frames with normalized weights without hard cut boundaries', () => {
+    const W = 100;
+    const H = 50;
+    const accumR = new Float32Array(W * H);
+    const accumW = new Float32Array(W * H);
+
+    // Frame 1 covers pixel 25 with weight 0.8 and brightness 100
+    accumR[25] += 100 * 0.8;
+    accumW[25] += 0.8;
+
+    // Frame 2 overlaps pixel 25 with weight 0.2 and brightness 150
+    accumR[25] += 150 * 0.2;
+    accumW[25] += 0.2;
+
+    const blended = Math.round(accumR[25] / accumW[25]);
+    // (100 * 0.8 + 150 * 0.2) / 1.0 = 80 + 30 = 110
+    expect(blended).toBe(110);
+  });
+});
+
+

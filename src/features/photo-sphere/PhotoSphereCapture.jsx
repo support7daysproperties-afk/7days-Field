@@ -59,12 +59,17 @@ export default function PhotoSphereCapture({
     targetGroup: null,
     masterPanoCanvas: null,
     masterPanoCtx: null,
+    panoAccumR: null,
+    panoAccumG: null,
+    panoAccumB: null,
+    panoAccumW: null,
     animationFrameId: null,
     currentStream: null,
     activeTarget: null,
     holdStartTime: 0,
     isCapturing: false,
     useGyro: false,
+    baseSensorQuaternion: null,
     initialAlphaOffset: null,
     yaw: 0,
     pitch: 0,
@@ -353,40 +358,66 @@ export default function PhotoSphereCapture({
     }
   }
 
-  // Project Captured Camera Frame Onto Sphere Texture
-  function projectLiveCameraFrameOntoSphere(frameCanvas, captureYaw, capturePitch) {
+  // Project Captured Camera Frame Onto Sphere Texture with Exact Pose & Cosine Blending
+  function projectLiveCameraFrameOntoSphere(frameCanvas, captureQuatOrYaw, optPitch) {
     const eng = engineRef.current;
+    if (!eng.masterPanoCtx) return;
+
     const prevPanoImage = eng.masterPanoCtx.getImageData(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
     const prevCoverage = new Uint8Array(eng.coverageGrid);
-    eng.historyStack.push({ prevPanoImage, prevCoverage });
+    const prevAccumR = eng.panoAccumR ? new Float32Array(eng.panoAccumR) : null;
+    const prevAccumG = eng.panoAccumG ? new Float32Array(eng.panoAccumG) : null;
+    const prevAccumB = eng.panoAccumB ? new Float32Array(eng.panoAccumB) : null;
+    const prevAccumW = eng.panoAccumW ? new Float32Array(eng.panoAccumW) : null;
+    eng.historyStack.push({ prevPanoImage, prevCoverage, prevAccumR, prevAccumG, prevAccumB, prevAccumW });
     if (eng.historyStack.length > 16) eng.historyStack.shift();
 
     const srcW = frameCanvas.width;
     const srcH = frameCanvas.height;
-    const srcData = frameCanvas.getContext('2d').getImageData(0, 0, srcW, srcH).data;
+    const srcCtx = frameCanvas.getContext('2d');
+    const srcData = srcCtx.getImageData(0, 0, srcW, srcH).data;
 
     const dstImageData = eng.masterPanoCtx.getImageData(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
     const dstData = dstImageData.data;
 
-    const forward = sphericalToCartesian(captureYaw, capturePitch).normalize();
-    let worldUp = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(forward.y) > 0.98) {
-      worldUp.set(Math.sin(captureYaw), 0, -Math.cos(captureYaw));
+    let forward, up, right;
+    if (captureQuatOrYaw instanceof THREE.Quaternion) {
+      forward = new THREE.Vector3(0, 0, -1).applyQuaternion(captureQuatOrYaw).normalize();
+      up = new THREE.Vector3(0, 1, 0).applyQuaternion(captureQuatOrYaw).normalize();
+      right = new THREE.Vector3(1, 0, 0).applyQuaternion(captureQuatOrYaw).normalize();
+    } else {
+      const yaw = captureQuatOrYaw;
+      const pitch = optPitch || 0;
+      forward = sphericalToCartesian(yaw, pitch).normalize();
+      let worldUp = new THREE.Vector3(0, 1, 0);
+      if (Math.abs(forward.y) > 0.98) {
+        worldUp.set(Math.sin(yaw), 0, -Math.cos(yaw));
+      }
+      right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
+      up = new THREE.Vector3().crossVectors(right, forward).normalize();
     }
-    const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
-    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
 
-    const tanHalfH = Math.tan(THREE.MathUtils.degToRad(CONFIG.CAPTURE_FOV_H_DEG / 2));
-    const tanHalfV = Math.tan(THREE.MathUtils.degToRad(CONFIG.CAPTURE_FOV_V_DEG / 2));
+    const aspect = srcW / srcH;
+    // Calibrated wide-angle smartphone diagonal FOV ~74.0 degrees
+    const tanHalfD = Math.tan(THREE.MathUtils.degToRad(37.0));
+    const tanHalfV = tanHalfD / Math.sqrt(1 + aspect * aspect);
+    const tanHalfH = aspect * tanHalfV;
 
-    const maxCosRadius = Math.cos(
-      THREE.MathUtils.degToRad(Math.hypot(CONFIG.CAPTURE_FOV_H_DEG, CONFIG.CAPTURE_FOV_V_DEG) * 0.55)
-    );
+    const angularRadius = Math.atan(tanHalfD);
+    const maxCosRadius = Math.cos(angularRadius * 1.08);
 
     const W = CONFIG.PANO_WIDTH;
     const H = CONFIG.PANO_HEIGHT;
 
-    for (let py = 0; py < H; py++) {
+    // Latitudinal bounding box for speed and efficiency
+    const centerLat = Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1));
+    const minLat = Math.max(-Math.PI / 2, centerLat - angularRadius * 1.15);
+    const maxLat = Math.min(Math.PI / 2, centerLat + angularRadius * 1.15);
+
+    const pyMin = Math.max(0, Math.floor((0.5 - maxLat / Math.PI) * H));
+    const pyMax = Math.min(H - 1, Math.ceil((0.5 - minLat / Math.PI) * H));
+
+    for (let py = pyMin; py <= pyMax; py++) {
       const vTex = 1.0 - (py + 0.5) / H;
       const lat = (vTex - 0.5) * Math.PI;
       const cosLat = Math.cos(lat);
@@ -415,22 +446,24 @@ export default function PhotoSphereCapture({
 
           const srcIdx = (srcY * srcW + srcX) * 4;
           const dstIdx = (py * W + px) * 4;
+          const pIdx = py * W + px;
 
-          const border = Math.max(Math.abs(normX), Math.abs(normY));
-          const alpha = border > 0.9 ? Math.max(0, (1.0 - border) / 0.1) : 1.0;
+          // Continuous 2D cosine weight: 1.0 at optical center, exactly 0.0 at borders
+          const wx = Math.cos((normX * Math.PI) / 2);
+          const wy = Math.cos((normY * Math.PI) / 2);
+          const weight = Math.pow(Math.max(0, wx * wy), 1.4);
 
-          const isUncapturedBg =
-            dstData[dstIdx] <= 20 && dstData[dstIdx + 1] <= 20 && dstData[dstIdx + 2] <= 20;
+          if (weight > 0.001) {
+            eng.panoAccumR[pIdx] += srcData[srcIdx] * weight;
+            eng.panoAccumG[pIdx] += srcData[srcIdx + 1] * weight;
+            eng.panoAccumB[pIdx] += srcData[srcIdx + 2] * weight;
+            eng.panoAccumW[pIdx] += weight;
 
-          if (isUncapturedBg || alpha >= 0.99) {
-            dstData[dstIdx] = srcData[srcIdx];
-            dstData[dstIdx + 1] = srcData[srcIdx + 1];
-            dstData[dstIdx + 2] = srcData[srcIdx + 2];
+            const totalW = eng.panoAccumW[pIdx];
+            dstData[dstIdx] = Math.min(255, Math.round(eng.panoAccumR[pIdx] / totalW));
+            dstData[dstIdx + 1] = Math.min(255, Math.round(eng.panoAccumG[pIdx] / totalW));
+            dstData[dstIdx + 2] = Math.min(255, Math.round(eng.panoAccumB[pIdx] / totalW));
             dstData[dstIdx + 3] = 255;
-          } else {
-            dstData[dstIdx] = dstData[dstIdx] * (1 - alpha) + srcData[srcIdx] * alpha;
-            dstData[dstIdx + 1] = dstData[dstIdx + 1] * (1 - alpha) + srcData[srcIdx + 1] * alpha;
-            dstData[dstIdx + 2] = dstData[dstIdx + 2] * (1 - alpha) + srcData[srcIdx + 2] * alpha;
           }
         }
       }
@@ -439,6 +472,7 @@ export default function PhotoSphereCapture({
     eng.masterPanoCtx.putImageData(dstImageData, 0, 0);
     eng.sphereTexture.needsUpdate = true;
 
+    // Update Coverage Grid
     for (let gy = 0; gy < CONFIG.COVERAGE_LAT_STEPS; gy++) {
       const lat = (0.5 - (gy + 0.5) / CONFIG.COVERAGE_LAT_STEPS) * Math.PI;
       for (let gx = 0; gx < CONFIG.COVERAGE_LON_STEPS; gx++) {
@@ -462,15 +496,18 @@ export default function PhotoSphereCapture({
     if (eng.isCapturing) return;
 
     const videoEl = videoRef.current;
-    const previewCanvas = previewCanvasRef.current;
-    if (!videoEl || videoEl.readyState < 2 || !previewCanvas) return;
+    if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return;
 
     eng.isCapturing = true;
     target.captured = true;
     target.visible = false;
     target.mesh.visible = false;
 
-    if (navigator.vibrate) navigator.vibrate(35);
+    if (navigator.vibrate) {
+      try {
+        navigator.vibrate(35);
+      } catch (_) {}
+    }
     if (shutterFlashRef.current) {
       shutterFlashRef.current.style.opacity = '0.65';
       setTimeout(() => {
@@ -478,12 +515,27 @@ export default function PhotoSphereCapture({
       }, 140);
     }
 
-    // Paint frame into 3D sphere texture and update coverage
-    projectLiveCameraFrameOntoSphere(previewCanvas, target.yawRad, target.pitchRad);
+    // 1. Capture FULL UNCROPPED CAMERA FRAME directly from camera sensor
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+    const fullFrameCanvas = document.createElement('canvas');
+    fullFrameCanvas.width = vw;
+    fullFrameCanvas.height = vh;
+    const fullFrameCtx = fullFrameCanvas.getContext('2d');
+    fullFrameCtx.drawImage(videoEl, 0, 0, vw, vh);
 
-    // Save frame to IndexedDB
+    // 2. Capture EXACT camera pose at this precise millisecond
+    const captureQuat = eng.camera.quaternion.clone();
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(captureQuat);
+    const exactPitch = Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1));
+    const exactYaw = Math.atan2(forward.x, -forward.z);
+
+    // 3. Paint frame into 3D sphere texture using exact pose & continuous cosine blending
+    projectLiveCameraFrameOntoSphere(fullFrameCanvas, captureQuat);
+
+    // 4. Save full uncropped frame with exact pose to IndexedDB
     try {
-      previewCanvas.toBlob(async (blob) => {
+      fullFrameCanvas.toBlob(async (blob) => {
         if (blob) {
           eng.capturedCount++;
           await photoSphereStorage.saveFrame({
@@ -491,16 +543,17 @@ export default function PhotoSphereCapture({
             sessionId: eng.sessionId,
             targetId: `target_${target.id}`,
             sequenceIndex: target.id,
-            yaw: (target.yawRad * 180) / Math.PI,
-            pitch: (target.pitchRad * 180) / Math.PI,
+            yaw: (exactYaw * 180) / Math.PI,
+            pitch: (exactPitch * 180) / Math.PI,
             roll: 0,
+            quaternion: [captureQuat.x, captureQuat.y, captureQuat.z, captureQuat.w],
             blob,
-            width: previewCanvas.width,
-            height: previewCanvas.height,
+            width: vw,
+            height: vh,
             capturedAt: Date.now(),
           });
         }
-      }, 'image/jpeg', 0.9);
+      }, 'image/jpeg', 0.92);
     } catch (err) {
       console.warn('Could not persist frame to IndexedDB:', err);
     }
@@ -584,7 +637,7 @@ export default function PhotoSphereCapture({
     }
   }
 
-  // Draw Live Viewfinder into Preview Canvas
+  // Draw Live Viewfinder into Preview Canvas without digital zoom
   function drawLiveViewfinder() {
     const videoEl = videoRef.current;
     const previewCanvas = previewCanvasRef.current;
@@ -601,13 +654,8 @@ export default function PhotoSphereCapture({
 
     const vw = videoEl.videoWidth;
     const vh = videoEl.videoHeight;
-    const scale = Math.max(cw / vw, ch / vh);
-    const sw = cw / scale;
-    const sh = ch / scale;
-    const sx = (vw - sw) / 2;
-    const sy = (vh - sh) / 2;
-
-    ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, cw, ch);
+    // Fit entire camera frame cleanly into preview canvas without zoom or crop
+    ctx.drawImage(videoEl, 0, 0, vw, vh, 0, 0, cw, ch);
   }
 
   // Master Render Loop
@@ -723,6 +771,12 @@ export default function PhotoSphereCapture({
 
     eng.masterPanoCtx.putImageData(last.prevPanoImage, 0, 0);
     eng.coverageGrid.set(last.prevCoverage);
+    if (last.prevAccumR && eng.panoAccumR) {
+      eng.panoAccumR.set(last.prevAccumR);
+      eng.panoAccumG.set(last.prevAccumG);
+      eng.panoAccumB.set(last.prevAccumB);
+      eng.panoAccumW.set(last.prevAccumW);
+    }
     eng.sphereTexture.needsUpdate = true;
 
     eng.targets.forEach((t) => {
@@ -734,6 +788,7 @@ export default function PhotoSphereCapture({
   // Reset Session
   const handleReset = () => {
     const eng = engineRef.current;
+    eng.baseSensorQuaternion = null;
     eng.initialAlphaOffset = null;
     eng.yaw = 0;
     eng.pitch = 0;
@@ -744,6 +799,12 @@ export default function PhotoSphereCapture({
     eng.historyStack = [];
     eng.masterPanoCtx.fillStyle = '#121212';
     eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
+    if (eng.panoAccumR) {
+      eng.panoAccumR.fill(0);
+      eng.panoAccumG.fill(0);
+      eng.panoAccumB.fill(0);
+      eng.panoAccumW.fill(0);
+    }
     if (eng.sphereTexture) eng.sphereTexture.needsUpdate = true;
 
     initTargetLattice();
@@ -918,6 +979,10 @@ export default function PhotoSphereCapture({
     eng.masterPanoCanvas = masterCanvas;
     eng.masterPanoCtx = masterCanvas.getContext('2d', { willReadFrequently: true });
     eng.coverageGrid = new Uint8Array(CONFIG.COVERAGE_LON_STEPS * CONFIG.COVERAGE_LAT_STEPS);
+    eng.panoAccumR = new Float32Array(CONFIG.PANO_WIDTH * CONFIG.PANO_HEIGHT);
+    eng.panoAccumG = new Float32Array(CONFIG.PANO_WIDTH * CONFIG.PANO_HEIGHT);
+    eng.panoAccumB = new Float32Array(CONFIG.PANO_WIDTH * CONFIG.PANO_HEIGHT);
+    eng.panoAccumW = new Float32Array(CONFIG.PANO_WIDTH * CONFIG.PANO_HEIGHT);
     eng.masterPanoCtx.fillStyle = '#121212';
     eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
 
@@ -999,17 +1064,12 @@ export default function PhotoSphereCapture({
       window.addEventListener('pointerup', onPointerUp);
     }
 
-    // Gyroscope DeviceOrientation Binding
+    // Gyroscope DeviceOrientation Binding with Initial Forward Anchoring
     const onDeviceOrientation = (e) => {
       if (e.alpha === null || e.beta === null) return;
       eng.useGyro = true;
 
-      if (eng.initialAlphaOffset === null) {
-        eng.initialAlphaOffset = e.alpha || 0;
-      }
-
-      const relAlpha = (e.alpha || 0) - eng.initialAlphaOffset;
-      const alpha = THREE.MathUtils.degToRad(relAlpha);
+      const alpha = THREE.MathUtils.degToRad(e.alpha || 0);
       const beta = THREE.MathUtils.degToRad(e.beta || 0);
       const gamma = THREE.MathUtils.degToRad(e.gamma || 0);
       const orient = window.screen.orientation
@@ -1017,9 +1077,18 @@ export default function PhotoSphereCapture({
         : 0;
 
       const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
-      const q = new THREE.Quaternion().setFromEuler(euler);
-      q.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
-      q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient));
+      const rawQ = new THREE.Quaternion().setFromEuler(euler);
+      rawQ.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
+      rawQ.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient));
+
+      if (!eng.baseSensorQuaternion) {
+        // Calibrate session reference coordinate frame to device's initial forward look vector
+        eng.baseSensorQuaternion = rawQ.clone();
+      }
+
+      // Compute relative orientation: Q_rel = Q_base^(-1) * Q_raw
+      // At t=0, Q_rel = Identity, so Target 0 at (0, 0, -1) has strictly 0.0° angular error!
+      const q = eng.baseSensorQuaternion.clone().invert().multiply(rawQ);
 
       const prev = eng.camera.quaternion.clone();
       const delta = 2 * Math.acos(Math.min(1, Math.abs(prev.dot(q))));
