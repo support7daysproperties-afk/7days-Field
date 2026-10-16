@@ -46,10 +46,12 @@ export default function GoogleDriveAccess() {
     } catch (error) {
       console.error('Drive connection error:', error);
       setLoading(false);
-      if (error?.message?.includes('origin_mismatch') || error?.message?.includes('redirect_uri_mismatch')) {
+      if (error?.code === 'USER_CANCELLED') {
+        setErrorMessage("Drive authorization was cancelled. You can connect Google Drive whenever you're ready.");
+      } else if (error?.message?.includes('origin_mismatch') || error?.message?.includes('redirect_uri_mismatch')) {
         setErrorMessage('Google Drive could not be connected because the application URL is not registered in Google Cloud Console.');
       } else {
-        setErrorMessage(error?.message || 'Connection cancelled or failed. Please try again.');
+        setErrorMessage(error?.message || 'Connection failed. Please try again.');
       }
     }
   };

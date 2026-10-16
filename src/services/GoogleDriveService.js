@@ -12,6 +12,7 @@ export const DRIVE_STATUS = {
   RECONNECT_REQUIRED: 'RECONNECT_REQUIRED',
   PERMISSION_REVOKED: 'PERMISSION_REVOKED',
   ACCOUNT_MISMATCH: 'ACCOUNT_MISMATCH',
+  CANCELLED: 'CANCELLED',
   ERROR: 'ERROR',
   DISCONNECTED: 'DISCONNECTED',
 };
@@ -318,14 +319,31 @@ class GoogleDriveService {
               });
             } else {
               const errorDesc = tokenResponse?.error_description || tokenResponse?.error || 'Failed to obtain access token';
-              this.setStatus(DRIVE_STATUS.ERROR, errorDesc);
-              reject(new Error(errorDesc));
+              const isCancelled = errorDesc.includes('cancel') || errorDesc.includes('user_declined') || errorDesc.includes('closed') || errorDesc.includes('access_denied');
+              if (isCancelled) {
+                this.setStatus(DRIVE_STATUS.CANCELLED, 'Drive authorization was cancelled by the user');
+                const cancelErr = new Error('Authorization was cancelled.');
+                cancelErr.code = 'USER_CANCELLED';
+                reject(cancelErr);
+              } else {
+                this.setStatus(DRIVE_STATUS.ERROR, errorDesc);
+                reject(new Error(errorDesc));
+              }
             }
           },
           error_callback: (error) => {
             console.error('GIS Error callback:', error);
-            this.setStatus(DRIVE_STATUS.ERROR, error?.message || 'Drive authorization failed');
-            reject(error);
+            const errType = error?.type || '';
+            const isDismissed = errType === 'popup_closed' || errType === 'user_cancel' || error?.message?.includes('closed');
+            if (isDismissed) {
+              this.setStatus(DRIVE_STATUS.CANCELLED, 'Sign-in popup was closed');
+              const cancelErr = new Error('Sign-in popup was closed.');
+              cancelErr.code = 'USER_CANCELLED';
+              reject(cancelErr);
+            } else {
+              this.setStatus(DRIVE_STATUS.ERROR, error?.message || 'Drive authorization failed');
+              reject(error);
+            }
           }
         });
 

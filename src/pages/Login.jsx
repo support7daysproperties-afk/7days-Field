@@ -71,7 +71,9 @@ export default function Login() {
     } catch (err) {
       console.error(err);
       setDriveStepStatus('error');
-      if (err?.message?.includes('origin_mismatch') || err?.message?.includes('redirect_uri_mismatch')) {
+      if (err?.code === 'USER_CANCELLED') {
+        setDriveErrorMsg("Sign-in was cancelled. You can connect Google Drive when you're ready, or skip for now.");
+      } else if (err?.message?.includes('origin_mismatch') || err?.message?.includes('redirect_uri_mismatch')) {
         setDriveErrorMsg('Google Drive could not be connected because the application URL is not registered in Google Cloud Console.');
       } else {
         setDriveErrorMsg(err?.message || 'Connection failed. Please try again.');

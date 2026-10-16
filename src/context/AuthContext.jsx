@@ -159,16 +159,41 @@ export function AuthProvider({ children }) {
     }
   };
 
+  // Track initialization to avoid redundant duplicate calls
+  const isInitializingRef = useRef(false);
+
   useEffect(() => {
     // Initial session check
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      checkSupervisorAccess(session?.user, session?.provider_token);
-    });
+    if (!isInitializingRef.current) {
+      isInitializingRef.current = true;
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        checkSupervisorAccess(session?.user, session?.provider_token);
+      }).catch((err) => {
+        console.error('Session retrieval error:', err);
+        setLoading(false);
+      });
+    }
 
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setLoading(true);
-      checkSupervisorAccess(session?.user, session?.provider_token);
+    // Listen for auth state changes (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') {
+        // Already handled by getSession
+        return;
+      }
+      if (event === 'SIGNED_OUT') {
+        currentUserRef.current = null;
+        setUser(null);
+        setAuthenticated(false);
+        setLoading(false);
+        GoogleDriveService.setTokenData({ accessToken: null });
+        return;
+      }
+      
+      // If user changed or signed in afresh
+      if (session?.user?.id !== currentUserRef.current?.id || session?.provider_token) {
+        setLoading(true);
+        checkSupervisorAccess(session?.user, session?.provider_token);
+      }
     });
 
     return () => subscription.unsubscribe();
