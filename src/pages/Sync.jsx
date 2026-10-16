@@ -300,36 +300,44 @@ export default function Sync() {
 
       {/* Summary card */}
       <div style={{
-        padding: '20px', borderRadius: '14px', marginBottom: '20px',
-        background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
-        border: '1px solid rgba(255,255,255,0.1)'
+        padding: '18px', borderRadius: '14px', marginBottom: '16px',
+        backgroundColor: 'var(--surface-color)',
+        border: '1px solid var(--border-color)',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
           <div>
-            <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: '12px', fontWeight: '600', marginBottom: '4px', letterSpacing: '0.5px' }}>
-              TOTAL INSPECTIONS
+            <div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontWeight: '700', marginBottom: '4px', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+              Queue Overview
             </div>
-            <div style={{ color: 'white', fontSize: '28px', fontWeight: '800' }}>{inspections.length}</div>
+            <div style={{ color: 'var(--text-primary)', fontSize: '24px', fontWeight: '800' }}>{inspections.length} <span style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Total Inspections</span></div>
           </div>
-          <RefreshCw
-            size={36}
-            style={{
-              color: 'rgba(255,255,255,0.4)',
-              animation: isSyncing ? 'spin 1s linear infinite' : 'none'
-            }}
-          />
+          <div style={{
+            width: '40px', height: '40px', borderRadius: '10px',
+            backgroundColor: 'var(--surface-light)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            border: '1px solid var(--border-color)'
+          }}>
+            <RefreshCw
+              size={18}
+              style={{
+                color: isSyncing ? 'var(--primary-color)' : 'var(--text-secondary)',
+                animation: isSyncing ? 'spin 1s linear infinite' : 'none'
+              }}
+            />
+          </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '14px' }}>
           {[
-            { label: 'Synced', value: synced, color: '#4ade80' },
-            { label: 'Syncing', value: syncing, color: '#818cf8' },
-            { label: 'Drive', value: needsDrive, color: '#fbbf24' },
-            { label: 'Failed', value: failed, color: '#f87171' },
+            { label: 'Synced', value: synced, color: 'var(--success-color)' },
+            { label: 'Syncing', value: syncing, color: 'var(--primary-color)' },
+            { label: 'Drive', value: needsDrive, color: 'var(--warning-color)' },
+            { label: 'Failed', value: failed, color: 'var(--danger-color)' },
           ].map(s => (
-            <div key={s.label} style={{ textAlign: 'center', padding: '8px', borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.08)' }}>
-              <div style={{ color: s.color, fontSize: '20px', fontWeight: '800' }}>{s.value}</div>
-              <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '10px', marginTop: '2px' }}>{s.label}</div>
+            <div key={s.label} style={{ textAlign: 'center', padding: '10px 6px', borderRadius: '10px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+              <div style={{ color: s.color, fontSize: '18px', fontWeight: '800' }}>{s.value}</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontWeight: '500', marginTop: '2px' }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -337,15 +345,15 @@ export default function Sync() {
         <button
           onClick={handleSyncNow}
           disabled={!isOnline || isSyncing}
+          className="btn btn-primary"
           style={{
-            width: '100%', padding: '12px', borderRadius: '10px', border: 'none',
-            backgroundColor: (isOnline && !isSyncing) ? 'white' : 'rgba(255,255,255,0.2)',
-            color: (isOnline && !isSyncing) ? '#1e1b4b' : 'rgba(255,255,255,0.5)',
-            fontWeight: '700', fontSize: '14px', cursor: (isOnline && !isSyncing) ? 'pointer' : 'not-allowed',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+            width: '100%', padding: '12px', borderRadius: '10px',
+            fontWeight: '700', fontSize: '14px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+            minHeight: '44px'
           }}
         >
-          {isSyncing ? <><Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Syncing…</> : <><Upload size={16} /> Sync Now</>}
+          {isSyncing ? <><Loader2 size={16} className="animate-spin" /> Syncing in background…</> : <><Upload size={16} /> Sync Queue Now</>}
         </button>
       </div>
 

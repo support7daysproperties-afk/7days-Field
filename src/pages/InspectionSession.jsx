@@ -140,52 +140,88 @@ export default function InspectionSession() {
     
     return (
       <div style={{ minHeight: '100vh', paddingBottom: '100px' }}>
-        <header className="flex items-center justify-center p-md bg-surface-color border-b border-color relative">
-          <h2 style={{ fontSize: '18px', margin: 0, fontWeight: 'bold' }}>Inspection Dashboard</h2>
-          <span className="absolute right-4 text-xs text-secondary font-medium" style={{ right: '16px' }}>45</span>
+        <header className="flex items-center justify-between p-md border-b border-color relative" style={{ backgroundColor: 'var(--surface-color)', padding: '16px' }}>
+          <div>
+            <h2 style={{ fontSize: '18px', margin: 0, fontWeight: 700, color: 'var(--text-primary)' }}>Inspection Dashboard</h2>
+            <div className="text-secondary text-xs" style={{ marginTop: '2px' }}>Site Progress & Section Checklist</div>
+          </div>
+          <span className="text-xs font-mono px-sm py-xs rounded" style={{ backgroundColor: 'var(--surface-light)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>
+            {inspectionRecord?.id ? inspectionRecord.id.split('-').slice(-2).join('-') : 'ACTIVE'}
+          </span>
         </header>
 
-        <div className="bg-surface-color p-md mb-lg shadow-sm rounded-b-lg border-b border-color">
-          <div className="text-primary font-bold text-sm mb-xs">{inspectionRecord?.id || id}</div>
-          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: '0 0 16px 0' }}>{inspectionRecord?.title || 'Inspection'}</h1>
+        <div className="p-md mb-md rounded-xl border border-color" style={{ backgroundColor: 'var(--surface-color)', padding: '18px', marginTop: '16px', borderRadius: '12px' }}>
+          <div className="text-primary font-mono text-xs mb-xs" style={{ letterSpacing: '0.5px' }}>{inspectionRecord?.id || id}</div>
+          <h1 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 12px 0', color: 'var(--text-primary)' }}>{inspectionRecord?.title || 'Field Inspection'}</h1>
           
-          <div className="text-secondary text-sm mb-xs">
-            Progress: {completedCount} / {steps.length} sections completed
+          <div className="flex justify-between items-center text-xs mb-xs">
+            <span style={{ color: 'var(--text-secondary)' }}>Section Completion</span>
+            <span style={{ fontWeight: 600, color: completedCount === steps.length ? 'var(--success-color)' : 'var(--primary-color)' }}>
+              {completedCount} / {steps.length} sections ({Math.round((completedCount / steps.length) * 100)}%)
+            </span>
           </div>
-          <div style={{ height: '8px', backgroundColor: 'var(--bg-color)', borderRadius: '4px', overflow: 'hidden' }}>
-            <div style={{ width: `${(completedCount / steps.length) * 100}%`, height: '100%', backgroundColor: 'var(--primary-color)', borderRadius: '4px' }}></div>
+          <div style={{ height: '6px', backgroundColor: 'var(--bg-color)', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{ width: `${(completedCount / steps.length) * 100}%`, height: '100%', backgroundColor: completedCount === steps.length ? 'var(--success-color)' : 'var(--primary-color)', borderRadius: '3px', transition: 'width 0.3s ease' }}></div>
           </div>
         </div>
 
-        <h3 className="px-md mb-md font-bold" style={{ fontSize: '16px' }}>Inspection Steps</h3>
+        <div className="section-header" style={{ marginBottom: '10px' }}>
+          <h3 className="section-title">Inspection Steps</h3>
+        </div>
         
-        <div className="px-md flex flex-col gap-sm mb-xl">
+        <div className="flex flex-col gap-sm mb-xl">
           {steps.map(step => (
             <div 
               key={step.id} 
-              className="bg-surface-color rounded-lg p-md flex items-center justify-between shadow-sm"
-              style={{ cursor: 'pointer', border: '1px solid var(--border-color)' }}
+              className="card card-interactive"
+              style={{ 
+                padding: '14px 16px', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'space-between',
+                borderRadius: '10px'
+              }}
               onClick={() => setActiveStepId(step.id)}
             >
               <div className="flex items-center gap-md">
-                <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: step.completed ? 'var(--success-color)' : 'var(--border-color)' }}></div>
-                <span className="font-medium" style={{ fontSize: '15px', color: 'var(--text-primary)' }}>{step.name}</span>
+                <div style={{ 
+                  width: '10px', 
+                  height: '10px', 
+                  borderRadius: '50%', 
+                  backgroundColor: step.completed ? 'var(--success-color)' : 'var(--text-secondary)',
+                  opacity: step.completed ? 1 : 0.4
+                }} />
+                <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>{step.name}</span>
               </div>
-              <span className="text-sm" style={{ color: step.completed ? 'var(--success-color)' : 'var(--text-secondary)' }}>
-                {step.completed ? 'Completed' : 'Not Started'}
+              <span className={`badge ${step.completed ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: '11px' }}>
+                {step.completed ? 'Completed' : 'Pending'}
               </span>
             </div>
           ))}
         </div>
 
         {/* Fixed Bottom Button */}
-        <div className="fixed bottom-0 left-0 right-0 p-md bg-surface-color border-t border-color" style={{ maxWidth: '480px', margin: '0 auto', paddingBottom: 'calc(16px + env(safe-area-inset-bottom))', zIndex: 20 }}>
+        <div style={{ 
+          position: 'fixed', 
+          bottom: 0, 
+          left: 0, 
+          right: 0, 
+          maxWidth: '480px', 
+          margin: '0 auto', 
+          padding: '16px', 
+          paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))', 
+          backgroundColor: 'rgba(20, 24, 33, 0.95)', 
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          borderTop: '1px solid var(--border-color)', 
+          zIndex: 20 
+        }}>
           <button 
-            className="btn btn-primary w-full py-md text-md font-bold"
+            className="btn btn-primary w-full"
             onClick={() => setActiveStepId('review')}
-            style={{ borderRadius: '8px' }}
+            style={{ minHeight: '48px', fontSize: '15px', fontWeight: 700, borderRadius: '10px' }}
           >
-            Review & Submit
+            Review & Finalize Inspection
           </button>
         </div>
       </div>

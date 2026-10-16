@@ -135,57 +135,86 @@ export default function CreateInspection() {
   };
 
   return (
-    <div className="pb-xl" style={{ backgroundColor: 'var(--bg-color, #0f1115)', color: 'var(--text-color, #ffffff)', minHeight: '100vh', padding: '16px', paddingBottom: '100px' }}>
+    <div className="pb-xl" style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', minHeight: '100vh', padding: '16px', paddingBottom: '110px' }}>
       <header className="flex items-center gap-md mb-lg">
-        <button onClick={() => navigate(-1)} style={{ background: 'none', border: 'none', padding: 0, color: 'inherit' }}>
-          <ArrowLeft size={24} />
+        <button 
+          onClick={() => navigate(-1)} 
+          style={{ 
+            background: 'var(--surface-color)', 
+            border: '1px solid var(--border-color)', 
+            borderRadius: '10px',
+            width: '40px',
+            height: '40px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-primary)',
+            cursor: 'pointer'
+          }}
+          aria-label="Back"
+        >
+          <ArrowLeft size={20} />
         </button>
         <div>
-          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0 }}>New Field Inspection</h1>
-          <p className="text-secondary text-sm m-0">Create an inspection and configure the field work.</p>
+          <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0, letterSpacing: '-0.2px' }}>New Field Inspection</h1>
+          <p className="text-secondary text-xs m-0" style={{ marginTop: '2px' }}>Configure site details and start recording evidence</p>
         </div>
       </header>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-md">
-        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-          <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>Property / Site Name *</label>
-          <input 
-            type="text" 
-            name="title"
-            value={formData.title}
-            onChange={handleInputChange}
-            placeholder="e.g. Luxury Villa"
-            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', boxSizing: 'border-box' }}
-            required
-          />
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '14px', padding: '18px' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Property / Site Name *
+            </label>
+            <input 
+              type="text" 
+              name="title"
+              value={formData.title}
+              onChange={handleInputChange}
+              placeholder="e.g. Green Valley Tea Estate"
+              style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '15px', boxSizing: 'border-box', outline: 'none' }}
+              required
+            />
+          </div>
 
-          <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>Location Name</label>
-          <input 
-            type="text" 
-            name="location_name"
-            value={formData.location_name}
-            onChange={handleInputChange}
-            placeholder="e.g. Ooty"
-            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', boxSizing: 'border-box' }}
-          />
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Location / Region
+            </label>
+            <input 
+              type="text" 
+              name="location_name"
+              value={formData.location_name}
+              onChange={handleInputChange}
+              placeholder="e.g. Ooty, Nilgiris District"
+              style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '15px', boxSizing: 'border-box', outline: 'none' }}
+            />
+          </div>
 
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>GPS Location (Optional)</label>
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              GPS Location (Optional)
+            </label>
             {location ? (
-              <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <MapPin size={20} style={{ color: 'var(--primary-color)' }} />
+              <div style={{ padding: '12px 14px', borderRadius: '10px', backgroundColor: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <MapPin size={20} style={{ color: 'var(--success-color)' }} />
                   <div>
-                    <div style={{ fontSize: '14px', fontWeight: '500' }}>Location Captured</div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>Coordinates Captured</div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
                       Accuracy: ±{Math.round(location.accuracy)} m
-                      <span className="ml-2 font-medium" style={{ color: location.accuracy < 15 ? 'var(--success-color)' : 'var(--warning-color)' }}>
-                        {location.accuracy < 15 ? 'Good' : 'Moderate'}
+                      <span style={{ marginLeft: '8px', fontWeight: 600, color: location.accuracy < 15 ? 'var(--success-color)' : 'var(--warning-color)' }}>
+                        ({location.accuracy < 15 ? 'High Accuracy' : 'Moderate Accuracy'})
                       </span>
                     </div>
                   </div>
                 </div>
-                <button type="button" onClick={handleCaptureLocation} style={{ color: 'var(--primary-color)', fontSize: '14px', fontWeight: '500', background: 'transparent', border: 'none', cursor: 'pointer' }}>
+                <button 
+                  type="button" 
+                  onClick={handleCaptureLocation} 
+                  style={{ color: 'var(--primary-color)', fontSize: '13px', fontWeight: 600, background: 'rgba(37, 99, 235, 0.12)', border: 'none', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                >
                   Retake
                 </button>
               </div>
@@ -194,63 +223,106 @@ export default function CreateInspection() {
                 type="button" 
                 onClick={handleCaptureLocation}
                 disabled={isLocating}
-                style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontWeight: '500', cursor: 'pointer' }}
+                style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px dashed var(--border-color)', backgroundColor: 'var(--surface-light)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', minHeight: '44px' }}
               >
                 {isLocating ? <Loader2 size={18} className="animate-spin" /> : <MapPin size={18} />}
-                {isLocating ? 'Capturing...' : 'Use Current Location'}
+                {isLocating ? 'Acquiring GPS Signal...' : 'Capture Current Location'}
               </button>
             )}
-            {locationError && <p style={{ color: 'var(--danger-color)', fontSize: '12px', marginTop: '4px' }}>{locationError}</p>}
+            {locationError && <p style={{ color: 'var(--danger-color)', fontSize: '12px', marginTop: '6px' }}>{locationError}</p>}
           </div>
 
-          <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>Inspection Type</label>
-          <select 
-            name="inspection_type"
-            value={formData.inspection_type}
-            onChange={handleInputChange}
-            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', boxSizing: 'border-box' }}
-          >
-            {inspectionTypes.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+                Inspection Type
+              </label>
+              <select 
+                name="inspection_type"
+                value={formData.inspection_type}
+                onChange={handleInputChange}
+                style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '14px', boxSizing: 'border-box' }}
+              >
+                {inspectionTypes.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
 
-          <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>Property Type</label>
-          <select 
-            name="property_type"
-            value={formData.property_type}
-            onChange={handleInputChange}
-            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', boxSizing: 'border-box' }}
-          >
-            {propertyTypes.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+                Property Type
+              </label>
+              <select 
+                name="property_type"
+                value={formData.property_type}
+                onChange={handleInputChange}
+                style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '14px', boxSizing: 'border-box' }}
+              >
+                {propertyTypes.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
 
-          <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>Notes / Purpose</label>
-          <textarea 
-            name="purpose"
-            value={formData.purpose}
-            onChange={handleInputChange}
-            placeholder="e.g. Verify site condition and capture land boundary."
-            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', minHeight: '80px', boxSizing: 'border-box' }}
-          />
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Notes / Purpose
+            </label>
+            <textarea 
+              name="purpose"
+              value={formData.purpose}
+              onChange={handleInputChange}
+              placeholder="e.g. Verify boundary survey, check boundary markers, and record road access."
+              style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '14px', minHeight: '80px', boxSizing: 'border-box', outline: 'none' }}
+            />
+          </div>
           
-          <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '4px' }}>Reference Number (Optional)</label>
-          <input 
-            type="text" 
-            name="reference_number"
-            value={formData.reference_number}
-            onChange={handleInputChange}
-            placeholder="External ID if any"
-            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '16px', boxSizing: 'border-box' }}
-          />
+          <div>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Reference Number (Optional)
+            </label>
+            <input 
+              type="text" 
+              name="reference_number"
+              value={formData.reference_number}
+              onChange={handleInputChange}
+              placeholder="e.g. REF-2026-081"
+              style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '14px', boxSizing: 'border-box', outline: 'none' }}
+            />
+          </div>
         </div>
 
-        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, padding: '16px', paddingBottom: 'calc(16px + 80px)', backgroundColor: 'var(--surface-color)', borderTop: '1px solid var(--border-color)', zIndex: 10 }}>
+        <div style={{ 
+          position: 'fixed', 
+          bottom: 0, 
+          left: 0, 
+          right: 0, 
+          padding: '16px', 
+          paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))', 
+          backgroundColor: 'rgba(20, 24, 33, 0.95)', 
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          borderTop: '1px solid var(--border-color)', 
+          zIndex: 10,
+          maxWidth: '480px',
+          margin: '0 auto'
+        }}>
           <button 
             type="submit"
             disabled={isSubmitting || !formData.title}
             className="btn btn-primary"
-            style={{ width: '100%', padding: '16px', fontSize: '16px', fontWeight: 'bold', borderRadius: '8px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
+            style={{ 
+              width: '100%', 
+              padding: '14px', 
+              fontSize: '15px', 
+              fontWeight: 700, 
+              borderRadius: '10px', 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              gap: '8px',
+              minHeight: '48px'
+            }}
           >
-            {isSubmitting ? <Loader2 size={20} className="animate-spin" /> : null}
+            {isSubmitting ? <Loader2 size={18} className="animate-spin" /> : null}
             Create Inspection
           </button>
         </div>

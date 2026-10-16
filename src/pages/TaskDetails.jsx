@@ -14,74 +14,85 @@ export default function TaskDetails() {
       </header>
 
       {/* Property Card */}
-      <div className="card mb-md" style={{ position: 'relative' }}>
+      <div className="card mb-md" style={{ position: 'relative', padding: '18px' }}>
         <div className="flex justify-between items-start mb-xs">
-          <span className="text-secondary text-xs font-bold" style={{ letterSpacing: '0.5px' }}>PROPERTY</span>
-          <span className="text-secondary text-xs">46</span>
+          <span className="text-secondary text-xs font-bold" style={{ letterSpacing: '0.5px', textTransform: 'uppercase' }}>PROPERTY OVERVIEW</span>
+          <span className="text-secondary text-xs font-mono">PROP-001</span>
         </div>
-        <h1 className="mb-xs" style={{ fontSize: '22px', fontWeight: 'bold' }}>Ooty Tea Estate Land</h1>
-        <div className="text-secondary text-sm mb-xs">
-          Land • Ooty, Tamil Nadu
-        </div>
+        <h1 className="mb-xs" style={{ fontSize: '18px', fontWeight: 700, margin: '4px 0 8px 0', color: 'var(--text-primary)' }}>Ooty Tea Estate Land</h1>
         <div className="text-secondary text-sm mb-md">
-          ID: PROP-001
+          Agricultural Land • Ooty, Tamil Nadu
         </div>
 
-        <div className="p-sm rounded" style={{ backgroundColor: '#f0f7ff', borderLeft: '4px solid var(--primary-color)' }}>
-          <h4 className="text-primary text-sm font-bold mb-xs">Admin Instructions</h4>
-          <p className="text-sm" style={{ color: '#334155' }}>
-            Verify boundaries of the tea estate and ensure no encroachment.
+        <div className="p-md rounded-lg" style={{ backgroundColor: 'rgba(37, 99, 235, 0.08)', border: '1px solid rgba(37, 99, 235, 0.25)', borderRadius: '10px' }}>
+          <h4 className="text-sm font-bold mb-xs" style={{ color: 'var(--primary-color)', margin: '0 0 4px 0' }}>Supervisor Instructions</h4>
+          <p className="text-sm m-0" style={{ color: 'var(--text-primary)', lineHeight: 1.5 }}>
+            Verify boundaries of the tea estate, survey terrain markers, and confirm no unrecorded encroachment.
           </p>
         </div>
       </div>
 
       {/* Assignment Card */}
-      <div className="card mb-md">
-        <span className="text-secondary text-xs font-bold mb-md block" style={{ letterSpacing: '0.5px' }}>ASSIGNMENT</span>
+      <div className="card mb-md" style={{ padding: '16px' }}>
+        <span className="text-secondary text-xs font-bold mb-sm block" style={{ letterSpacing: '0.5px', textTransform: 'uppercase' }}>ASSIGNMENT STATUS</span>
         
         <div className="flex flex-col">
-          <div className="flex justify-between py-sm border-b" style={{ borderBottom: '1px solid var(--border-color)' }}>
-            <span className="text-secondary">Status</span>
-            <span className="font-bold">Assigned</span>
+          <div className="flex justify-between py-sm" style={{ borderBottom: '1px solid var(--border-color)', fontSize: '14px' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Status</span>
+            <span style={{ fontWeight: 600, color: 'var(--primary-color)' }}>Assigned</span>
           </div>
-          <div className="flex justify-between py-sm border-b" style={{ borderBottom: '1px solid var(--border-color)' }}>
-            <span className="text-secondary">Priority</span>
-            <span className="font-bold">High</span>
+          <div className="flex justify-between py-sm" style={{ borderBottom: '1px solid var(--border-color)', fontSize: '14px' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Priority</span>
+            <span style={{ fontWeight: 600, color: 'var(--warning-color)' }}>High Priority</span>
           </div>
-          <div className="flex justify-between py-sm">
-            <span className="text-secondary">Assigned</span>
-            <span className="font-bold">22/9/2026</span>
+          <div className="flex justify-between py-sm" style={{ fontSize: '14px', paddingTop: '10px' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Assigned Date</span>
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>22/09/2026</span>
           </div>
         </div>
       </div>
 
       {/* Required Evidence Card */}
-      <div className="card mb-xl">
-        <span className="text-secondary text-xs font-bold mb-md block" style={{ letterSpacing: '0.5px' }}>REQUIRED EVIDENCE</span>
+      <div className="card mb-xl" style={{ padding: '16px' }}>
+        <span className="text-secondary text-xs font-bold mb-sm block" style={{ letterSpacing: '0.5px', textTransform: 'uppercase' }}>REQUIRED EVIDENCE CHECKLIST</span>
         
         <div className="flex flex-col gap-sm">
           {[
             'Property exterior photos',
-            'Land boundary photos',
-            'Access road photo',
-            'Surrounding area photos',
-            'Property video',
-            'GPS verification'
+            'Land boundary GPS points',
+            'Access road & entry photo',
+            'Surrounding area panoramas',
+            'Property perimeter video',
+            'Location coordinates verification'
           ].map((item, i) => (
-            <div key={i} className="flex items-center gap-sm">
-              <div style={{ width: '20px', height: '20px', border: '2px solid #cbd5e1', borderRadius: '4px' }}></div>
-              <span className="text-sm" style={{ color: '#334155' }}>{item}</span>
+            <div key={i} className="flex items-center gap-sm" style={{ fontSize: '14px' }}>
+              <div style={{ width: '18px', height: '18px', border: '1.5px solid var(--border-color)', borderRadius: '4px', backgroundColor: 'var(--surface-light)' }}></div>
+              <span style={{ color: 'var(--text-primary)' }}>{item}</span>
             </div>
           ))}
         </div>
       </div>
 
       {/* Fixed Bottom Button Container */}
-      <div className="fixed bottom-0 left-0 right-0 p-md bg-surface border-t border-color" style={{ paddingBottom: 'calc(16px + env(safe-area-inset-bottom))', zIndex: 10, paddingBottom: '80px' /* buffer for main nav */ }}>
+      <div style={{ 
+        position: 'fixed', 
+        bottom: 0, 
+        left: 0, 
+        right: 0, 
+        padding: '16px', 
+        paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))', 
+        backgroundColor: 'rgba(20, 24, 33, 0.95)', 
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+        borderTop: '1px solid var(--border-color)', 
+        zIndex: 10,
+        maxWidth: '480px',
+        margin: '0 auto'
+      }}>
         <button 
-          className="btn btn-primary w-full py-md text-md font-bold"
+          className="btn btn-primary w-full"
           onClick={() => navigate(`/inspection/${id}`)}
-          style={{ borderRadius: '8px' }}
+          style={{ minHeight: '48px', fontSize: '15px', fontWeight: 700, borderRadius: '10px' }}
         >
           Continue Inspection
         </button>

@@ -76,56 +76,82 @@ export default function Tasks() {
   };
 
   return (
-    <div className="tasks-page" style={{ paddingBottom: '80px' }}>
-      <header className="mb-md flex justify-between items-center">
+    <div className="tasks-page" style={{ paddingBottom: '32px' }}>
+      <header className="mb-md flex justify-between items-center" style={{ paddingTop: '2px' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: '22px' }}>My Inspections</h2>
-          <p className="text-secondary text-sm m-0 mt-xs">Manage and continue your field inspections</p>
+          <h1 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', margin: 0 }}>
+            Field Inspections
+          </h1>
+          <p className="text-xs text-secondary" style={{ margin: '2px 0 0' }}>
+            {inspections.length} total • Track, review & resume property surveys
+          </p>
         </div>
         <button 
           className="btn btn-primary btn-sm flex items-center gap-xs"
           onClick={() => navigate('/create-inspection')}
-          style={{ padding: '8px 12px', borderRadius: '8px' }}
+          style={{ width: 'auto', padding: '6px 14px' }}
         >
-          <Plus size={16} /> <span className="font-medium">New</span>
+          <Plus size={15} /> <span>New</span>
         </button>
       </header>
 
-      <div className="flex gap-sm mb-lg overflow-x-auto" style={{ paddingBottom: '8px', scrollbarWidth: 'none' }}>
-        {['All', 'Active', 'Drafts', 'Completed', 'Pending Sync'].map(f => (
-          <button 
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`badge ${filter === f ? 'badge-primary' : ''}`}
-            style={{ 
-              backgroundColor: filter === f ? '' : 'var(--surface-color)', 
-              border: filter === f ? '1px solid transparent' : '1px solid var(--border-color)',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap'
-            }}
-          >
-            {f}
-          </button>
-        ))}
+      {/* ── Filter Chips ── */}
+      <div 
+        className="flex gap-xs mb-md overflow-x-auto" 
+        style={{ paddingBottom: '4px', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}
+      >
+        {['All', 'Active', 'Drafts', 'Completed', 'Pending Sync'].map(f => {
+          const isActive = filter === f;
+          return (
+            <button 
+              key={f}
+              onClick={() => setFilter(f)}
+              className="badge"
+              style={{ 
+                backgroundColor: isActive ? 'var(--primary-transparent)' : 'var(--surface-color)', 
+                color: isActive ? 'var(--primary-light)' : 'var(--text-secondary)',
+                border: isActive ? '1px solid var(--primary-border)' : '1px solid var(--border-color)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                padding: '6px 12px',
+                fontSize: '12px',
+                borderRadius: 'var(--radius-md)',
+                fontWeight: isActive ? 600 : 500,
+                transition: 'all 0.15s ease'
+              }}
+            >
+              {f}
+            </button>
+          );
+        })}
       </div>
 
-      <div className="flex flex-col gap-md">
+      {/* ── Inspection Cards List ── */}
+      <div className="flex flex-col gap-sm">
         {isLoading ? (
-          <div className="text-center p-xl text-secondary">Loading...</div>
+          <div className="card text-center text-secondary py-xl" style={{ borderStyle: 'dashed' }}>
+            Loading field records...
+          </div>
         ) : filteredInspections.length === 0 ? (
-          <div className="card text-center p-xl flex flex-col items-center">
-            <h3 className="mb-sm">No {filter.toLowerCase()} inspections</h3>
+          <div className="card text-center flex flex-col items-center" style={{ padding: '36px 20px', borderStyle: 'dashed' }}>
+            <h3 className="mb-xs" style={{ fontSize: '15px', color: 'var(--text-primary)' }}>
+              No {filter.toLowerCase()} inspections found
+            </h3>
             {filter === 'Pending Sync' ? (
-              <p className="text-secondary text-sm">Everything is synced ✓</p>
+              <p className="text-xs text-secondary mb-0">All local records are synchronized with the cloud.</p>
             ) : filter === 'Drafts' ? (
-              <p className="text-secondary text-sm">No saved drafts</p>
+              <p className="text-xs text-secondary mb-0">No unfinished drafts stored on this device.</p>
             ) : filter === 'Completed' ? (
-              <p className="text-secondary text-sm">No completed inspections yet</p>
+              <p className="text-xs text-secondary mb-0">No finalized inspections recorded yet.</p>
             ) : (
               <>
-                <p className="text-secondary text-sm mb-md">Start a new inspection when you're ready.</p>
-                <button className="btn btn-primary" onClick={() => navigate('/create-inspection')}>
-                  + New Inspection
+                <p className="text-xs text-secondary mb-md">Get started by creating your first site survey.</p>
+                <button 
+                  className="btn btn-primary btn-sm" 
+                  style={{ width: 'auto', display: 'inline-flex' }}
+                  onClick={() => navigate('/create-inspection')}
+                >
+                  <Plus size={14} /> Start New Inspection
                 </button>
               </>
             )}
@@ -136,50 +162,60 @@ export default function Tasks() {
             const progress = getProgress(inspection);
             
             return (
-              <div key={inspection.id} className="card" style={{ marginBottom: 0, border: '1px solid var(--border-color)', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                <div className="flex justify-between items-start mb-sm">
-                  <div style={{ maxWidth: '70%' }}>
-                    <h3 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 4px 0' }}>{inspection.title}</h3>
-                    <div className="flex items-center gap-xs text-secondary text-sm">
-                      <MapPin size={14} />
-                      <span className="truncate">{inspection.location_name || 'Location not specified'}</span>
+              <div 
+                key={inspection.id} 
+                className="card card-interactive" 
+                style={{ marginBottom: 0, padding: '14px 16px' }}
+                onClick={() => navigate(`/inspection/${inspection.id}`)}
+              >
+                <div className="flex justify-between items-start mb-xs">
+                  <div style={{ flex: 1, minWidth: 0, paddingRight: '10px' }}>
+                    <div className="flex items-center gap-xs mb-2xs">
+                      <span className="text-xs font-bold text-primary truncate" style={{ maxWidth: '140px' }}>
+                        {inspection.id}
+                      </span>
+                      <span className="text-tertiary text-xs">•</span>
+                      <span className="text-xs text-tertiary truncate">
+                        {inspection.inspection_type || 'Standard'}
+                      </span>
+                    </div>
+                    <h3 className="truncate" style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-primary)', margin: 0 }}>
+                      {inspection.title || 'Untitled Inspection'}
+                    </h3>
+                    <div className="flex items-center gap-xs text-xs text-secondary mt-2xs">
+                      <MapPin size={12} color="var(--primary-light)" style={{ flexShrink: 0 }} />
+                      <span className="truncate">{inspection.location_name || 'Location pending'}</span>
                     </div>
                   </div>
-                  <span className={`badge ${statusDisplay.className} flex items-center gap-xs`} style={{ fontSize: '10px', letterSpacing: '0.5px', fontWeight: 'bold' }}>
+                  <span className={`badge ${statusDisplay.className}`} style={{ flexShrink: 0, fontSize: '10px' }}>
                     {statusDisplay.icon} {statusDisplay.label}
                   </span>
                 </div>
-                
-                <div className="flex items-center gap-xs text-sm mb-md text-secondary">
-                  <Calendar size={14} />
-                  <span>{inspection.inspection_type}</span>
-                </div>
 
                 {inspection.status !== 'COMPLETED' && inspection.status !== 'DRAFT' && (
-                  <div className="mb-md">
-                    <div className="flex justify-between text-xs mb-xs">
+                  <div className="mt-sm mb-xs" style={{ backgroundColor: 'var(--surface-light)', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
+                    <div className="flex justify-between text-xs mb-2xs">
                       <span className="text-secondary">Progress</span>
-                      <span className="font-medium">{progress}%</span>
+                      <span className="font-bold text-primary">{progress}%</span>
                     </div>
-                    <div className="progress-bar" style={{ height: '6px', backgroundColor: 'var(--border-color)', borderRadius: '3px', overflow: 'hidden' }}>
-                      <div className="progress-fill" style={{ width: `${progress}%`, height: '100%', backgroundColor: 'var(--primary-color)' }}></div>
+                    <div className="progress-bar" style={{ height: '4px' }}>
+                      <div className="progress-fill" style={{ width: `${progress}%` }}></div>
                     </div>
                   </div>
                 )}
                 
-                <div className="flex items-center justify-between mt-md pt-sm border-t border-color">
-                  <span className="text-xs text-secondary">
-                    {inspection.status === 'COMPLETED' ? 'Completed' : 'Last updated'} · {formatDate(inspection.updated_at || inspection.created_at)}
+                <div className="flex items-center justify-between mt-sm pt-xs" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <span className="text-xs text-tertiary">
+                    {inspection.status === 'COMPLETED' ? 'Completed' : 'Updated'} · {formatDate(inspection.updated_at || inspection.created_at)}
                   </span>
                   
-                  <button 
-                    className={`btn btn-sm ${inspection.status === 'COMPLETED' ? 'btn-outline' : 'btn-primary'}`}
-                    onClick={() => navigate(`/inspection/${inspection.id}`)}
-                    style={{ padding: '6px 12px', fontSize: '13px' }}
+                  <span 
+                    className="text-xs font-semibold text-primary flex items-center gap-2xs"
+                    style={{ color: 'var(--primary-light)' }}
                   >
                     {inspection.status === 'DRAFT' ? 'Continue Setup' : 
-                     inspection.status === 'COMPLETED' ? 'View Inspection' : 'Continue'} <ArrowRight size={14} />
-                  </button>
+                     inspection.status === 'COMPLETED' ? 'View Details' : 'Continue'} <ArrowRight size={13} />
+                  </span>
                 </div>
               </div>
             );

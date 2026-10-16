@@ -1,8 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, ArrowRight, User, MapPin, CheckCircle, AlertCircle, Calendar } from 'lucide-react';
+import {
+  Plus,
+  ArrowRight,
+  User,
+  MapPin,
+  CheckCircle2,
+  AlertCircle,
+  Calendar,
+  CloudOff,
+  RefreshCw,
+  HardDrive,
+  Compass,
+  Clock
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
+import ConnectivityService from '../services/offline/ConnectivityService';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -10,9 +24,14 @@ export default function Home() {
   
   const [inspections, setInspections] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   useEffect(() => {
     loadInspections();
+    const unsub = ConnectivityService.subscribe(({ online }) => {
+      setIsOnline(online);
+    });
+    return unsub;
   }, []);
 
   const loadInspections = async () => {
@@ -22,7 +41,7 @@ export default function Home() {
       data.sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime());
       setInspections(data);
     } catch (err) {
-      console.error(err);
+      console.error('Failed to load inspections:', err);
     } finally {
       setIsLoading(false);
     }
@@ -31,23 +50,31 @@ export default function Home() {
   const name = user?.supervisorProfile?.name || 'Field Supervisor';
   const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
 
-  // Stats
+  // Real data calculations
   const activeInspections = inspections.filter(i => i.status === 'IN_PROGRESS' || i.status === 'PAUSED' || i.status === 'REVIEW');
   const completedInspections = inspections.filter(i => i.status === 'COMPLETED');
   const pendingSyncInspections = inspections.filter(i => i.sync_status === 'LOCAL_ONLY' || i.sync_status === 'SYNC_FAILED' || i.sync_status === 'PARTIALLY_SYNCED');
   
-  // Current inspection (most recently updated active one)
+  // Current active inspection
   const currentInspection = activeInspections.length > 0 ? activeInspections[0] : null;
   
   // Recent 3 inspections
   const recentInspections = inspections.slice(0, 3);
+
+  // Time-appropriate compact greeting
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
+  };
 
   const getProgress = (inspection) => {
     if (inspection.status === 'COMPLETED') return 100;
     if (inspection.status === 'DRAFT') return 0;
     const checklist = inspection.metadata?.checklist || {};
     const total = Object.keys(checklist).length;
-    if (total === 0) return 10;
+    if (total === 0) return 15;
     const completed = Object.values(checklist).filter(Boolean).length;
     return Math.round((completed / total) * 100);
   };
@@ -59,177 +86,316 @@ export default function Home() {
   };
 
   return (
-    <div className="home-page" style={{ paddingBottom: '100px' }}>
-      <header className="mb-lg flex justify-between items-start">
+    <div className="home-page" style={{ paddingBottom: '24px' }}>
+      
+      {/* ── Compact Operational Header ── */}
+      <header className="flex justify-between items-center mb-md" style={{ paddingTop: '2px' }}>
         <div>
-          <h1 className="text-secondary" style={{ fontSize: '16px', fontWeight: '500' }}>Good morning,</h1>
-          <h2 style={{ fontSize: '28px' }}>{name}</h2>
+          <div className="text-xs text-tertiary font-medium">
+            {getGreeting()} • {isOnline ? 'Online' : 'Offline'}
+          </div>
+          <h1 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginTop: '2px' }}>
+            {name}
+          </h1>
         </div>
         
         <div 
-          className="bg-primary flex items-center justify-center overflow-hidden cursor-pointer shadow-sm" 
-          style={{ width: '48px', height: '48px', borderRadius: '50%', border: '2px solid var(--surface-color)' }}
+          className="flex items-center justify-center cursor-pointer" 
+          style={{
+            width: '40px',
+            height: '40px',
+            borderRadius: '50%',
+            backgroundColor: 'var(--surface-raised)',
+            border: '1px solid var(--border-color)',
+            overflow: 'hidden',
+            flexShrink: 0
+          }}
           onClick={() => navigate('/profile')}
+          title="Account profile"
+          aria-label="Account profile"
         >
           {avatarUrl ? (
-            <img src={avatarUrl} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <img src={avatarUrl} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           ) : (
-            <User size={24} className="text-white" />
+            <User size={20} color="var(--text-secondary)" />
           )}
         </div>
       </header>
 
-      {/* Primary Action */}
-      <section className="mb-lg">
+      {/* ── Primary Action: New Field Inspection ── */}
+      <section className="mb-md">
         <div 
-          className="card bg-primary text-white cursor-pointer" 
-          style={{ border: 'none', padding: '24px 20px' }}
+          className="card card-interactive"
+          style={{
+            backgroundColor: 'var(--surface-raised)',
+            borderColor: 'var(--primary-border)',
+            padding: '14px 16px',
+            boxShadow: '0 4px 14px -3px rgba(37, 99, 235, 0.25)',
+            position: 'relative',
+            overflow: 'hidden'
+          }}
           onClick={() => navigate('/create-inspection')}
         >
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            bottom: 0,
+            width: '4px',
+            backgroundColor: 'var(--primary-color)'
+          }} />
           <div className="flex justify-between items-center">
-            <div>
-              <h3 className="text-white mb-xs" style={{ fontSize: '20px' }}>Start a new field inspection</h3>
-              <p style={{ opacity: 0.9, fontSize: '14px', margin: 0 }}>Create a task and begin your inspection</p>
+            <div style={{ paddingLeft: '4px' }}>
+              <div className="flex items-center gap-xs mb-2xs">
+                <span className="badge badge-primary" style={{ padding: '2px 6px', fontSize: '10px' }}>NEW</span>
+                <h2 style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', margin: 0 }}>
+                  Start Field Inspection
+                </h2>
+              </div>
+              <p className="text-xs text-secondary" style={{ margin: 0 }}>
+                Survey property boundary, geotag photos & complete checklist
+              </p>
             </div>
-          </div>
-          <div className="mt-md pt-md flex items-center justify-between" style={{ borderTop: '1px solid rgba(255,255,255,0.2)' }}>
-            <div className="flex items-center gap-sm font-bold" style={{ fontSize: '16px' }}>
-              <Plus size={20} /> New Inspection
+            <div 
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '8px',
+                backgroundColor: 'var(--primary-color)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#fff',
+                flexShrink: 0,
+                marginLeft: '12px'
+              }}
+            >
+              <Plus size={20} />
             </div>
-            <ArrowRight size={20} />
           </div>
         </div>
       </section>
 
-      {/* Quick Stats (2x2 grid) */}
-      <section className="mb-lg">
-        <h3 className="mb-sm text-sm text-secondary font-bold" style={{ letterSpacing: '0.5px' }}>INSPECTIONS</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-          <div className="card text-center py-md">
-            <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{inspections.length}</div>
-            <div className="text-xs text-secondary mt-xs">Total</div>
+      {/* ── Compact 4-Column Statistics Strip ── */}
+      <section className="mb-md">
+        <div className="section-header">
+          <span className="section-title">Overview</span>
+          <button className="section-action" onClick={() => navigate('/tasks')}>
+            All Tasks <ArrowRight size={12} />
+          </button>
+        </div>
+        
+        <div className="stats-grid">
+          <div className="stat-tile" onClick={() => navigate('/tasks')}>
+            <span className="stat-value">{inspections.length}</span>
+            <span className="stat-label">Total</span>
           </div>
-          <div className="card text-center py-md" style={{ borderBottom: '3px solid var(--primary-color)' }}>
-            <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{activeInspections.length}</div>
-            <div className="text-xs text-secondary mt-xs">Active</div>
+          <div className="stat-tile" onClick={() => navigate('/tasks')}>
+            <span className="stat-value" style={{ color: activeInspections.length > 0 ? '#60a5fa' : 'var(--text-primary)' }}>
+              {activeInspections.length}
+            </span>
+            <span className="stat-label">Active</span>
           </div>
-          <div className="card text-center py-md" style={{ borderBottom: '3px solid var(--success-color)' }}>
-            <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{completedInspections.length}</div>
-            <div className="text-xs text-secondary mt-xs">Done</div>
+          <div className="stat-tile" onClick={() => navigate('/tasks')}>
+            <span className="stat-value" style={{ color: completedInspections.length > 0 ? '#34d399' : 'var(--text-primary)' }}>
+              {completedInspections.length}
+            </span>
+            <span className="stat-label">Done</span>
           </div>
-          <div className="card text-center py-md" style={{ borderBottom: '3px solid var(--warning-color)' }}>
-            <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{pendingSyncInspections.length}</div>
-            <div className="text-xs text-secondary mt-xs">Sync</div>
+          <div className="stat-tile" onClick={() => navigate('/sync')}>
+            <span className="stat-value" style={{ color: pendingSyncInspections.length > 0 ? '#fbbf24' : 'var(--text-tertiary)' }}>
+              {pendingSyncInspections.length}
+            </span>
+            <span className="stat-label">Sync</span>
           </div>
         </div>
       </section>
 
-      {/* Current Inspection */}
-      <section className="mb-lg">
-        <h3 className="mb-sm text-sm text-secondary font-bold" style={{ letterSpacing: '0.5px' }}>CURRENT INSPECTION</h3>
+      {/* ── Current Active Inspection ── */}
+      <section className="mb-md">
+        <div className="section-header">
+          <span className="section-title">Active Inspection</span>
+          {currentInspection && (
+            <span className="text-xs text-secondary">
+              Updated {formatDate(currentInspection.updated_at || currentInspection.created_at)}
+            </span>
+          )}
+        </div>
         
         {currentInspection ? (
-          <div className="card" style={{ borderLeft: '4px solid var(--primary-color)' }}>
-            <div className="flex justify-between mb-sm">
-              <div>
-                <h3 className="mb-xs" style={{ fontSize: '18px' }}>{currentInspection.title}</h3>
-                <div className="flex items-center gap-xs text-secondary text-sm">
-                  <MapPin size={14} />
-                  <span>{currentInspection.location_name || 'Location not specified'}</span>
+          <div className="card" style={{ borderColor: 'var(--primary-border)' }}>
+            <div className="flex justify-between items-start mb-sm">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="flex items-center gap-xs mb-xs">
+                  <span className="badge badge-primary">
+                    {currentInspection.status.replace('_', ' ')}
+                  </span>
+                  <span className="text-xs text-tertiary">
+                    {currentInspection.id}
+                  </span>
+                </div>
+                <h3 className="truncate" style={{ fontSize: '16px', fontWeight: '700', marginBottom: '4px' }}>
+                  {currentInspection.title || 'Untitled Inspection'}
+                </h3>
+                <div className="flex items-center gap-xs text-xs text-secondary">
+                  <MapPin size={13} color="var(--primary-light)" style={{ flexShrink: 0 }} />
+                  <span className="truncate">
+                    {currentInspection.location_name || 'Site location pending capture'}
+                  </span>
                 </div>
               </div>
             </div>
             
-            <div className="flex items-center gap-sm mb-md text-sm text-secondary">
-              <CheckCircle size={16} className="text-primary" />
-              <span>{currentInspection.inspection_type}</span>
-            </div>
-            
-            <div className="mb-md">
+            <div className="mb-md" style={{ backgroundColor: 'var(--surface-light)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
               <div className="flex justify-between text-xs mb-xs">
-                <span className="text-secondary">Inspection progress</span>
-                <span className="font-bold">{getProgress(currentInspection)}%</span>
+                <span className="text-secondary font-medium">Field Completion</span>
+                <span className="font-bold text-primary">{getProgress(currentInspection)}%</span>
               </div>
-              <div className="progress-bar" style={{ height: '8px', backgroundColor: 'var(--border-color)', borderRadius: '4px', overflow: 'hidden' }}>
-                <div className="progress-fill" style={{ width: `${getProgress(currentInspection)}%`, height: '100%', backgroundColor: 'var(--primary-color)' }}></div>
+              <div className="progress-bar" style={{ height: '6px' }}>
+                <div className="progress-fill" style={{ width: `${getProgress(currentInspection)}%` }}></div>
               </div>
             </div>
             
             <button 
-              className="btn btn-primary w-full flex justify-center items-center gap-sm"
+              className="btn btn-primary"
               onClick={() => navigate(`/inspection/${currentInspection.id}`)}
+              style={{ minHeight: '40px', fontSize: '13px' }}
             >
-              Continue Inspection <ArrowRight size={18} />
+              Continue Inspection <ArrowRight size={16} />
             </button>
           </div>
         ) : (
-          <div className="card text-center py-xl">
-            <h3 className="mb-xs" style={{ fontSize: '16px' }}>No inspection in progress</h3>
-            <p className="text-secondary text-sm mb-md">Start a new field inspection when you're ready.</p>
-            <button className="btn btn-outline" onClick={() => navigate('/create-inspection')}>
-              + New Inspection
+          <div className="card text-center" style={{ padding: '24px 16px', borderStyle: 'dashed' }}>
+            <Compass size={28} color="var(--text-tertiary)" style={{ margin: '0 auto 8px' }} />
+            <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+              No Active Inspection
+            </div>
+            <p className="text-xs text-secondary mb-md" style={{ maxWidth: '280px', margin: '0 auto 14px' }}>
+              All assigned inspections are up to date. Start a new inspection when you reach the site.
+            </p>
+            <button 
+              className="btn btn-secondary btn-sm" 
+              style={{ width: 'auto', display: 'inline-flex' }}
+              onClick={() => navigate('/create-inspection')}
+            >
+              <Plus size={14} /> New Inspection
             </button>
           </div>
         )}
       </section>
 
-      {/* Sync Status */}
-      <section className="mb-lg">
-        <div className="card" style={{ backgroundColor: pendingSyncInspections.length > 0 ? '#fffbeb' : '#f0fdf4', border: 'none' }}>
-          <div className="flex items-start gap-md">
-            <div className={`p-sm rounded-full ${pendingSyncInspections.length > 0 ? 'bg-warning text-white' : 'bg-success text-white'}`}>
-              {pendingSyncInspections.length > 0 ? <AlertCircle size={20} /> : <CheckCircle size={20} />}
+      {/* ── Offline & Sync Status Banner (Dark High-Contrast Theme) ── */}
+      <section className="mb-md">
+        <div 
+          className="card" 
+          style={{
+            backgroundColor: pendingSyncInspections.length > 0 ? 'rgba(245, 158, 11, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+            borderColor: pendingSyncInspections.length > 0 ? 'var(--warning-border)' : 'var(--success-border)',
+            padding: '12px 14px'
+          }}
+        >
+          <div className="flex items-center justify-between gap-sm">
+            <div className="flex items-center gap-sm" style={{ flex: 1, minWidth: 0 }}>
+              <div 
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '8px',
+                  backgroundColor: pendingSyncInspections.length > 0 ? 'var(--warning-transparent)' : 'var(--success-transparent)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: pendingSyncInspections.length > 0 ? 'var(--warning-color)' : 'var(--success-color)',
+                  flexShrink: 0
+                }}
+              >
+                {pendingSyncInspections.length > 0 ? <RefreshCw size={16} /> : <CheckCircle2 size={16} />}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                  {pendingSyncInspections.length > 0
+                    ? `${pendingSyncInspections.length} Inspection${pendingSyncInspections.length !== 1 ? 's' : ''} Pending Sync`
+                    : 'Storage & Sync Up to Date'}
+                </div>
+                <div className="text-xs text-secondary truncate">
+                  {pendingSyncInspections.length > 0 
+                    ? 'Saved locally • Tap to sync when online' 
+                    : 'All field records verified and backed up'}
+                </div>
+              </div>
             </div>
-            <div>
-              <h4 className="font-bold mb-xs" style={{ color: 'var(--text-color)' }}>
-                {pendingSyncInspections.length > 0 ? `${pendingSyncInspections.length} inspections waiting to sync` : 'All inspections synced'}
-              </h4>
-              <p className="text-sm text-secondary mb-sm">
-                {pendingSyncInspections.length > 0 
-                  ? 'Photos and inspection data are safely stored on this device.' 
-                  : 'Your field data is up to date and safely stored.'}
-              </p>
-              {pendingSyncInspections.length > 0 && (
-                <button 
-                  className="btn btn-sm" 
-                  style={{ backgroundColor: 'white', color: 'var(--text-color)', border: '1px solid var(--border-color)' }}
-                  onClick={() => navigate('/sync')}
-                >
-                  Open Sync
-                </button>
-              )}
-            </div>
+
+            <button 
+              className="btn btn-secondary btn-sm"
+              style={{
+                width: 'auto',
+                padding: '6px 12px',
+                fontSize: '12px',
+                flexShrink: 0,
+                borderColor: pendingSyncInspections.length > 0 ? 'var(--warning-border)' : 'var(--border-color)',
+                color: pendingSyncInspections.length > 0 ? '#fbbf24' : 'var(--text-primary)'
+              }}
+              onClick={() => navigate('/sync')}
+            >
+              Open Sync
+            </button>
           </div>
         </div>
       </section>
 
-      {/* Recent Inspections */}
+      {/* ── Recent Inspections List ── */}
       {recentInspections.length > 0 && (
         <section>
-          <div className="flex justify-between items-center mb-sm">
-            <h3 className="text-sm text-secondary font-bold" style={{ letterSpacing: '0.5px' }}>RECENT INSPECTIONS</h3>
-            <span className="text-primary text-sm font-medium cursor-pointer" onClick={() => navigate('/tasks')}>See all →</span>
+          <div className="section-header">
+            <span className="section-title">Recent Inspections</span>
+            <span className="section-action" onClick={() => navigate('/tasks')}>
+              View all ({inspections.length}) <ArrowRight size={12} />
+            </span>
           </div>
           
           <div className="flex flex-col gap-sm">
             {recentInspections.map(ins => (
               <div 
                 key={ins.id} 
-                className="card flex justify-between items-center cursor-pointer" 
-                style={{ padding: '16px', marginBottom: 0 }}
+                className="card card-interactive flex justify-between items-center" 
+                style={{ padding: '12px 14px', marginBottom: 0 }}
                 onClick={() => navigate(`/inspection/${ins.id}`)}
               >
-                <div>
-                  <h4 className="font-bold mb-xs" style={{ fontSize: '15px' }}>{ins.title}</h4>
-                  <div className="text-xs text-secondary flex items-center gap-xs">
-                    <Calendar size={12} /> {ins.inspection_type}
+                <div style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
+                  <div className="flex items-center gap-xs mb-2xs">
+                    <span className="text-xs font-bold text-primary truncate" style={{ maxWidth: '120px' }}>
+                      {ins.id}
+                    </span>
+                    <span className="text-tertiary text-xs">•</span>
+                    <span className="text-xs text-tertiary truncate">
+                      {ins.inspection_type || 'Standard'}
+                    </span>
+                  </div>
+                  <h4 className="truncate" style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                    {ins.title || 'Untitled Inspection'}
+                  </h4>
+                  <div className="text-xs text-secondary flex items-center gap-xs mt-2xs">
+                    <MapPin size={11} color="var(--text-tertiary)" />
+                    <span className="truncate">{ins.location_name || 'Location unrecorded'}</span>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className={`badge ${ins.status === 'COMPLETED' ? 'badge-success' : ins.status === 'IN_PROGRESS' ? 'badge-primary' : 'badge-secondary'}`} style={{ fontSize: '10px', marginBottom: '4px' }}>
+
+                <div className="text-right" style={{ flexShrink: 0 }}>
+                  <div 
+                    className={`badge ${
+                      ins.status === 'COMPLETED'
+                        ? 'badge-success'
+                        : ins.status === 'IN_PROGRESS'
+                          ? 'badge-primary'
+                          : 'badge-secondary'
+                    }`}
+                    style={{ fontSize: '10px', marginBottom: '3px' }}
+                  >
                     {ins.status.replace('_', ' ')}
                   </div>
-                  <div className="text-xs text-secondary">{formatDate(ins.updated_at || ins.created_at)}</div>
+                  <div className="text-xs text-tertiary">
+                    {formatDate(ins.updated_at || ins.created_at)}
+                  </div>
                 </div>
               </div>
             ))}
@@ -239,3 +405,4 @@ export default function Home() {
     </div>
   );
 }
+

@@ -31,6 +31,79 @@ export function AuthProvider({ children }) {
   }, []);
 
   /**
+   * Restores Google Drive connection state for the authenticated supervisor.
+   */
+  const restoreDriveConnection = useCallback(async (supervisorUser, providerToken = null) => {
+    if (!supervisorUser) return;
+    const userId = supervisorUser.id;
+
+    // Check stored authorization metadata in IndexedDB
+    const storedAuth = await DriveAuthRepository.getAuth(userId);
+
+    if (storedAuth?.disconnected) {
+      // User explicitly disconnected Drive
+      GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
+      return;
+    }
+
+    // 1. If Supabase gave us a provider_token on OAuth login, we can use it
+    if (providerToken) {
+      const email = supervisorUser.email || storedAuth?.email || null;
+      GoogleDriveService.setTokenData({
+        accessToken: providerToken,
+        expiresInSec: 3600,
+        email: email
+      });
+
+      await DriveAuthRepository.saveAuth({
+        userId,
+        email: email,
+        status: DRIVE_STATUS.CONNECTED,
+        last_connected_at: new Date().toISOString(),
+        disconnected: false,
+      });
+
+      // Trigger sync if pending
+      setTimeout(() => SyncEngine.startSync(), 1000);
+      return;
+    }
+
+    // 2. If stored authorization says connected, check/renew with silent GIS
+    if (storedAuth && !storedAuth.disconnected) {
+      GoogleDriveService.setStatus(DRIVE_STATUS.CHECKING, 'Restoring Drive connection...');
+      try {
+        await GoogleDriveService.init();
+        // Set email hint
+        GoogleDriveService.setTokenData({
+          accessToken: null,
+          email: storedAuth.email || supervisorUser.email,
+        });
+
+        // Try silent prompt first (skip prompt)
+        const tokenRes = await GoogleDriveService.requestAccessToken({ prompt: 'none' });
+        if (tokenRes?.access_token) {
+          await DriveAuthRepository.saveAuth({
+            userId,
+            email: storedAuth.email || supervisorUser.email,
+            status: DRIVE_STATUS.CONNECTED,
+            last_connected_at: new Date().toISOString(),
+            disconnected: false,
+          });
+          setTimeout(() => SyncEngine.startSync(), 1000);
+        }
+      } catch (err) {
+        if (!navigator.onLine) {
+          // Offline: keep previous connected status so supervisor can inspect without interruption
+          GoogleDriveService.setStatus(DRIVE_STATUS.CONNECTED);
+        } else {
+          // Session expired or needs interaction
+          GoogleDriveService.setStatus(DRIVE_STATUS.RECONNECT_REQUIRED, 'Please reconnect Google Drive');
+        }
+      }
+    }
+  }, []);
+
+  /**
    * Verify supervisor access in field_supervisors table.
    * If valid, restores supervisor-scoped Drive connection.
    */
@@ -132,78 +205,8 @@ export function AuthProvider({ children }) {
     }
     
     setLoading(false);
-  }, []);
+  }, [restoreDriveConnection]);
 
-  /**
-   * Restores Google Drive connection state for the authenticated supervisor.
-   */
-  const restoreDriveConnection = async (supervisorUser, providerToken = null) => {
-    if (!supervisorUser) return;
-    const userId = supervisorUser.id;
-
-    // Check stored authorization metadata in IndexedDB
-    const storedAuth = await DriveAuthRepository.getAuth(userId);
-
-    if (storedAuth?.disconnected) {
-      // User explicitly disconnected Drive
-      GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
-      return;
-    }
-
-    // 1. If Supabase gave us a provider_token on OAuth login, we can use it
-    if (providerToken) {
-      const email = supervisorUser.email || storedAuth?.email || null;
-      GoogleDriveService.setTokenData({
-        accessToken: providerToken,
-        expiresInSec: 3600,
-        email: email
-      });
-
-      await DriveAuthRepository.saveAuth({
-        userId,
-        email: email,
-        status: DRIVE_STATUS.CONNECTED,
-        last_connected_at: new Date().toISOString(),
-        disconnected: false,
-      });
-
-      // Trigger sync if pending
-      setTimeout(() => SyncEngine.startSync(), 1000);
-      return;
-    }
-
-    // 2. If stored authorization says connected, check/renew with silent GIS
-    if (storedAuth && !storedAuth.disconnected) {
-      GoogleDriveService.setStatus(DRIVE_STATUS.CHECKING, 'Restoring Drive connection...');
-      try {
-        await GoogleDriveService.init();
-        // Set email hint
-        GoogleDriveService.setTokenData({
-          accessToken: null,
-          email: storedAuth.email || supervisorUser.email,
-        });
-
-        // Test silent refresh
-        const token = await GoogleDriveService.getValidToken();
-        if (token) {
-          await DriveAuthRepository.saveAuth({
-            userId,
-            email: GoogleDriveService.tokenEmail || storedAuth.email,
-            status: DRIVE_STATUS.CONNECTED,
-            last_connected_at: new Date().toISOString(),
-            disconnected: false,
-          });
-          setTimeout(() => SyncEngine.startSync(), 1000);
-        }
-      } catch (err) {
-        if (!navigator.onLine) {
-          GoogleDriveService.setStatus(DRIVE_STATUS.OFFLINE, 'Offline — Drive connection will resume when online');
-        } else {
-          GoogleDriveService.setStatus(DRIVE_STATUS.RECONNECT_REQUIRED, 'Authorization expired. Reconnect needed.');
-        }
-      }
-    }
-  };
 
   // Track initialization to avoid redundant duplicate calls
   const isInitializingRef = useRef(false);

@@ -8,21 +8,21 @@ export default function MainLayout() {
         <Outlet />
       </div>
       
-      <nav className="bottom-nav">
+      <nav className="bottom-nav" role="navigation" aria-label="Main Navigation">
         <NavLink to="/" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <Home size={24} />
+          <Home size={20} />
           <span>Home</span>
         </NavLink>
         <NavLink to="/tasks" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <ClipboardList size={24} />
+          <ClipboardList size={20} />
           <span>Tasks</span>
         </NavLink>
         <NavLink to="/sync" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <RefreshCw size={24} />
+          <RefreshCw size={20} />
           <span>Sync</span>
         </NavLink>
         <NavLink to="/profile" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <User size={24} />
+          <User size={20} />
           <span>Profile</span>
         </NavLink>
       </nav>

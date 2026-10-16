@@ -69,39 +69,39 @@ export default function GoogleDriveAccess() {
   const isDifferentAccount = driveEmail && supervisorEmail && driveEmail.toLowerCase() !== supervisorEmail.toLowerCase();
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col items-center justify-center p-md" style={{ backgroundColor: 'var(--bg-color)' }}>
-      <div className="card w-full max-w-md p-xl flex flex-col items-center animate-fade-in" style={{ backgroundColor: 'var(--surface-color)', borderRadius: '16px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)' }}>
+    <div className="min-h-screen flex flex-col items-center justify-center p-md" style={{ backgroundColor: 'var(--bg-color)', minHeight: '100vh', padding: '16px' }}>
+      <div className="card w-full max-w-md p-xl flex flex-col items-center animate-fade-in" style={{ backgroundColor: 'var(--surface-color)', borderRadius: '16px', border: '1px solid var(--border-color)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.3)', padding: '24px' }}>
         
         {/* Status Icon */}
-        <div className="w-16 h-16 rounded-full mb-lg flex items-center justify-center" style={{ backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+        <div className="w-16 h-16 rounded-full mb-lg flex items-center justify-center" style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'var(--surface-light)', border: '1px solid var(--border-color)', marginBottom: '16px' }}>
           {loading ? (
-            <Loader2 size={32} className="text-primary animate-spin" />
+            <Loader2 size={30} className="animate-spin" style={{ color: 'var(--primary-color)' }} />
           ) : driveAuthorized ? (
-            <CheckCircle2 size={32} style={{ color: 'var(--success-color)' }} />
+            <CheckCircle2 size={30} style={{ color: 'var(--success-color)' }} />
           ) : driveStatus === DRIVE_STATUS.RECONNECT_REQUIRED ? (
-            <AlertTriangle size={32} style={{ color: 'var(--warning-color)' }} />
+            <AlertTriangle size={30} style={{ color: 'var(--warning-color)' }} />
           ) : driveStatus === DRIVE_STATUS.ERROR ? (
-            <AlertTriangle size={32} style={{ color: 'var(--danger-color)' }} />
+            <AlertTriangle size={30} style={{ color: 'var(--danger-color)' }} />
           ) : (
-            <HardDrive size={32} className="text-primary" />
+            <HardDrive size={30} style={{ color: 'var(--primary-color)' }} />
           )}
         </div>
 
         {/* Title */}
-        <h1 className="text-xl font-bold mb-xs text-text text-center" style={{ margin: '0 0 6px 0' }}>
-          {driveAuthorized ? 'Google Drive Connected' : driveStatus === DRIVE_STATUS.RECONNECT_REQUIRED ? 'Drive Needs Attention' : 'Connect Google Drive'}
+        <h1 className="text-xl font-bold mb-xs text-center" style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--text-primary)' }}>
+          {driveAuthorized ? 'Google Drive Connected' : driveStatus === DRIVE_STATUS.RECONNECT_REQUIRED ? 'Drive Re-authentication Needed' : 'Connect Google Drive Storage'}
         </h1>
         
         {/* Subtitle / Email status */}
-        <p className="text-secondary text-sm mb-md text-center" style={{ margin: '0 0 16px 0' }}>
+        <p className="text-secondary text-sm mb-md text-center" style={{ margin: '0 0 20px 0', fontSize: '13px', lineHeight: 1.5 }}>
           {driveAuthorized ? (
             <span>
-              Connected as <strong style={{ color: 'var(--text-color)' }}>{driveEmail || supervisorEmail}</strong>
+              Connected as <strong style={{ color: 'var(--text-primary)' }}>{driveEmail || supervisorEmail}</strong>
             </span>
           ) : driveStatus === DRIVE_STATUS.RECONNECT_REQUIRED ? (
-            <span>Your Google Drive authorization expired or was revoked. Reconnect to resume uploads.</span>
+            <span>Your Google Drive session has expired or requires renewal. Reconnect to resume media uploads.</span>
           ) : (
-            <span>Authorize 7Days Field to securely upload inspection media and photos directly to Drive.</span>
+            <span>Authorize 7Days Field to securely upload and sync captured photos, videos, and signatures directly to Google Drive.</span>
           )}
         </p>
 
@@ -111,40 +111,40 @@ export default function GoogleDriveAccess() {
             width: '100%',
             padding: '12px 14px',
             borderRadius: '10px',
-            backgroundColor: 'rgba(59, 130, 246, 0.08)',
-            border: '1px solid rgba(59, 130, 246, 0.25)',
+            backgroundColor: 'rgba(37, 99, 235, 0.08)',
+            border: '1px solid rgba(37, 99, 235, 0.25)',
             marginBottom: '16px',
             fontSize: '12px',
             lineHeight: '1.4'
           }}>
-            <div style={{ fontWeight: '600', color: '#3b82f6', marginBottom: '4px' }}>
+            <div style={{ fontWeight: '600', color: 'var(--primary-color)', marginBottom: '4px' }}>
               Different Google Account Connected
             </div>
             <div style={{ color: 'var(--text-secondary)' }}>
-              App login: <strong>{supervisorEmail}</strong><br/>
-              Drive storage: <strong>{driveEmail}</strong>
+              App login: <strong style={{ color: 'var(--text-primary)' }}>{supervisorEmail}</strong><br/>
+              Drive storage: <strong style={{ color: 'var(--text-primary)' }}>{driveEmail}</strong>
             </div>
           </div>
         )}
 
         {/* Error alert */}
         {errorMessage && (
-          <div className="w-full bg-danger bg-opacity-10 text-danger p-md rounded-md mb-md text-sm border border-danger" style={{ marginBottom: '16px' }}>
+          <div style={{ width: '100%', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--danger-color)', padding: '12px 14px', borderRadius: '10px', marginBottom: '16px', fontSize: '13px', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
             {errorMessage}
           </div>
         )}
 
         {/* Action Buttons */}
-        <div className="w-full flex flex-col gap-sm mt-auto" style={{ gap: '10px' }}>
+        <div className="w-full flex flex-col gap-sm" style={{ width: '100%', gap: '10px' }}>
           {driveAuthorized ? (
             <>
-              <button className="btn btn-primary w-full" onClick={handleContinue} style={{ height: '44px' }}>
-                Continue to Application
+              <button className="btn btn-primary w-full" onClick={handleContinue} style={{ minHeight: '44px', fontWeight: 600 }}>
+                Continue to Field Work
               </button>
               
               <button
-                className="btn btn-outline w-full flex items-center justify-center gap-xs"
-                style={{ height: '40px', fontSize: '13px' }}
+                className="btn btn-secondary w-full flex items-center justify-center gap-xs"
+                style={{ minHeight: '40px', fontSize: '13px', fontWeight: 600 }}
                 onClick={() => handleConnect(true)}
                 disabled={loading}
               >
@@ -152,8 +152,8 @@ export default function GoogleDriveAccess() {
               </button>
 
               <button
-                className="btn btn-outline w-full text-danger border-danger flex items-center justify-center gap-xs"
-                style={{ height: '40px', fontSize: '13px', color: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
+                className="btn btn-secondary w-full flex items-center justify-center gap-xs"
+                style={{ minHeight: '40px', fontSize: '13px', color: 'var(--danger-color)', borderColor: 'rgba(239, 68, 68, 0.3)', backgroundColor: 'transparent' }}
                 onClick={handleDisconnect}
                 disabled={loading}
               >
@@ -166,19 +166,19 @@ export default function GoogleDriveAccess() {
                 className="btn btn-primary w-full flex justify-center items-center gap-sm" 
                 onClick={() => handleConnect(false)}
                 disabled={loading}
-                style={{ height: '44px' }}
+                style={{ minHeight: '44px', fontWeight: 700 }}
               >
                 {loading && <Loader2 size={16} className="animate-spin" />}
-                {driveStatus === DRIVE_STATUS.RECONNECT_REQUIRED ? 'Reconnect Google Drive' : 'Connect with Google'}
+                {driveStatus === DRIVE_STATUS.RECONNECT_REQUIRED ? 'Reconnect Google Drive' : 'Connect with Google Drive'}
               </button>
               
               <button 
-                className="btn btn-outline w-full text-secondary" 
+                className="btn btn-secondary w-full" 
                 onClick={handleContinue}
                 disabled={loading}
-                style={{ height: '40px' }}
+                style={{ minHeight: '40px', fontSize: '13px', color: 'var(--text-secondary)' }}
               >
-                Not now
+                Skip for Now (Local Only)
               </button>
             </>
           )}
