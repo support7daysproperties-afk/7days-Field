@@ -1,5 +1,6 @@
 /**
  * PropertyBoundary.jsx — Crosshair / Target-based boundary marking
+ * Powered by Google Maps JavaScript API (Satellite & Hybrid)
  *
  * INTERACTION MODEL (DJI SmartFarm style):
  *   1. Satellite map opens with fixed crosshair at center
@@ -13,23 +14,21 @@
  *   9. Save → BoundaryRepository (IndexedDB, offline-first)
  *  10. Reopening restores exact polygon
  *
- * MAP LIBRARY: Leaflet
- *   - L.circleMarker for vertices
- *   - L.polyline for open boundary line (drawing)
- *   - L.polygon for closed filled boundary (completed)
- *   - L.marker (draggable) for vertex editing
- *   - L.circleMarker (interactive) for midpoint insertion
+ * MAP LIBRARY: Google Maps JavaScript API
+ *   - google.maps.Map with MapTypeId.SATELLITE & MapTypeId.HYBRID
+ *   - google.maps.Polygon for closed filled boundary
+ *   - google.maps.Polyline for open boundary line & selectable edge hit-testing
+ *   - google.maps.Marker for vertices (draggable in edit mode)
+ *   - google.maps.OverlayView for custom DOM collision-free measurement badges
  *   - map.getCenter() for crosshair coordinate
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 import { toPng } from 'html-to-image';
 import {
   ArrowLeft, Plus, Minus, Navigation2, Layers,
   Undo2, Trash2, Save, CheckCircle2, Check,
-  MapPin, Edit3, X,
+  MapPin, Edit3, X, Ruler, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import BoundaryRepository from '../services/offline/BoundaryRepository';
 import {
@@ -41,28 +40,22 @@ import {
   formatPerimeter,
   formatDistance,
 } from '../services/BoundaryService';
+import { computeCollisionFreeLabels } from '../services/BoundaryLabelPlacementService';
+import { loadGoogleMaps, getGoogleMapsApiKey } from '../services/GoogleMapsLoader';
 import { useAuth } from '../context/AuthContext';
-
-// ── Tile URLs ──────────────────────────────────────────────────────────────────
-const ESRI_SAT  = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 // ── Visual constants ───────────────────────────────────────────────────────────
 const C_BLUE    = '#3b82f6';
 const C_WHITE   = '#ffffff';
-const C_FILL_OP = 0.18;
-const C_LINE_W  = 2.5;
-const V_RADIUS  = 7;   // vertex radius px
-const MID_RADIUS= 5;   // midpoint radius px
+const C_FILL_OP = 0.22;
+const C_LINE_W  = 3;
+const V_RADIUS  = 8;   // vertex radius px
+const MID_RADIUS= 6;   // midpoint radius px
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-// Convert our stored [lng, lat] → Leaflet [lat, lng]
-const ll = (c) => [c[1], c[0]];
-const llAll = (cs) => cs.map(ll);
+// Convert [lng, lat] GeoJSON coordinates to Google Maps LatLngLiteral { lat, lng }
+const toLatLng = (c) => ({ lat: c[1], lng: c[0] });
+const toLatLngAll = (cs) => cs.map(toLatLng);
 
-function emptyFC() { return { type: 'FeatureCollection', features: [] }; }
-
-// ── Component ──────────────────────────────────────────────────────────────────
 export default function PropertyBoundary({
   inspectionId,
   propertyId,
@@ -75,157 +68,271 @@ export default function PropertyBoundary({
   // DOM
   const mapEl = useRef(null);
 
-  // Leaflet instances
-  const mapRef       = useRef(null);
-  const satLayerRef  = useRef(null);
-  const osmLayerRef  = useRef(null);
-  const gpsMarkerRef = useRef(null);
-  const gpsWatchRef  = useRef(null);
-  const layerGrp     = useRef(null);   // all boundary layers live here
+  // Google Maps instances
+  const mapRef            = useRef(null);
+  const googleMapsRef     = useRef(null);
+  const mapOverlayRef     = useRef(null);
+  const gpsMarkerRef      = useRef(null);
+  const gpsWatchRef       = useRef(null);
+
+  // Overlay management refs
+  const polygonOverlayRef = useRef(null);
+  const polylinesRef      = useRef([]);
+  const markersRef        = useRef([]);
+  const badgeDivsRef      = useRef([]);
+
+  // Loading & Error states
+  const [mapLoaded, setMapLoaded]     = useState(false);
+  const [mapError, setMapError]       = useState(null);
+  const [mapTypeId, setMapTypeId]     = useState('satellite'); // 'satellite' | 'hybrid'
 
   // Coords: stored as [lng, lat] pairs (GeoJSON order)
-  // drawCoordsRef stays in sync with coords; used inside Leaflet callbacks to avoid stale closure
   const drawCoordsRef = useRef([]);
-  const [coords, setCoords]             = useState([]);
+  const [coords, setCoords]           = useState([]);
 
   // mode: 'drawing' | 'completed' | 'saved' | 'editing'
   const modeRef = useRef('drawing');
-  const [mode, setMode]                 = useState('drawing');
+  const [mode, setMode]               = useState('drawing');
 
   const [savedBoundary, setSavedBoundary] = useState(null);
   const [isSaving, setIsSaving]           = useState(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [saveError, setSaveError]         = useState(null);
-  const [showLabels, setShowLabels]       = useState(false);
   const [gpsAccuracy, setGpsAccuracy]     = useState(null);
   const [gpsWarning, setGpsWarning]       = useState(false);
-  const [toast, setToast]                 = useState('');   // temporary feedback
+  const [toast, setToast]                 = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  // Selected edge state for inspection & highlighting
+  const [selectedEdge, setSelectedEdge] = useState(null);
+  const selectedEdgeRef = useRef(null);
 
   // Derived metrics
   const isPolygonClosed = mode === 'completed' || mode === 'saved' || mode === 'editing';
   const hasPolygon = coords.length >= 3;
-  // Calculate geodesic area only when we have at least 3 vertices
   const areaMetrics = hasPolygon ? areaFromM2(calcPolygonAreaM2(coords)) : null;
-  // For perimeter: if closed, full closed loop perimeter; if open line (>=2 points), sum of open segments
   const perimeterM = coords.length >= 2
     ? Math.round(isPolygonClosed && hasPolygon ? calcPerimeterM(coords) : calcEdgeDistances(coords, false).reduce((sum, e) => sum + e.distanceM, 0))
     : 0;
 
-  // ── Keep modeRef in sync ──────────────────────────────────────────────────────
   useEffect(() => { modeRef.current = mode; }, [mode]);
 
-  // ── Toast helper ──────────────────────────────────────────────────────────────
   const showToast = useCallback((msg, duration = 1800) => {
     setToast(msg);
     setTimeout(() => setToast(''), duration);
   }, []);
 
-  // ── Leaflet layer rebuild ─────────────────────────────────────────────────────
-  // Called synchronously after every state change. Never waits for React re-render.
-  const renderLayers = useCallback((pts, currentMode) => {
-    const m = mapRef.current;
-    if (!m) return;
-
-    // Clear existing boundary layers
-    if (layerGrp.current) {
-      layerGrp.current.clearLayers();
-    } else {
-      layerGrp.current = L.layerGroup().addTo(m);
+  // ── Clear all existing map overlays ──────────────────────────────────────────
+  const clearMapOverlays = useCallback(() => {
+    if (polygonOverlayRef.current) {
+      polygonOverlayRef.current.setMap(null);
+      polygonOverlayRef.current = null;
     }
+    polylinesRef.current.forEach(p => p.setMap(null));
+    polylinesRef.current = [];
+
+    markersRef.current.forEach(m => m.setMap(null));
+    markersRef.current = [];
+
+    badgeDivsRef.current.forEach(d => d.remove());
+    badgeDivsRef.current = [];
+  }, []);
+
+  // ── Render boundary layers on Google Maps ─────────────────────────────────────
+  const renderLayers = useCallback((pts, currentMode) => {
+    const map = mapRef.current;
+    const gmaps = googleMapsRef.current;
+    const overlay = mapOverlayRef.current;
+    if (!map || !gmaps || !overlay) return;
+
+    clearMapOverlays();
 
     if (pts.length === 0) return;
 
-    const llPts = llAll(pts);
+    const latLngPts = toLatLngAll(pts);
     const isCompleted = currentMode === 'completed' || currentMode === 'saved' || currentMode === 'editing';
 
-    // 1. Polygon fill (only when completed)
+    // 1. Polygon Fill (completed / saved / editing)
     if (isCompleted && pts.length >= 3) {
-      L.polygon(llPts, {
-        color: C_BLUE,
-        weight: C_LINE_W,
+      const polygon = new gmaps.Polygon({
+        paths: latLngPts,
+        strokeColor: C_BLUE,
+        strokeOpacity: 0.9,
+        strokeWeight: C_LINE_W,
         fillColor: C_BLUE,
         fillOpacity: C_FILL_OP,
-        interactive: false,
-      }).addTo(layerGrp.current);
+        clickable: false,
+        zIndex: 1,
+      });
+      polygon.setMap(map);
+      polygonOverlayRef.current = polygon;
     }
 
-    // 2. Open polyline during drawing OR closed outline during completed
+    // 2. Open Polyline or Selectable Edges
     if (pts.length >= 2) {
-      const lineCoords = isCompleted && pts.length >= 3 ? [...llPts, llPts[0]] : llPts;
-      L.polyline(lineCoords, {
-        color: C_BLUE,
-        weight: C_LINE_W,
-        interactive: false,
-      }).addTo(layerGrp.current);
-
-      // Edge distance measurement badges
       const edges = calcEdgeDistances(pts, isCompleted);
+      const activeSelected = selectedEdgeRef.current;
+
       edges.forEach((edge) => {
-        const edgeIcon = L.divIcon({
-          className: 'edge-distance-badge-wrap',
-          html: `<div class="edge-distance-badge" style="
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2px 7px;
-            background: rgba(15, 17, 21, 0.88);
-            backdrop-filter: blur(4px);
-            -webkit-backdrop-filter: blur(4px);
-            border: 1px solid rgba(59, 130, 246, 0.55);
-            border-radius: 9999px;
-            color: #60a5fa;
-            font-size: 11px;
-            font-weight: 700;
-            font-family: inherit;
-            white-space: nowrap;
-            letter-spacing: 0.02em;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
-            pointer-events: none;
-            user-select: none;
-            transform: translate(-50%, -50%);
-          ">${edge.formattedDistance}</div>`,
-          iconSize: [0, 0],
-          iconAnchor: [0, 0],
+        const isThisEdgeSelected = activeSelected && activeSelected.index === edge.index;
+        const edgePath = [toLatLng(edge.from), toLatLng(edge.to)];
+
+        // Base/highlight visual polyline
+        const line = new gmaps.Polyline({
+          path: edgePath,
+          strokeColor: isThisEdgeSelected ? '#f59e0b' : C_BLUE,
+          strokeOpacity: isThisEdgeSelected ? 1.0 : 0.9,
+          strokeWeight: isThisEdgeSelected ? 6 : C_LINE_W,
+          clickable: false,
+          zIndex: isThisEdgeSelected ? 10 : 2,
+        });
+        line.setMap(map);
+        polylinesRef.current.push(line);
+
+        // Invisible wider hit-testing polyline for effortless touch selection
+        const hitLine = new gmaps.Polyline({
+          path: edgePath,
+          strokeColor: '#000000',
+          strokeOpacity: 0.001,
+          strokeWeight: 26,
+          clickable: true,
+          zIndex: 15,
+        });
+        hitLine.setMap(map);
+
+        const onEdgeClick = (e) => {
+          if (e && e.stop) e.stop();
+          selectedEdgeRef.current = edge;
+          setSelectedEdge(edge);
+          renderLayers(drawCoordsRef.current, modeRef.current);
+        };
+
+        hitLine.addListener('click', onEdgeClick);
+        polylinesRef.current.push(hitLine);
+      });
+
+      // ── Collision-Aware Distance Measurement Badges ────────────────────────────
+      const projection = overlay.getProjection();
+      const mapContainer = map.getDiv();
+      const viewportWidth = mapContainer?.clientWidth || 800;
+      const viewportHeight = mapContainer?.clientHeight || 600;
+
+      if (projection) {
+        const projectLatLngToPoint = (lat, lng) => {
+          const latLng = new gmaps.LatLng(lat, lng);
+          return projection.fromLatLngToContainerPixel(latLng);
+        };
+
+        const projectPointToLatLng = (x, y) => {
+          const point = new gmaps.Point(x, y);
+          const latLng = projection.fromContainerPixelToLatLng(point);
+          return { lat: latLng.lat(), lng: latLng.lng() };
+        };
+
+        const placedLabels = computeCollisionFreeLabels({
+          edges,
+          projectLatLngToPoint,
+          projectPointToLatLng,
+          viewportWidth,
+          viewportHeight,
+          verticesLatLng: pts,
         });
 
-        L.marker(ll(edge.midpoint), {
-          icon: edgeIcon,
-          interactive: false,
-          zIndexOffset: 300,
-        }).addTo(layerGrp.current);
-      });
+        const overlayPanes = overlay.getPanes();
+        const floatPane = overlayPanes?.floatPane || mapContainer;
+
+        placedLabels.forEach((edgeLabel) => {
+          const isThisEdgeSelected = activeSelected && activeSelected.index === edgeLabel.index;
+
+          if (edgeLabel.isVisible || isThisEdgeSelected) {
+            const badgeDiv = document.createElement('div');
+            badgeDiv.className = `edge-distance-badge-wrap ${isThisEdgeSelected ? 'selected' : ''}`;
+            badgeDiv.style.position = 'absolute';
+            badgeDiv.style.transform = 'translate(-50%, -50%)';
+            badgeDiv.style.cursor = 'pointer';
+            badgeDiv.style.zIndex = isThisEdgeSelected ? '600' : '300';
+            badgeDiv.style.pointerEvents = 'auto';
+
+            badgeDiv.innerHTML = `
+              <div class="edge-distance-badge" style="
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 2px 7px;
+                background: ${isThisEdgeSelected ? '#f59e0b' : 'rgba(15, 17, 21, 0.88)'};
+                backdrop-filter: blur(4px);
+                -webkit-backdrop-filter: blur(4px);
+                border: 1px solid ${isThisEdgeSelected ? '#fbbf24' : 'rgba(59, 130, 246, 0.55)'};
+                border-radius: 9999px;
+                color: ${isThisEdgeSelected ? '#0f172a' : '#60a5fa'};
+                font-size: 11px;
+                font-weight: 700;
+                font-family: inherit;
+                white-space: nowrap;
+                letter-spacing: 0.02em;
+                box-shadow: ${isThisEdgeSelected ? '0 0 10px rgba(245, 158, 11, 0.6)' : '0 2px 6px rgba(0, 0, 0, 0.5)'};
+                user-select: none;
+              ">${edgeLabel.formattedDistance}</div>
+            `;
+
+            // Position using projection
+            const lat = edgeLabel.labelLatLng ? edgeLabel.labelLatLng[0] : edgeLabel.midpoint[1];
+            const lng = edgeLabel.labelLatLng ? edgeLabel.labelLatLng[1] : edgeLabel.midpoint[0];
+            const latLng = new gmaps.LatLng(lat, lng);
+            const pos = projection.fromLatLngToDivPixel(latLng);
+
+            if (pos) {
+              badgeDiv.style.left = `${pos.x}px`;
+              badgeDiv.style.top = `${pos.y}px`;
+            }
+
+            badgeDiv.addEventListener('click', (e) => {
+              e.stopPropagation();
+              selectedEdgeRef.current = edgeLabel;
+              setSelectedEdge(edgeLabel);
+              renderLayers(drawCoordsRef.current, modeRef.current);
+            });
+
+            floatPane.appendChild(badgeDiv);
+            badgeDivsRef.current.push(badgeDiv);
+          }
+        });
+      }
     }
 
     // 3. Vertices
     if (currentMode === 'editing') {
-      // Draggable marker vertices
+      // Draggable vertices in edit mode
       pts.forEach((c, idx) => {
-        const icon = L.divIcon({
-          className: '',
-          html: `<div style="
-            width:${V_RADIUS * 2}px;height:${V_RADIUS * 2}px;
-            border-radius:50%;background:${C_WHITE};
-            border:2.5px solid ${C_BLUE};
-            box-sizing:border-box;cursor:move;
-            box-shadow:0 1px 4px rgba(0,0,0,0.4);
-          "></div>`,
-          iconSize: [V_RADIUS * 2, V_RADIUS * 2],
-          iconAnchor: [V_RADIUS, V_RADIUS],
+        const marker = new gmaps.Marker({
+          position: toLatLng(c),
+          map,
+          draggable: true,
+          icon: {
+            path: gmaps.SymbolPath.CIRCLE,
+            scale: V_RADIUS,
+            fillColor: C_WHITE,
+            fillOpacity: 1,
+            strokeColor: C_BLUE,
+            strokeWeight: 2.5,
+          },
+          zIndex: 500,
         });
-        const marker = L.marker(ll(c), { icon, draggable: true, zIndexOffset: 500 });
-        marker.on('drag', (e) => {
-          const pos = e.target.getLatLng();
+
+        marker.addListener('drag', (e) => {
+          const lat = e.latLng.lat();
+          const lng = e.latLng.lng();
           const next = [...drawCoordsRef.current];
-          next[idx] = [pos.lng, pos.lat];
+          next[idx] = [lng, lat];
           drawCoordsRef.current = next;
           setCoords([...next]);
           renderLayers(next, 'editing');
         });
-        marker.addTo(layerGrp.current);
+
+        markersRef.current.push(marker);
       });
 
-      // Midpoint markers for inserting a new vertex between two existing ones
+      // Midpoint markers for inserting vertex between existing ones
       if (pts.length >= 2) {
         pts.forEach((c, idx) => {
           const nextIdx = (idx + 1) % pts.length;
@@ -233,17 +340,22 @@ export default function PropertyBoundary({
           const midLng = (c[0] + c2[0]) / 2;
           const midLat = (c[1] + c2[1]) / 2;
 
-          const mid = L.circleMarker([midLat, midLng], {
-            radius: MID_RADIUS,
-            color: C_BLUE,
-            weight: 2,
-            fillColor: C_WHITE,
-            fillOpacity: 0.85,
-            interactive: true,
-            className: 'mid-handle',
+          const midMarker = new gmaps.Marker({
+            position: { lat: midLat, lng: midLng },
+            map,
+            icon: {
+              path: gmaps.SymbolPath.CIRCLE,
+              scale: MID_RADIUS,
+              fillColor: C_WHITE,
+              fillOpacity: 0.85,
+              strokeColor: C_BLUE,
+              strokeWeight: 2,
+            },
+            zIndex: 400,
+            cursor: 'pointer',
           });
-          mid.on('click', () => {
-            // Insert new vertex AFTER idx
+
+          midMarker.addListener('click', () => {
             const insertAt = idx + 1;
             const next = [
               ...drawCoordsRef.current.slice(0, insertAt),
@@ -253,29 +365,39 @@ export default function PropertyBoundary({
             drawCoordsRef.current = next;
             setCoords([...next]);
             renderLayers(next, 'editing');
-            showToast(`Point inserted`);
+            showToast('Point inserted');
           });
-          mid.addTo(layerGrp.current);
+
+          markersRef.current.push(midMarker);
         });
       }
     } else {
       // Static vertex circles
-      llPts.forEach((latlng, idx) => {
-        L.circleMarker(latlng, {
-          radius: V_RADIUS,
-          color: C_BLUE,
-          weight: 2.5,
-          fillColor: C_WHITE,
-          fillOpacity: 1,
-          interactive: false,
-        }).addTo(layerGrp.current);
+      pts.forEach((c) => {
+        const marker = new gmaps.Marker({
+          position: toLatLng(c),
+          map,
+          clickable: false,
+          icon: {
+            path: gmaps.SymbolPath.CIRCLE,
+            scale: V_RADIUS,
+            fillColor: C_WHITE,
+            fillOpacity: 1,
+            strokeColor: C_BLUE,
+            strokeWeight: 2.5,
+          },
+          zIndex: 200,
+        });
+        markersRef.current.push(marker);
       });
     }
-  }, [showToast]);
+  }, [clearMapOverlays, showToast]);
 
   // ── Set coords + update layers atomically ─────────────────────────────────────
   const applyCoords = useCallback((next, currentMode) => {
     drawCoordsRef.current = next;
+    selectedEdgeRef.current = null;
+    setSelectedEdge(null);
     setCoords([...next]);
     renderLayers(next, currentMode ?? modeRef.current);
   }, [renderLayers]);
@@ -283,8 +405,8 @@ export default function PropertyBoundary({
   // ── Add Point (reads crosshair = map center) ──────────────────────────────────
   const addPoint = useCallback(() => {
     if (!mapRef.current) return;
-    const center = mapRef.current.getCenter(); // geographic center under crosshair
-    const newPt  = [center.lng, center.lat];   // GeoJSON order
+    const center = mapRef.current.getCenter();
+    const newPt  = [center.lng(), center.lat()];
     const next   = [...drawCoordsRef.current, newPt];
     applyCoords(next, 'drawing');
     showToast(`Point ${next.length} added`);
@@ -309,6 +431,8 @@ export default function PropertyBoundary({
   // ── Clear ─────────────────────────────────────────────────────────────────────
   const clearBoundary = useCallback(() => {
     drawCoordsRef.current = [];
+    selectedEdgeRef.current = null;
+    setSelectedEdge(null);
     setCoords([]);
     setMode('drawing');
     setSaveError(null);
@@ -328,7 +452,7 @@ export default function PropertyBoundary({
     renderLayers(drawCoordsRef.current, 'completed');
   }, [renderLayers]);
 
-  // ── Delete vertex (in edit mode) ─────────────────────────────────────────────
+  // ── Delete vertex ─────────────────────────────────────────────────────────────
   const deleteVertex = useCallback((idx) => {
     const next = drawCoordsRef.current.filter((_, i) => i !== idx);
     applyCoords(next, next.length >= 3 ? 'editing' : 'drawing');
@@ -336,7 +460,7 @@ export default function PropertyBoundary({
     showToast('Point deleted');
   }, [applyCoords, showToast]);
 
-  // ── Save ──────────────────────────────────────────────────────────────────────
+  // ── Save Boundary ─────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
     const pts = drawCoordsRef.current;
     if (pts.length < 3) {
@@ -350,10 +474,10 @@ export default function PropertyBoundary({
       const supervisorId = user?.supervisorProfile?.id || user?.id;
 
       // Ensure map is fitted to boundary before snapshot
-      if (mapRef.current) {
-        const llPts = llAll(pts);
-        mapRef.current.fitBounds(L.latLngBounds(llPts), { padding: [50, 50], animate: false });
-        // Wait for tiles to load
+      if (mapRef.current && googleMapsRef.current) {
+        const bounds = new googleMapsRef.current.LatLngBounds();
+        pts.forEach(p => bounds.extend(toLatLng(p)));
+        mapRef.current.fitBounds(bounds, 50);
         await new Promise(r => setTimeout(r, 800));
       }
 
@@ -364,14 +488,14 @@ export default function PropertyBoundary({
           snapshotDataUrl = await toPng(mapEl.current, {
             cacheBust: true,
             filter: (node) => {
-              if (node?.classList?.contains('leaflet-control-container')) return false;
+              // Exclude map controls or UI overlays from static snapshot
+              if (node?.classList?.contains('gm-control-active') || node?.classList?.contains('gmnoprint')) return false;
               return true;
             }
           });
         }
       } catch (err) {
         console.error('[PropertyBoundary] snapshot error:', err);
-        // Continue saving even if snapshot fails
       }
 
       const record = buildBoundaryRecord({
@@ -384,7 +508,7 @@ export default function PropertyBoundary({
       const saved = await BoundaryRepository.saveBoundary(record);
       setSavedBoundary(saved);
       setMode('saved');
-      renderLayers(pts, 'saved'); // keep polygon visible
+      renderLayers(pts, 'saved');
       if (onSave) onSave(saved);
     } catch (err) {
       console.error('[PropertyBoundary] save error:', err);
@@ -395,124 +519,173 @@ export default function PropertyBoundary({
     }
   }, [gpsAccuracy, inspectionId, onSave, propertyId, renderLayers, savedBoundary, user]);
 
-  // ── Init Leaflet ──────────────────────────────────────────────────────────────
+  // ── Initialize Google Maps ────────────────────────────────────────────────────
   useEffect(() => {
-    if (mapRef.current) return;
+    let isCancelled = false;
 
-    const m = L.map(mapEl.current, {
-      center: [13.0827, 80.2707],
-      zoom: 17,
-      zoomControl: false,
-      attributionControl: true,
-      // Important: do NOT add click handler for drawing — only "Add Point" button does
-    });
+    loadGoogleMaps()
+      .then((gmaps) => {
+        if (isCancelled || !mapEl.current) return;
+        googleMapsRef.current = gmaps;
 
-    satLayerRef.current = L.tileLayer(ESRI_SAT, {
-      attribution: '© Esri',
-      maxZoom: 22,
-      crossOrigin: true,
-    }).addTo(m);
+        const map = new gmaps.Map(mapEl.current, {
+          center: { lat: 13.0827, lng: 80.2707 },
+          zoom: 18,
+          mapTypeId: gmaps.MapTypeId.SATELLITE,
+          disableDefaultUI: true, // Clean interface matching DJI SmartFarm custom HUD
+          gestureHandling: 'greedy', // Responsive touch panning on mobile
+          tilt: 0,                   // Top-down orthographic satellite view for accurate boundary surveying
+        });
 
-    osmLayerRef.current = L.tileLayer(OSM_TILES, {
-      attribution: '© OSM',
-      maxZoom: 19,
-      opacity: 0,
-      crossOrigin: true,
-    }).addTo(m);
-
-    layerGrp.current = L.layerGroup().addTo(m);
-
-    // ── GPS watch ──────────────────────────────────────────────────────────────
-    if ('geolocation' in navigator) {
-      gpsWatchRef.current = navigator.geolocation.watchPosition(
-        ({ coords: pos }) => {
-          const { latitude, longitude, accuracy } = pos;
-          setGpsAccuracy(Math.round(accuracy));
-          setGpsWarning(accuracy > 30);
-
-          if (!gpsMarkerRef.current) {
-            m.setView([latitude, longitude], 18, { animate: true });
-            const gpsIcon = L.divIcon({
-              className: '',
-              html: `<div style="
-                width:18px;height:18px;border-radius:50%;
-                background:#3b82f6;border:3px solid white;
-                box-shadow:0 0 0 6px rgba(59,130,246,0.22);
-                pointer-events:none;
-              "></div>`,
-              iconSize: [18, 18],
-              iconAnchor: [9, 9],
-            });
-            gpsMarkerRef.current = L.marker([latitude, longitude], {
-              icon: gpsIcon,
-              interactive: false,
-              zIndexOffset: 800,
-            }).addTo(m);
-          } else {
-            gpsMarkerRef.current.setLatLng([latitude, longitude]);
+        // Custom OverlayView for positioning screen-space badge DOM elements
+        const overlay = new gmaps.OverlayView();
+        overlay.onAdd = function () {};
+        overlay.draw = function () {
+          if (drawCoordsRef.current.length >= 2) {
+            renderLayers(drawCoordsRef.current, modeRef.current);
           }
-        },
-        () => setGpsWarning(true),
-        { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
-      );
-    } else {
-      setGpsWarning(true);
-    }
+        };
+        overlay.onRemove = function () {};
+        overlay.setMap(map);
+        mapOverlayRef.current = overlay;
 
-    mapRef.current = m;
+        // Viewport change listeners to update collision-free labels smoothly
+        let moveTimer = null;
+        const handleMapMovement = () => {
+          if (moveTimer) clearTimeout(moveTimer);
+          moveTimer = setTimeout(() => {
+            if (drawCoordsRef.current.length >= 2) {
+              renderLayers(drawCoordsRef.current, modeRef.current);
+            }
+          }, 40);
+        };
+
+        map.addListener('idle', handleMapMovement);
+        map.addListener('zoom_changed', handleMapMovement);
+
+        // Dismiss selected edge popup when user taps anywhere on map background
+        map.addListener('click', () => {
+          if (selectedEdgeRef.current) {
+            selectedEdgeRef.current = null;
+            setSelectedEdge(null);
+            renderLayers(drawCoordsRef.current, modeRef.current);
+          }
+        });
+
+        // ── GPS watch ────────────────────────────────────────────────────────
+        if ('geolocation' in navigator) {
+          gpsWatchRef.current = navigator.geolocation.watchPosition(
+            ({ coords: pos }) => {
+              const { latitude, longitude, accuracy } = pos;
+              setGpsAccuracy(Math.round(accuracy));
+              setGpsWarning(accuracy > 30);
+
+              const userLatLng = { lat: latitude, lng: longitude };
+
+              if (!gpsMarkerRef.current) {
+                // If brand new map with no points yet, center on supervisor GPS
+                if (drawCoordsRef.current.length === 0) {
+                  map.setCenter(userLatLng);
+                }
+                gpsMarkerRef.current = new gmaps.Marker({
+                  position: userLatLng,
+                  map,
+                  clickable: false,
+                  icon: {
+                    path: gmaps.SymbolPath.CIRCLE,
+                    scale: 9,
+                    fillColor: '#3b82f6',
+                    fillOpacity: 1,
+                    strokeColor: '#ffffff',
+                    strokeWeight: 3,
+                  },
+                  zIndex: 800,
+                });
+              } else {
+                gpsMarkerRef.current.setPosition(userLatLng);
+              }
+            },
+            () => setGpsWarning(true),
+            { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+          );
+        } else {
+          setGpsWarning(true);
+        }
+
+        mapRef.current = map;
+        setMapLoaded(true);
+
+        // Load existing boundary from IndexedDB after map is initialized
+        BoundaryRepository.getBoundaryForInspection(inspectionId).then((existing) => {
+          if (existing?.coordinates?.length >= 3) {
+            setSavedBoundary(existing);
+            drawCoordsRef.current = existing.coordinates;
+            setCoords(existing.coordinates);
+            setMode('completed');
+
+            const bounds = new gmaps.LatLngBounds();
+            existing.coordinates.forEach(p => bounds.extend(toLatLng(p)));
+            map.fitBounds(bounds, 60);
+
+            renderLayers(existing.coordinates, 'completed');
+          }
+        });
+      })
+      .catch((err) => {
+        console.error('[PropertyBoundary] Google Maps load error:', err);
+        setMapError(err.message || 'Failed to initialize Google Maps Platform.');
+      });
 
     return () => {
+      isCancelled = true;
       if (gpsWatchRef.current) navigator.geolocation.clearWatch(gpsWatchRef.current);
-      m.remove();
+      clearMapOverlays();
+      if (mapOverlayRef.current) {
+        mapOverlayRef.current.setMap(null);
+        mapOverlayRef.current = null;
+      }
       mapRef.current = null;
-      layerGrp.current = null;
+      googleMapsRef.current = null;
       gpsMarkerRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ── Load existing boundary from IndexedDB ─────────────────────────────────────
-  useEffect(() => {
-    (async () => {
-      const existing = await BoundaryRepository.getBoundaryForInspection(inspectionId);
-      if (existing?.coordinates?.length >= 3) {
-        setSavedBoundary(existing);
-        drawCoordsRef.current = existing.coordinates;
-        setCoords(existing.coordinates);
-        setMode('completed');
-
-        const tryRender = () => {
-          if (mapRef.current) {
-            renderLayers(existing.coordinates, 'completed');
-            const llPts = llAll(existing.coordinates);
-            mapRef.current.fitBounds(L.latLngBounds(llPts), { padding: [60, 60] });
-          } else {
-            setTimeout(tryRender, 100);
-          }
-        };
-        tryRender();
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspectionId]);
 
-  // ── Map helpers ───────────────────────────────────────────────────────────────
-  const zoomIn  = () => mapRef.current?.zoomIn();
-  const zoomOut = () => mapRef.current?.zoomOut();
-
-  const goToGPS = () => {
-    if (gpsMarkerRef.current && mapRef.current) {
-      mapRef.current.setView(gpsMarkerRef.current.getLatLng(), 18, { animate: true });
+  // ── Map Controls ─────────────────────────────────────────────────────────────
+  const zoomIn = () => {
+    if (mapRef.current) {
+      mapRef.current.setZoom(mapRef.current.getZoom() + 1);
     }
   };
 
-  const toggleLabels = () => {
-    const next = !showLabels;
-    osmLayerRef.current?.setOpacity(next ? 0.45 : 0);
-    setShowLabels(next);
+  const zoomOut = () => {
+    if (mapRef.current) {
+      mapRef.current.setZoom(mapRef.current.getZoom() - 1);
+    }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  const goToGPS = () => {
+    if (gpsMarkerRef.current && mapRef.current) {
+      mapRef.current.setCenter(gpsMarkerRef.current.getPosition());
+      mapRef.current.setZoom(19);
+    }
+  };
+
+  const toggleSatelliteHybrid = () => {
+    if (!mapRef.current || !googleMapsRef.current) return;
+    const gmaps = googleMapsRef.current;
+    if (mapTypeId === 'satellite') {
+      mapRef.current.setMapTypeId(gmaps.MapTypeId.HYBRID);
+      setMapTypeId('hybrid');
+      showToast('Hybrid view (Satellite + Roads/Labels)');
+    } else {
+      mapRef.current.setMapTypeId(gmaps.MapTypeId.SATELLITE);
+      setMapTypeId('satellite');
+      showToast('Satellite view');
+    }
+  };
+
+  // ── Render ───────────────────────────────────────────────────────────────────
   const isDrawing   = mode === 'drawing';
   const isCompleted = mode === 'completed';
   const isSaved     = mode === 'saved';
@@ -526,7 +699,7 @@ export default function PropertyBoundary({
           <ArrowLeft size={22} />
         </button>
         <div style={{ flex: 1, textAlign: 'center' }}>
-          <div style={S.headerTitle}>Property Boundary</div>
+          <div style={S.headerTitle}>Property Boundary (Google Satellite)</div>
           <div style={{
             fontSize: 11, fontWeight: 600,
             color: isEditing ? '#f59e0b' : isCompleted ? '#10b981' : isSaved ? '#10b981' : '#94a3b8',
@@ -539,12 +712,12 @@ export default function PropertyBoundary({
                : `${coords.length} point${coords.length !== 1 ? 's' : ''} — keep adding`}
           </div>
         </div>
-        {/* Save button in header (compact) */}
         {(isCompleted || isEditing) && (
           <button
             style={{ ...S.headerSaveBtn, opacity: isSaving ? 0.6 : 1 }}
             onClick={handleSave}
             disabled={isSaving}
+            aria-label="Save boundary"
           >
             {isSaving ? '…' : <Check size={18} />}
           </button>
@@ -557,36 +730,54 @@ export default function PropertyBoundary({
         {(!isCompleted && !isEditing && !isSaved) && <div style={{ width: 40 }} />}
       </header>
 
-      {/* ── Map ── */}
+      {/* ── Google Maps Container ── */}
       <div
         ref={mapEl}
         style={{
           position: 'absolute', inset: 0,
           cursor: isEditing ? 'default' : 'grab',
+          background: '#0f1115',
         }}
       />
 
-      {/* ── Fixed crosshair (only while drawing or adding points) ── */}
-      {(isDrawing || isCompleted) && (
+      {/* ── Error State / Fallback Banner ── */}
+      {mapError && (
+        <div style={S.errorOverlay}>
+          <div style={S.errorCard}>
+            <AlertTriangle size={36} color="#ef4444" style={{ marginBottom: 12 }} />
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: '#f8fafc' }}>
+              Google Maps Loading Failed
+            </div>
+            <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 16, textAlign: 'center', lineHeight: 1.4 }}>
+              {mapError}
+            </div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', background: 'rgba(255,255,255,0.06)', padding: '8px 12px', borderRadius: 8, marginBottom: 16, width: '100%' }}>
+              Make sure <code>VITE_GOOGLE_MAPS_API_KEY</code> is set in <code>.env</code> with Maps JavaScript API enabled.
+            </div>
+            <button
+              style={S.addPointBtn}
+              onClick={() => window.location.reload()}
+            >
+              <RefreshCw size={16} /> Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Fixed Crosshair (center of map) ── */}
+      {(isDrawing || isCompleted) && !mapError && (
         <div style={S.crosshairWrap} aria-hidden="true">
           <svg width="48" height="48" viewBox="0 0 48 48" style={{ display: 'block' }}>
-            {/* Outer circle */}
             <circle cx="24" cy="24" r="10" fill="none" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
             <circle cx="24" cy="24" r="10" fill="none" stroke={C_WHITE} strokeWidth="2"/>
-            {/* Cross lines */}
-            {/* top */}
             <line x1="24" y1="4"  x2="24" y2="12" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
             <line x1="24" y1="4"  x2="24" y2="12" stroke={C_WHITE} strokeWidth="2"/>
-            {/* bottom */}
             <line x1="24" y1="36" x2="24" y2="44" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
             <line x1="24" y1="36" x2="24" y2="44" stroke={C_WHITE} strokeWidth="2"/>
-            {/* left */}
             <line x1="4"  y1="24" x2="12" y2="24" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
             <line x1="4"  y1="24" x2="12" y2="24" stroke={C_WHITE} strokeWidth="2"/>
-            {/* right */}
             <line x1="36" y1="24" x2="44" y2="24" stroke="rgba(0,0,0,0.5)" strokeWidth="3"/>
             <line x1="36" y1="24" x2="44" y2="24" stroke={C_WHITE} strokeWidth="2"/>
-            {/* Center dot */}
             <circle cx="24" cy="24" r="2.5" fill={C_WHITE} stroke="rgba(0,0,0,0.4)" strokeWidth="1"/>
           </svg>
         </div>
@@ -645,7 +836,13 @@ export default function PropertyBoundary({
 
       {/* ── Right controls ── */}
       <div style={S.rightControls}>
-        <MapBtn title="Labels" active={showLabels} onClick={toggleLabels}><Layers size={16}/></MapBtn>
+        <MapBtn
+          title={mapTypeId === 'satellite' ? 'Switch to Hybrid' : 'Switch to Satellite'}
+          active={mapTypeId === 'hybrid'}
+          onClick={toggleSatelliteHybrid}
+        >
+          <Layers size={16}/>
+        </MapBtn>
         <MapBtn title="My location" onClick={goToGPS}><Navigation2 size={16}/></MapBtn>
         <MapBtn title="Zoom in"  onClick={zoomIn}><Plus size={16}/></MapBtn>
         <MapBtn title="Zoom out" onClick={zoomOut}><Minus size={16}/></MapBtn>
@@ -653,7 +850,12 @@ export default function PropertyBoundary({
 
       {/* ── GPS badge ── */}
       {gpsAccuracy !== null && (
-        <div style={{ ...S.gpsBadge, borderColor: gpsWarning ? '#f59e0b' : '#10b981', color: gpsWarning ? '#f59e0b' : '#10b981', background: gpsWarning ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.1)' }}>
+        <div style={{
+          ...S.gpsBadge,
+          borderColor: gpsWarning ? '#f59e0b' : '#10b981',
+          color: gpsWarning ? '#f59e0b' : '#10b981',
+          background: gpsWarning ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.1)'
+        }}>
           GPS ±{gpsAccuracy}m
         </div>
       )}
@@ -661,6 +863,39 @@ export default function PropertyBoundary({
       {/* ── Toast ── */}
       {toast !== '' && (
         <div style={S.toast}>{toast}</div>
+      )}
+
+      {/* ── Selected Edge Measurement Card ── */}
+      {selectedEdge && (
+        <div style={S.edgeCard} role="dialog" aria-label="Selected Edge Measurement">
+          <div style={S.edgeCardHeader}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Ruler size={15} color="#f59e0b" />
+              <span style={S.edgeCardTitle}>
+                Segment P{selectedEdge.fromIndex + 1} → P{selectedEdge.toIndex + 1}
+              </span>
+            </div>
+            <button
+              style={S.edgeCardClose}
+              onClick={() => {
+                selectedEdgeRef.current = null;
+                setSelectedEdge(null);
+                renderLayers(drawCoordsRef.current, modeRef.current);
+              }}
+              aria-label="Close measurement card"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div style={S.edgeCardBody}>
+            <div style={S.edgeCardLength}>{selectedEdge.formattedDistance}</div>
+            <div style={S.edgeCardExact}>
+              Exact length: {(selectedEdge.distanceM || 0).toFixed(2)} metres
+              ({((selectedEdge.distanceM || 0) * 3.28084).toFixed(1)} ft)
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Clear confirm overlay ── */}
@@ -772,12 +1007,10 @@ export default function PropertyBoundary({
                 <Trash2 size={15}/> Clear
               </Btn>
             </div>
-            {/* Add Point — primary action */}
             <button style={S.addPointBtn} onClick={addPoint}>
               <span style={S.plusCircle}><Plus size={20}/></span>
               Add Point
             </button>
-            {/* Complete — available at 3+ points */}
             {coords.length >= 3 && (
               <button style={S.completeBtn} onClick={completeBoundary}>
                 <Check size={16}/> Complete Boundary
@@ -812,7 +1045,6 @@ export default function PropertyBoundary({
             <div style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center' }}>
               Drag vertices to adjust · Tap midpoint marker to insert
             </div>
-            {/* Vertex list for delete */}
             {coords.length > 0 && (
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {coords.map((_, idx) => (
@@ -986,6 +1218,53 @@ const S = {
     pointerEvents: 'none',
     boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
   },
+  edgeCard: {
+    position: 'absolute',
+    bottom: 210, left: 12, right: 60,
+    zIndex: 450,
+    maxWidth: 340,
+    background: 'rgba(15, 17, 21, 0.94)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    borderRadius: 14,
+    padding: '10px 14px',
+    border: '1px solid rgba(245, 158, 11, 0.4)',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6)',
+  },
+  edgeCardHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  edgeCardTitle: {
+    fontSize: 12, fontWeight: 700, color: '#f59e0b',
+    letterSpacing: '0.02em', textTransform: 'uppercase',
+  },
+  edgeCardClose: {
+    background: 'none', border: 'none', color: '#94a3b8',
+    cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center',
+    borderRadius: 6,
+  },
+  edgeCardBody: {
+    display: 'flex', flexDirection: 'column', gap: 2,
+  },
+  edgeCardLength: {
+    fontSize: 18, fontWeight: 800, color: '#f8fafc',
+  },
+  edgeCardExact: {
+    fontSize: 11, color: '#94a3b8', fontWeight: 500,
+  },
+  errorOverlay: {
+    position: 'absolute', inset: 0, zIndex: 600,
+    background: 'rgba(15,17,21,0.92)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 20,
+  },
+  errorCard: {
+    background: '#1a1d24', border: '1px solid #334155',
+    borderRadius: 16, padding: '24px 20px',
+    maxWidth: 360, width: '100%',
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+  },
   confirmOverlay: {
     position: 'absolute', inset: 0, zIndex: 600,
     background: 'rgba(0,0,0,0.65)',
@@ -1103,14 +1382,3 @@ const S = {
     color: '#f8fafc', fontSize: 15, fontWeight: 600
   }
 };
-
-// Add spinner animation globally if not present
-if (typeof document !== 'undefined') {
-  const style = document.createElement('style');
-  style.innerHTML = `
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-  `;
-  document.head.appendChild(style);
-}
