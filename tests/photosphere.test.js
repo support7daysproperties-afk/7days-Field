@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import {
   generateSphericalTargets,
   projectTargetToViewport,
@@ -467,6 +468,59 @@ describe('PhotoSphere Critical Fixes: Center Target, Camera Zoom & Stitching Qua
     const blended = Math.round(accumR[25] / accumW[25]);
     // (100 * 0.8 + 150 * 0.2) / 1.0 = 80 + 30 = 110
     expect(blended).toBe(110);
+  });
+  it('should anchor initial reference orientation so Target 0 starts dead-center (0, 0)', () => {
+    // User starts holding phone with arbitrary initial pose: e.g. alpha = 135 deg, beta = 75 deg, gamma = 4 deg
+    const e0 = { alpha: 135, beta: 75, gamma: 4 };
+    const initialAlphaOffset = e0.alpha || 0;
+    const initialBetaOffset = (e0.beta || 90) - 90;
+    const initialGammaOffset = e0.gamma || 0;
+
+    function computePoseQuaternion(e) {
+      const relAlpha = (e.alpha || 0) - initialAlphaOffset;
+      const relBeta = (e.beta || 90) - initialBetaOffset;
+      const relGamma = (e.gamma || 0) - initialGammaOffset;
+
+      const alpha = (relAlpha * Math.PI) / 180;
+      const beta = (relBeta * Math.PI) / 180;
+      const gamma = (relGamma * Math.PI) / 180;
+
+      const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
+      const q = new THREE.Quaternion().setFromEuler(euler);
+      q.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
+      return q;
+    }
+
+    const q0 = computePoseQuaternion(e0);
+    const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 100);
+    camera.quaternion.copy(q0);
+    camera.updateMatrixWorld();
+
+    // Target 0 is at (0, 0, -9) in world coordinates
+    const target0 = new THREE.Vector3(0, 0, -9);
+    target0.project(camera);
+
+    // Target 0 projects to exactly (0, 0) in screen coordinates
+    expect(target0.x).toBeCloseTo(0, 4);
+    expect(target0.y).toBeCloseTo(0, 4);
+
+    // Turning right horizontally moves target left with zero vertical drift
+    const qRight = computePoseQuaternion({ alpha: 115, beta: 75, gamma: 4 });
+    camera.quaternion.copy(qRight);
+    camera.updateMatrixWorld();
+    const targetRight = new THREE.Vector3(0, 0, -9);
+    targetRight.project(camera);
+    expect(targetRight.x).toBeLessThan(0);
+    expect(targetRight.y).toBeCloseTo(0, 4);
+
+    // Tilting up vertically moves target down with zero horizontal drift
+    const qUp = computePoseQuaternion({ alpha: 135, beta: 90, gamma: 4 });
+    camera.quaternion.copy(qUp);
+    camera.updateMatrixWorld();
+    const targetUp = new THREE.Vector3(0, 0, -9);
+    targetUp.project(camera);
+    expect(targetUp.x).toBeCloseTo(0, 4);
+    expect(targetUp.y).toBeLessThan(0);
   });
 });
 

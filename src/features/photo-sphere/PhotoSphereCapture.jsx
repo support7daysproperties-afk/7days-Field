@@ -6,7 +6,7 @@ import { injectXmpIntoJpeg } from './PhotoSphereXMP';
 
 const CONFIG = {
   ALIGNMENT_THRESHOLD_DEG: 4.8,
-  MAX_ANGULAR_VELOCITY: 20.0,
+  MAX_ANGULAR_VELOCITY: 45.0,
   HOLD_DURATION_MS: 320,
   CAPTURE_FOV_H_DEG: 44,
   CAPTURE_FOV_V_DEG: 54,
@@ -571,7 +571,8 @@ export default function PhotoSphereCapture({
     const eng = engineRef.current;
     if (!eng.camera) return;
 
-    const opticalCenter = sphericalToCartesian(eng.yaw, eng.pitch).normalize();
+    // Exact optical center vector in 3D world space directly matching WebGL viewport
+    const opticalCenter = new THREE.Vector3(0, 0, -1).applyQuaternion(eng.camera.quaternion).normalize();
 
     let closest = null;
     let minAngleDeg = Infinity;
@@ -788,8 +789,11 @@ export default function PhotoSphereCapture({
   // Reset Session
   const handleReset = () => {
     const eng = engineRef.current;
-    eng.baseSensorQuaternion = null;
     eng.initialAlphaOffset = null;
+    eng.initialBetaOffset = null;
+    eng.initialGammaOffset = null;
+    eng.lastOrientTime = null;
+    eng.angularVelocity = 0;
     eng.yaw = 0;
     eng.pitch = 0;
     updateCameraFromYawPitch();
@@ -1064,37 +1068,49 @@ export default function PhotoSphereCapture({
       window.addEventListener('pointerup', onPointerUp);
     }
 
-    // Gyroscope DeviceOrientation Binding with Initial Forward Anchoring
+    // Gyroscope DeviceOrientation Binding with Stable Reference Orientation Anchoring
     const onDeviceOrientation = (e) => {
       if (e.alpha === null || e.beta === null) return;
       eng.useGyro = true;
 
-      const alpha = THREE.MathUtils.degToRad(e.alpha || 0);
-      const beta = THREE.MathUtils.degToRad(e.beta || 0);
-      const gamma = THREE.MathUtils.degToRad(e.gamma || 0);
-      const orient = window.screen.orientation
-        ? THREE.MathUtils.degToRad(window.screen.orientation.angle)
-        : 0;
-
-      const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
-      const rawQ = new THREE.Quaternion().setFromEuler(euler);
-      rawQ.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
-      rawQ.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient));
-
-      if (!eng.baseSensorQuaternion) {
-        // Calibrate session reference coordinate frame to device's initial forward look vector
-        eng.baseSensorQuaternion = rawQ.clone();
+      // Lock initial reference orientation when opening capture mode
+      if (eng.initialAlphaOffset === null) {
+        eng.initialAlphaOffset = e.alpha || 0;
+        eng.initialBetaOffset = (e.beta || 90) - 90;
+        eng.initialGammaOffset = e.gamma || 0;
       }
 
-      // Compute relative orientation: Q_rel = Q_base^(-1) * Q_raw
-      // At t=0, Q_rel = Identity, so Target 0 at (0, 0, -1) has strictly 0.0° angular error!
-      const q = eng.baseSensorQuaternion.clone().invert().multiply(rawQ);
+      // Compute stable relative angles without quaternion inversion
+      const relAlpha = (e.alpha || 0) - eng.initialAlphaOffset;
+      const relBeta = (e.beta || 90) - eng.initialBetaOffset;
+      const relGamma = (e.gamma || 0) - eng.initialGammaOffset;
 
-      const prev = eng.camera.quaternion.clone();
-      const delta = 2 * Math.acos(Math.min(1, Math.abs(prev.dot(q))));
-      eng.angularVelocity = THREE.MathUtils.radToDeg(delta) * 60;
+      const alpha = THREE.MathUtils.degToRad(relAlpha);
+      const beta = THREE.MathUtils.degToRad(relBeta);
+      const gamma = THREE.MathUtils.degToRad(relGamma);
+      const orient = window.screen?.orientation
+        ? THREE.MathUtils.degToRad(window.screen.orientation.angle)
+        : (typeof window.orientation === 'number' ? THREE.MathUtils.degToRad(window.orientation) : 0);
 
-      eng.camera.quaternion.slerp(q, 0.35);
+      const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
+      const q = new THREE.Quaternion().setFromEuler(euler);
+      q.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
+      q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient));
+
+      // Filtered angular velocity tracking with actual dt measurement (prevents false speed guards)
+      const now = performance.now();
+      if (eng.lastOrientTime) {
+        const dt = Math.max(0.005, (now - eng.lastOrientTime) / 1000);
+        const prev = eng.camera.quaternion.clone();
+        const deltaRad = 2 * Math.acos(Math.min(1, Math.abs(prev.dot(q))));
+        const deltaDeg = THREE.MathUtils.radToDeg(deltaRad);
+        const instVel = deltaDeg > 0.08 ? (deltaDeg / dt) : 0;
+        eng.angularVelocity = 0.8 * (eng.angularVelocity || 0) + 0.2 * instVel;
+      }
+      eng.lastOrientTime = now;
+
+      // Smooth camera orientation transition
+      eng.camera.quaternion.slerp(q, 0.40);
 
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(eng.camera.quaternion);
       eng.pitch = Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1));
