@@ -16,9 +16,18 @@ export default function Login() {
   const [driveStepStatus, setDriveStepStatus] = useState('idle');
   const [driveErrorMsg, setDriveErrorMsg] = useState('');
 
+  // If user is already authenticated:
+  // If drive is authorized OR user has already completed/skipped onboarding on this device,
+  // navigate directly to '/' so reopening the app NEVER asks to login again.
   useEffect(() => {
-    if (authenticated && driveAuthorized) {
-      navigate('/', { replace: true });
+    if (authenticated) {
+      const hasOnboardedDrive = localStorage.getItem('drive_onboarding_done') === 'true';
+      const isPendingOnboarding = localStorage.getItem('pending_drive_onboarding') === 'true';
+
+      // If already connected, or already onboarded previously, or NOT in middle of new login onboarding flow:
+      if (driveAuthorized || hasOnboardedDrive || !isPendingOnboarding) {
+        navigate('/', { replace: true });
+      }
     }
   }, [authenticated, driveAuthorized, navigate]);
 
@@ -27,7 +36,9 @@ export default function Login() {
     setError('');
     
     try {
+      // Mark that this is a fresh login needing Drive onboarding prompt
       localStorage.setItem('pending_drive_onboarding', 'true');
+      localStorage.removeItem('drive_onboarding_done');
       
       const { error: signInError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -53,6 +64,8 @@ export default function Login() {
     setDriveErrorMsg('');
     try {
       await connectDrive({ prompt: 'consent' });
+      localStorage.setItem('drive_onboarding_done', 'true');
+      localStorage.removeItem('pending_drive_onboarding');
       setDriveStepStatus('success');
       setTimeout(() => navigate('/', { replace: true }), 400);
     } catch (err) {
@@ -67,6 +80,8 @@ export default function Login() {
   };
 
   const handleDriveSkip = () => {
+    localStorage.setItem('drive_onboarding_done', 'true');
+    localStorage.removeItem('pending_drive_onboarding');
     navigate('/', { replace: true });
   };
 

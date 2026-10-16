@@ -25,6 +25,8 @@ export default function GoogleDriveAccess() {
   }, []);
 
   const handleContinue = () => {
+    localStorage.setItem('drive_onboarding_done', 'true');
+    localStorage.removeItem('pending_drive_onboarding');
     if (intendedRoute) {
       const route = intendedRoute;
       setIntendedRoute(null);

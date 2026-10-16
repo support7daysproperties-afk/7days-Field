@@ -235,6 +235,8 @@ export function AuthProvider({ children }) {
    * so on next login their connection can be restored seamlessly.
    */
   const signOut = async () => {
+    localStorage.removeItem('pending_drive_onboarding');
+    localStorage.removeItem('drive_onboarding_done');
     GoogleDriveService.setTokenData({ accessToken: null });
     currentUserRef.current = null;
     setUser(null);
