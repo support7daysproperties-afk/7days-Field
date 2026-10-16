@@ -241,61 +241,101 @@ export default function PropertyBoundary({
         const overlayPanes = overlay.getPanes();
         const floatPane = overlayPanes?.floatPane || mapContainer;
 
+        // Create an SVG layer for connector lines if displaced labels exist
+        const hasAnyConnector = placedLabels.some(l => l.hasConnector);
+        let svgOverlay = null;
+        if (hasAnyConnector) {
+          svgOverlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svgOverlay.style.position = 'absolute';
+          svgOverlay.style.left = '0';
+          svgOverlay.style.top = '0';
+          svgOverlay.style.width = '100%';
+          svgOverlay.style.height = '100%';
+          svgOverlay.style.pointerEvents = 'none';
+          svgOverlay.style.overflow = 'visible';
+          svgOverlay.style.zIndex = '290';
+          floatPane.appendChild(svgOverlay);
+          badgeDivsRef.current.push(svgOverlay);
+        }
+
         placedLabels.forEach((edgeLabel) => {
           const isThisEdgeSelected = activeSelected && activeSelected.index === edgeLabel.index;
 
-          if (edgeLabel.isVisible || isThisEdgeSelected) {
-            const badgeDiv = document.createElement('div');
-            badgeDiv.className = `edge-distance-badge-wrap ${isThisEdgeSelected ? 'selected' : ''}`;
-            badgeDiv.style.position = 'absolute';
-            badgeDiv.style.transform = 'translate(-50%, -50%)';
-            badgeDiv.style.cursor = 'pointer';
-            badgeDiv.style.zIndex = isThisEdgeSelected ? '600' : '300';
-            badgeDiv.style.pointerEvents = 'auto';
+          // LatLng coordinates for label and edge anchor midpoint
+          const lat = edgeLabel.labelLatLng ? edgeLabel.labelLatLng[0] : edgeLabel.midpoint[1];
+          const lng = edgeLabel.labelLatLng ? edgeLabel.labelLatLng[1] : edgeLabel.midpoint[0];
+          const latLng = new gmaps.LatLng(lat, lng);
+          const labelPos = projection.fromLatLngToDivPixel(latLng);
 
-            badgeDiv.innerHTML = `
-              <div class="edge-distance-badge" style="
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                padding: 2px 7px;
-                background: ${isThisEdgeSelected ? '#f59e0b' : 'rgba(15, 17, 21, 0.88)'};
-                backdrop-filter: blur(4px);
-                -webkit-backdrop-filter: blur(4px);
-                border: 1px solid ${isThisEdgeSelected ? '#fbbf24' : 'rgba(59, 130, 246, 0.55)'};
-                border-radius: 9999px;
-                color: ${isThisEdgeSelected ? '#0f172a' : '#60a5fa'};
-                font-size: 11px;
-                font-weight: 700;
-                font-family: inherit;
-                white-space: nowrap;
-                letter-spacing: 0.02em;
-                box-shadow: ${isThisEdgeSelected ? '0 0 10px rgba(245, 158, 11, 0.6)' : '0 2px 6px rgba(0, 0, 0, 0.5)'};
-                user-select: none;
-              ">${edgeLabel.formattedDistance}</div>
-            `;
+          const anchorLatLng = new gmaps.LatLng(edgeLabel.midpoint[1], edgeLabel.midpoint[0]);
+          const anchorPos = projection.fromLatLngToDivPixel(anchorLatLng);
 
-            // Position using projection
-            const lat = edgeLabel.labelLatLng ? edgeLabel.labelLatLng[0] : edgeLabel.midpoint[1];
-            const lng = edgeLabel.labelLatLng ? edgeLabel.labelLatLng[1] : edgeLabel.midpoint[0];
-            const latLng = new gmaps.LatLng(lat, lng);
-            const pos = projection.fromLatLngToDivPixel(latLng);
+          // If label has been displaced to an outer lane, draw a connector line to the edge midpoint
+          if (edgeLabel.hasConnector && svgOverlay && labelPos && anchorPos) {
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', `${anchorPos.x}`);
+            line.setAttribute('y1', `${anchorPos.y}`);
+            line.setAttribute('x2', `${labelPos.x}`);
+            line.setAttribute('y2', `${labelPos.y}`);
+            line.setAttribute('stroke', isThisEdgeSelected ? '#f59e0b' : 'rgba(96, 165, 250, 0.6)');
+            line.setAttribute('stroke-width', '1.5');
+            line.setAttribute('stroke-dasharray', '3,3');
+            svgOverlay.appendChild(line);
 
-            if (pos) {
-              badgeDiv.style.left = `${pos.x}px`;
-              badgeDiv.style.top = `${pos.y}px`;
-            }
-
-            badgeDiv.addEventListener('click', (e) => {
-              e.stopPropagation();
-              selectedEdgeRef.current = edgeLabel;
-              setSelectedEdge(edgeLabel);
-              renderLayers(drawCoordsRef.current, modeRef.current);
-            });
-
-            floatPane.appendChild(badgeDiv);
-            badgeDivsRef.current.push(badgeDiv);
+            // Small dot on the edge anchor
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', `${anchorPos.x}`);
+            circle.setAttribute('cy', `${anchorPos.y}`);
+            circle.setAttribute('r', '2.5');
+            circle.setAttribute('fill', isThisEdgeSelected ? '#f59e0b' : '#60a5fa');
+            svgOverlay.appendChild(circle);
           }
+
+          // Create badge element
+          const badgeDiv = document.createElement('div');
+          badgeDiv.className = `edge-distance-badge-wrap ${isThisEdgeSelected ? 'selected' : ''}`;
+          badgeDiv.style.position = 'absolute';
+          badgeDiv.style.transform = 'translate(-50%, -50%)';
+          badgeDiv.style.cursor = 'pointer';
+          badgeDiv.style.zIndex = isThisEdgeSelected ? '600' : '300';
+          badgeDiv.style.pointerEvents = 'auto';
+
+          badgeDiv.innerHTML = `
+            <div class="edge-distance-badge" style="
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              padding: 2px 7px;
+              background: ${isThisEdgeSelected ? '#f59e0b' : 'rgba(15, 17, 21, 0.90)'};
+              backdrop-filter: blur(4px);
+              -webkit-backdrop-filter: blur(4px);
+              border: 1px solid ${isThisEdgeSelected ? '#fbbf24' : 'rgba(59, 130, 246, 0.65)'};
+              border-radius: 9999px;
+              color: ${isThisEdgeSelected ? '#0f172a' : '#60a5fa'};
+              font-size: 11px;
+              font-weight: 700;
+              font-family: inherit;
+              white-space: nowrap;
+              letter-spacing: 0.02em;
+              box-shadow: ${isThisEdgeSelected ? '0 0 10px rgba(245, 158, 11, 0.6)' : '0 2px 6px rgba(0, 0, 0, 0.55)'};
+              user-select: none;
+            ">${edgeLabel.formattedDistance}</div>
+          `;
+
+          if (labelPos) {
+            badgeDiv.style.left = `${labelPos.x}px`;
+            badgeDiv.style.top = `${labelPos.y}px`;
+          }
+
+          badgeDiv.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectedEdgeRef.current = edgeLabel;
+            setSelectedEdge(edgeLabel);
+            renderLayers(drawCoordsRef.current, modeRef.current);
+          });
+
+          floatPane.appendChild(badgeDiv);
+          badgeDivsRef.current.push(badgeDiv);
         });
       }
     }
@@ -425,6 +465,12 @@ export default function PropertyBoundary({
   const completeBoundary = useCallback(() => {
     if (drawCoordsRef.current.length < 3) return;
     setMode('completed');
+    // Ensure map fits the entire polygon with generous padding so all boundary labels are in view
+    if (mapRef.current && googleMapsRef.current) {
+      const bounds = new googleMapsRef.current.LatLngBounds();
+      drawCoordsRef.current.forEach(p => bounds.extend(toLatLng(p)));
+      mapRef.current.fitBounds(bounds, 80);
+    }
     renderLayers(drawCoordsRef.current, 'completed');
   }, [renderLayers]);
 
@@ -473,11 +519,11 @@ export default function PropertyBoundary({
     try {
       const supervisorId = user?.supervisorProfile?.id || user?.id;
 
-      // Ensure map is fitted to boundary before snapshot
+      // Ensure map is fitted to boundary before snapshot with generous padding for edge labels
       if (mapRef.current && googleMapsRef.current) {
         const bounds = new googleMapsRef.current.LatLngBounds();
         pts.forEach(p => bounds.extend(toLatLng(p)));
-        mapRef.current.fitBounds(bounds, 50);
+        mapRef.current.fitBounds(bounds, 80);
         await new Promise(r => setTimeout(r, 800));
       }
 
@@ -625,7 +671,7 @@ export default function PropertyBoundary({
 
             const bounds = new gmaps.LatLngBounds();
             existing.coordinates.forEach(p => bounds.extend(toLatLng(p)));
-            map.fitBounds(bounds, 60);
+            map.fitBounds(bounds, 80);
 
             renderLayers(existing.coordinates, 'completed');
           }

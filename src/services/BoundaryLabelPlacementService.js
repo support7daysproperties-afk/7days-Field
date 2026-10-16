@@ -1,32 +1,29 @@
 /**
  * BoundaryLabelPlacementService.js
  *
- * Screen-space collision detection and adaptive label density for property boundary measurement labels.
+ * Screen-space collision detection and multi-lane label layout for property boundary measurement labels.
  *
- * Responsibilities:
- * 1. Project edge geometry & midpoints into 2D screen coordinates via map.latLngToContainerPoint.
- * 2. Generate deterministic candidate positions for each edge (normal offset both sides, slight longitudinal offsets).
- * 3. Evaluate collision with:
- *    - Previously placed labels (using bounding boxes with padding)
- *    - Vertex handles (avoid obscuring corner points)
- *    - Viewport boundaries (avoid falling off-screen or under fixed UI panels)
- * 4. Choose best candidate or hide label if all candidates collide (adaptive density).
- * 5. Deterministic priorities to ensure visual stability without jitter during pan/zoom.
+ * GOAL: Every single edge of an N-sided boundary MUST have a visible measurement label.
+ * No arbitrary caps. When edges or corners are cramped:
+ * 1. Test multi-lane perpendicular offsets (lane 1 = 18px, lane 2 = 36px, lane 3 = 54px, lane 4 = 72px)
+ * 2. Test longitudinal shifts along the edge (±20%, ±40%)
+ * 3. Test outside-the-polygon outward lane expansion
+ * 4. Connect displaced labels to their edge midpoint using a clean SVG connector line
+ * 5. Guarantee that every edge receives an assigned readable label position
  */
 
 export const DEFAULT_LABEL_CONFIG = {
   // Estimated label box dimension for typical formatted distance strings (e.g. "45.2 m", "124 m")
-  estimatedWidth: 62,
-  estimatedHeight: 24,
-  padding: 4,               // Extra clearance around bounding boxes
-  vertexClearanceRadius: 16,// Clearance around vertex markers
-  edgeOffsetDistance: 16,   // Normal distance off the line segment in pixels
-  // Screen margins where labels should not appear (avoid header, summary, bottom bars, map controls)
+  estimatedWidth: 54,
+  estimatedHeight: 22,
+  padding: 3,               // Clearance around bounding boxes
+  vertexClearanceRadius: 12,// Clearance around vertex markers
+  edgeOffsetDistance: 16,   // Base normal distance off line segment
   screenMargin: {
-    top: 110,    // Clear header and summary bar
-    bottom: 140, // Clear bottom action buttons
-    left: 12,
-    right: 56,   // Clear right-side map buttons
+    top: 90,
+    bottom: 120,
+    left: 8,
+    right: 48,
   },
 };
 
@@ -57,7 +54,6 @@ export function doBoxesIntersect(b1, b2, padding = 0) {
  * Check if a bounding box overlaps with a circular obstacle (e.g., vertex marker)
  */
 export function doesBoxIntersectCircle(box, circle) {
-  // Nearest point on box to circle center
   const nearestX = Math.max(box.x, Math.min(circle.x, box.x + box.width));
   const nearestY = Math.max(box.y, Math.min(circle.y, box.y + box.height));
 
@@ -78,20 +74,28 @@ export function isBoxInsideViewport(box, viewportWidth, viewportHeight, margins)
 }
 
 /**
- * Generate candidate center positions for an edge label.
+ * Generate comprehensive candidate positions across multiple offset lanes and longitudinal positions.
  *
  * @param {object} p1 - Screen point { x, y } of edge start
  * @param {object} p2 - Screen point { x, y } of edge end
- * @param {number} offsetDist - Distance perpendicular to edge
- * @returns {Array<{ x: number, y: number, side: string, score: number }>}
+ * @param {object} [options]
+ * @param {number} [options.baseOffset] - Base perpendicular offset (default 18px)
+ * @param {object} [options.polygonCenter] - Optional screen centroid to prioritize outward positions
+ * @returns {Array<{ x: number, y: number, side: string, lane: number, hasConnector: boolean, score: number }>}
  */
-export function generateCandidatePositions(p1, p2, offsetDist = 16) {
+export function generateCandidatePositions(p1, p2, options = {}) {
+  const baseOffset = typeof options === 'number' ? options : (options.baseOffset || 18);
+  const polygonCenter = (typeof options === 'object' && options !== null) ? options.polygonCenter : null;
+
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
   const len = Math.hypot(dx, dy);
 
+  const midX = (p1.x + p2.x) / 2;
+  const midY = (p1.y + p2.y) / 2;
+
   if (len < 1e-4) {
-    return [{ x: p1.x, y: p1.y, side: 'center', score: 10 }];
+    return [{ x: midX, y: midY, side: 'center', lane: 1, hasConnector: false, score: 0 }];
   }
 
   // Normalized direction vector along edge
@@ -99,54 +103,79 @@ export function generateCandidatePositions(p1, p2, offsetDist = 16) {
   const uy = dy / len;
 
   // Normal vectors perpendicular to edge
-  // Side A (right-hand normal) and Side B (left-hand normal)
   const nxA = -uy;
   const nyA = ux;
   const nxB = uy;
   const nyB = -ux;
 
-  const midX = (p1.x + p2.x) / 2;
-  const midY = (p1.y + p2.y) / 2;
+  // Determine if Side A or Side B points outward from the polygon centroid
+  let outwardSide = 'side_a';
+  if (polygonCenter) {
+    const toCentroidX = polygonCenter.x - midX;
+    const toCentroidY = polygonCenter.y - midY;
+    // Dot product with normal A
+    const dotA = nxA * toCentroidX + nyA * toCentroidY;
+    outwardSide = dotA < 0 ? 'side_a' : 'side_b';
+  }
 
-  // Longitudinal offsets: center (0), slight forward (+15%), slight backward (-15%)
-  const longOffsets = [0, 0.18, -0.18];
+  // 4 offset lanes: lane 1 (close ~18px), lane 2 (~36px), lane 3 (~54px), lane 4 (~72px)
+  const lanes = [1, 2, 3, 4];
+  // Longitudinal offsets: center (0), slight forward (+22%), slight backward (-22%), outer (+40%, -40%)
+  const longOffsets = [0, 0.22, -0.22, 0.40, -0.40];
 
   const candidates = [];
 
-  for (const lo of longOffsets) {
-    const baseX = midX + ux * (len * lo);
-    const baseY = midY + uy * (len * lo);
+  for (const lane of lanes) {
+    const laneDist = baseOffset * lane;
+    const hasConnector = lane > 1;
 
-    // Primary preference: standard perpendicular offset (outer / Side A)
-    candidates.push({
-      x: baseX + nxA * offsetDist,
-      y: baseY + nyA * offsetDist,
-      side: 'side_a',
-      score: Math.abs(lo) * 2, // 0 for exact midpoint
-    });
+    for (const lo of longOffsets) {
+      const baseX = midX + ux * (len * lo);
+      const baseY = midY + uy * (len * lo);
 
-    // Secondary preference: opposite perpendicular offset (inner / Side B)
-    candidates.push({
-      x: baseX + nxB * offsetDist,
-      y: baseY + nyB * offsetDist,
-      side: 'side_b',
-      score: 1 + Math.abs(lo) * 2,
-    });
+      // Candidate on Side A
+      const candA = {
+        x: baseX + nxA * laneDist,
+        y: baseY + nyA * laneDist,
+        side: 'side_a',
+        lane,
+        hasConnector: hasConnector || Math.abs(lo) > 0.25,
+        score: (outwardSide === 'side_a' ? 0 : 2) + (lane - 1) * 3 + Math.abs(lo) * 2,
+      };
+
+      // Candidate on Side B
+      const candB = {
+        x: baseX + nxB * laneDist,
+        y: baseY + nyB * laneDist,
+        side: 'side_b',
+        lane,
+        hasConnector: hasConnector || Math.abs(lo) > 0.25,
+        score: (outwardSide === 'side_b' ? 0 : 2) + (lane - 1) * 3 + Math.abs(lo) * 2,
+      };
+
+      candidates.push(candA, candB);
+    }
   }
 
-  // Also include exact on-edge center as a fallback if edge is very isolated
+  // Fallback candidate at exact midpoint
   candidates.push({
     x: midX,
     y: midY,
     side: 'on_edge',
-    score: 5,
+    lane: 0,
+    hasConnector: false,
+    score: 20,
   });
 
+  // Sort by score ascending (lowest score = highest preference)
+  candidates.sort((a, b) => a.score - b.score);
   return candidates;
 }
 
 /**
- * Calculate collision-free label placements for a set of edges.
+ * Calculate collision-free label placements for ALL boundary edges.
+ *
+ * Guarantees every edge receives a visible measurement label.
  *
  * @param {object} params
  * @param {Array}  params.edges - Edge objects from BoundaryService.calcEdgeDistances
@@ -156,7 +185,7 @@ export function generateCandidatePositions(p1, p2, offsetDist = 16) {
  * @param {number} params.viewportHeight
  * @param {Array}  [params.verticesLatLng] - [[lng, lat], ...] of polygon vertices
  * @param {object} [params.customConfig]
- * @returns {Array<object>} - Output array matching edges with { ...edge, isVisible, labelPoint: {x,y}, labelLatLng: {lat, lng}, box }
+ * @returns {Array<object>} - Output array matching edges with { ...edge, isVisible: true, labelPoint: {x,y}, labelLatLng: {lat, lng}, box, hasConnector, anchorPoint: {x,y} }
  */
 export function computeCollisionFreeLabels({
   edges,
@@ -170,9 +199,24 @@ export function computeCollisionFreeLabels({
   const config = { ...DEFAULT_LABEL_CONFIG, ...customConfig };
   const margins = config.screenMargin;
 
+  // Calculate polygon screen centroid to direct displaced labels outward
+  let polygonScreenCenter = null;
+  if (verticesLatLng && verticesLatLng.length >= 3) {
+    let sumX = 0;
+    let sumY = 0;
+    verticesLatLng.forEach((coord) => {
+      const pt = projectLatLngToPoint(coord[1], coord[0]);
+      sumX += pt.x;
+      sumY += pt.y;
+    });
+    polygonScreenCenter = {
+      x: sumX / verticesLatLng.length,
+      y: sumY / verticesLatLng.length,
+    };
+  }
+
   // 1. Project all vertex obstacle circles
   const vertexObstacles = (verticesLatLng || []).map((coord) => {
-    // coord is [lng, lat]
     const pt = projectLatLngToPoint(coord[1], coord[0]);
     return {
       x: pt.x,
@@ -181,15 +225,12 @@ export function computeCollisionFreeLabels({
     };
   });
 
-  // 2. Sort edges by length descending: prioritize labeling longer, more significant boundaries first!
-  // This gives an intuitive cartographic hierarchy where long property spans are labeled first,
-  // and short cramped corners are dropped first if space runs out.
+  // Sort edges by distance descending: place long edges first, then fit shorter edges around them
   const edgePriorities = edges.map((edge, idx) => ({
     edge,
     originalIndex: idx,
     length: edge.distanceM || 0,
   }));
-
   edgePriorities.sort((a, b) => b.length - a.length);
 
   const placedBoxes = [];
@@ -199,33 +240,27 @@ export function computeCollisionFreeLabels({
     const edge = item.edge;
     const origIdx = item.originalIndex;
 
-    // Project edge endpoints to screen
+    // Project edge endpoints & midpoint to screen
     const p1 = projectLatLngToPoint(edge.from[1], edge.from[0]);
     const p2 = projectLatLngToPoint(edge.to[1], edge.to[0]);
+    const edgeMidScreen = {
+      x: (p1.x + p2.x) / 2,
+      y: (p1.y + p2.y) / 2,
+    };
 
-    // Check pixel length on screen. If edge is extremely tiny in screen space (< 28px),
-    // it cannot reasonably hold a 60px badge without overwhelming the polygon corner.
-    const screenLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    if (screenLen < 28) {
-      results[origIdx] = {
-        ...edge,
-        isVisible: false,
-        reason: 'edge_too_short_on_screen',
-        screenLen,
-      };
-      continue;
-    }
-
-    // Estimate width based on formatted text length (approx 7.5px per char + 18px badge padding)
     const textLen = (edge.formattedDistance || '').length;
-    const estimatedWidth = Math.max(config.estimatedWidth, textLen * 7.5 + 16);
+    const estimatedWidth = Math.max(config.estimatedWidth, textLen * 7.0 + 14);
     const estimatedHeight = config.estimatedHeight;
 
-    const candidates = generateCandidatePositions(p1, p2, config.edgeOffsetDistance);
+    const candidates = generateCandidatePositions(p1, p2, {
+      baseOffset: config.edgeOffsetDistance,
+      polygonCenter: polygonScreenCenter,
+    });
 
     let chosenCandidate = null;
     let chosenBox = null;
 
+    // First pass: Find non-colliding candidate that respects viewport margins
     for (const cand of candidates) {
       const box = {
         x: cand.x - estimatedWidth / 2,
@@ -234,12 +269,10 @@ export function computeCollisionFreeLabels({
         height: estimatedHeight,
       };
 
-      // Check viewport boundary
       if (!isBoxInsideViewport(box, viewportWidth, viewportHeight, margins)) {
         continue;
       }
 
-      // Check collision with already placed labels
       let collidesWithPlaced = false;
       for (const placed of placedBoxes) {
         if (doBoxesIntersect(box, placed, config.padding)) {
@@ -249,7 +282,6 @@ export function computeCollisionFreeLabels({
       }
       if (collidesWithPlaced) continue;
 
-      // Check collision with vertex handles
       let collidesWithVertex = false;
       for (const vObs of vertexObstacles) {
         if (doesBoxIntersectCircle(box, vObs)) {
@@ -259,42 +291,81 @@ export function computeCollisionFreeLabels({
       }
       if (collidesWithVertex) continue;
 
-      // If we reach here, candidate is valid!
       chosenCandidate = cand;
       chosenBox = box;
       break;
     }
 
-    if (chosenCandidate && chosenBox) {
-      placedBoxes.push(chosenBox);
+    // Second pass: If strict padding/margins were too tight on a dense polygon,
+    // relax padding and screen margins so the measurement is STILL VISIBLE (never hidden!)
+    if (!chosenCandidate) {
+      for (const cand of candidates) {
+        const box = {
+          x: cand.x - estimatedWidth / 2,
+          y: cand.y - estimatedHeight / 2,
+          width: estimatedWidth,
+          height: estimatedHeight,
+        };
 
-      let labelLatLng = null;
-      if (typeof projectPointToLatLng === 'function') {
-        const ll = projectPointToLatLng(chosenCandidate.x, chosenCandidate.y);
-        labelLatLng = [ll.lat, ll.lng];
-      } else {
-        // Fallback to geometric edge midpoint in lat/lng
-        labelLatLng = [edge.midpoint[1], edge.midpoint[0]];
+        // Allow candidate if it's anywhere within the actual screen canvas
+        if (box.x < 2 || box.y < 2 || box.x + box.width > viewportWidth - 2 || box.y + box.height > viewportHeight - 2) {
+          continue;
+        }
+
+        let collides = false;
+        for (const placed of placedBoxes) {
+          if (doBoxesIntersect(box, placed, 1)) {
+            collides = true;
+            break;
+          }
+        }
+        if (!collides) {
+          chosenCandidate = cand;
+          chosenBox = box;
+          break;
+        }
       }
+    }
 
-      results[origIdx] = {
-        ...edge,
-        isVisible: true,
-        labelPoint: { x: chosenCandidate.x, y: chosenCandidate.y },
-        labelLatLng,
-        box: chosenBox,
-        side: chosenCandidate.side,
-        screenLen,
+    // Guaranteed fallback: If absolutely every candidate was touched, take the best candidate
+    // with outward displacement so no measurement is ever dropped!
+    if (!chosenCandidate) {
+      chosenCandidate = candidates[0] || {
+        x: edgeMidScreen.x + 24,
+        y: edgeMidScreen.y - 24,
+        side: 'fallback',
+        lane: 2,
+        hasConnector: true,
       };
-    } else {
-      results[origIdx] = {
-        ...edge,
-        isVisible: false,
-        reason: 'collision_detected',
-        screenLen,
-        fallbackMidpointLatLng: [edge.midpoint[1], edge.midpoint[0]],
+      chosenBox = {
+        x: chosenCandidate.x - estimatedWidth / 2,
+        y: chosenCandidate.y - estimatedHeight / 2,
+        width: estimatedWidth,
+        height: estimatedHeight,
       };
     }
+
+    placedBoxes.push(chosenBox);
+
+    let labelLatLng = null;
+    if (typeof projectPointToLatLng === 'function') {
+      const ll = projectPointToLatLng(chosenCandidate.x, chosenCandidate.y);
+      labelLatLng = [ll.lat, ll.lng];
+    } else {
+      labelLatLng = [edge.midpoint[1], edge.midpoint[0]];
+    }
+
+    results[origIdx] = {
+      ...edge,
+      isVisible: true, // Always true! All measurements must show
+      labelPoint: { x: chosenCandidate.x, y: chosenCandidate.y },
+      anchorPoint: edgeMidScreen,
+      labelLatLng,
+      box: chosenBox,
+      lane: chosenCandidate.lane,
+      hasConnector: chosenCandidate.hasConnector,
+      side: chosenCandidate.side,
+    };
   }
 
   return results;

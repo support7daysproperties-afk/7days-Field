@@ -131,7 +131,7 @@ describe('BoundaryLabelPlacementService — Screen-space Collision & Density', (
       }
     });
 
-    it('hides labels on cramped edges while preserving exact distance in state', () => {
+    it('repositions labels onto staggered lanes with connector lines on cramped edges rather than hiding them', () => {
       // Dense zigzag polygon with 7 closely-spaced unique vertices
       const coords = [
         [80.27000, 13.08000],
@@ -159,15 +159,23 @@ describe('BoundaryLabelPlacementService — Screen-space Collision & Density', (
         verticesLatLng: coords,
       });
 
-      // Some labels should be hidden to avoid messy collision
-      const hiddenLabels = results.filter(r => !r.isVisible);
-      expect(hiddenLabels.length).toBeGreaterThan(0);
+      // Fundamental requirement: EVERY edge must remain visible (no arbitrary hiding)
+      expect(results.length).toBe(edges.length);
+      const visibleLabels = results.filter(r => r.isVisible);
+      expect(visibleLabels.length).toBe(edges.length);
 
-      // Every hidden edge MUST retain its original distance and formattedDistance!
-      hiddenLabels.forEach((hiddenEdge) => {
-        expect(hiddenEdge.distanceM).toBeGreaterThan(0);
-        expect(hiddenEdge.formattedDistance).toBeDefined();
-        expect(typeof hiddenEdge.formattedDistance).toBe('string');
+      // Cramped edges should be displaced onto higher lanes with connector lines
+      const displacedLabels = results.filter(r => r.hasConnector || r.lane > 1);
+      expect(displacedLabels.length).toBeGreaterThan(0);
+
+      // Every edge MUST retain its original distance and formattedDistance
+      results.forEach((edge) => {
+        expect(edge.distanceM).toBeGreaterThan(0);
+        expect(edge.formattedDistance).toBeDefined();
+        expect(typeof edge.formattedDistance).toBe('string');
+        expect(edge.box).toBeDefined();
+        expect(edge.box.x).toBeGreaterThan(0);
+        expect(edge.box.y).toBeGreaterThan(0);
       });
     });
   });
@@ -226,6 +234,188 @@ describe('BoundaryLabelPlacementService — Screen-space Collision & Density', (
       expect(shouldRenderBadgeOrCard).toBe(true);
       expect(mockEdge.distanceM).toBe(34.56);
       expect(mockEdge.formattedDistance).toBe('35 m');
+    });
+  });
+
+  describe('7. Comprehensive Regression Suite — Showing ALL N Edge Measurements', () => {
+    it('produces exactly 3 edge measurements for a 3-vertex polygon, including the closing edge', () => {
+      const coords = [
+        [80.270, 13.080],
+        [80.275, 13.080],
+        [80.275, 13.085],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+      expect(edges.length).toBe(3);
+      expect(edges[2].isClosingEdge).toBe(true);
+
+      const projectLatLngToPoint = (lat, lng) => ({
+        x: (lng - 80.270) * 100000 + 100,
+        y: (lat - 13.080) * 100000 + 100,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      expect(labels.length).toBe(3);
+      expect(labels.every(l => l.isVisible)).toBe(true);
+      expect(labels[2].isClosingEdge).toBe(true);
+    });
+
+    it('produces exactly 10 edge measurements for a 10-vertex polygon with NO arbitrary 3-label cap', () => {
+      // 10-sided polygon
+      const coords = [];
+      const numVertices = 10;
+      const centerLng = 80.270;
+      const centerLat = 13.080;
+      const radius = 0.005;
+
+      for (let i = 0; i < numVertices; i++) {
+        const angle = (i / numVertices) * 2 * Math.PI;
+        coords.push([
+          centerLng + radius * Math.cos(angle),
+          centerLat + radius * Math.sin(angle),
+        ]);
+      }
+
+      const edges = calcEdgeDistances(coords, true);
+      expect(edges.length).toBe(10);
+
+      const projectLatLngToPoint = (lat, lng) => ({
+        x: (lng - centerLng) * 50000 + 400,
+        y: (lat - centerLat) * 50000 + 300,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      // No arbitrary cap of 3! ALL 10 must be rendered and visible
+      expect(labels.length).toBe(10);
+      const visibleCount = labels.filter(l => l.isVisible).length;
+      expect(visibleCount).toBe(10);
+
+      // Verify each edge retains its unique stable index
+      labels.forEach((lbl, i) => {
+        expect(lbl.index).toBe(i);
+        expect(lbl.fromIndex).toBe(i);
+        expect(lbl.toIndex).toBe((i + 1) % 10);
+        expect(lbl.distanceM).toBeGreaterThan(0);
+      });
+    });
+
+    it('updates measurements of the two adjacent edges when a vertex is moved', () => {
+      let coords = [
+        [80.270, 13.080],
+        [80.275, 13.080],
+        [80.275, 13.085],
+        [80.270, 13.085],
+      ];
+
+      const initialEdges = calcEdgeDistances(coords, true);
+      const initialDist0 = initialEdges[0].distanceM;
+      const initialDist1 = initialEdges[1].distanceM;
+      const initialDist2 = initialEdges[2].distanceM;
+      const initialDist3 = initialEdges[3].distanceM;
+
+      // Move vertex index 1: from [80.275, 13.080] to [80.278, 13.082]
+      coords[1] = [80.278, 13.082];
+      const updatedEdges = calcEdgeDistances(coords, true);
+
+      // Edge 0 (0 -> 1) and Edge 1 (1 -> 2) must change
+      expect(updatedEdges[0].distanceM).not.toBe(initialDist0);
+      expect(updatedEdges[1].distanceM).not.toBe(initialDist1);
+
+      // Edge 2 (2 -> 3) and Edge 3 (3 -> 0) must remain unaffected
+      expect(updatedEdges[2].distanceM).toBeCloseTo(initialDist2, 5);
+      expect(updatedEdges[3].distanceM).toBeCloseTo(initialDist3, 5);
+    });
+
+    it('panning and zooming updates screen positions without changing geographic distance measurements', () => {
+      const coords = [
+        [80.270, 13.080],
+        [80.275, 13.080],
+        [80.275, 13.085],
+        [80.270, 13.085],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+
+      // Zoom 1
+      const projectZoom1 = (lat, lng) => ({
+        x: (lng - 80.270) * 10000 + 200,
+        y: (lat - 13.080) * 10000 + 200,
+      });
+
+      // Zoom 2 (zoomed in by 2x and panned by 50px)
+      const projectZoom2 = (lat, lng) => ({
+        x: (lng - 80.270) * 20000 + 250,
+        y: (lat - 13.080) * 20000 + 250,
+      });
+
+      const labels1 = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint: projectZoom1,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      const labels2 = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint: projectZoom2,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      for (let i = 0; i < 4; i++) {
+        // Geographic distances must be identically preserved
+        expect(labels1[i].distanceM).toBe(labels2[i].distanceM);
+        expect(labels1[i].formattedDistance).toBe(labels2[i].formattedDistance);
+        // Screen coordinates must reflect the new zoom/pan
+        expect(labels1[i].labelPoint.x).not.toBe(labels2[i].labelPoint.x);
+        expect(labels1[i].labelPoint.y).not.toBe(labels2[i].labelPoint.y);
+      }
+    });
+
+    it('remains usable on a narrow mobile screen (360x640) with all labels positioned and visible', () => {
+      // 5-vertex polygon on mobile viewport
+      const coords = [
+        [80.270, 13.080],
+        [80.272, 13.080],
+        [80.273, 13.082],
+        [80.271, 13.083],
+        [80.269, 13.081],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+
+      const projectMobile = (lat, lng) => ({
+        x: (lng - 80.270) * 40000 + 180,
+        y: (lat - 13.080) * 40000 + 320,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint: projectMobile,
+        viewportWidth: 360,
+        viewportHeight: 640,
+        verticesLatLng: coords,
+      });
+
+      expect(labels.length).toBe(5);
+      expect(labels.every(l => l.isVisible)).toBe(true);
+      labels.forEach(l => {
+        expect(l.box.x).toBeGreaterThanOrEqual(0);
+        expect(l.box.x + l.box.width).toBeLessThanOrEqual(360 + 50); // within bounds with margin
+      });
     });
   });
 });
