@@ -186,59 +186,93 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
         
-        // Setup metrics
-        const padding = 12;
-        const boxMargin = 12;
-        
-        // Define overlay box size
+        // Scale metrics proportionally with canvas resolution
+        // Use a baseline where 1080px width has standard scale = 1.0
+        // We use min(width, height) so portrait and landscape maintain consistent, readable text size
+        const baseDim = Math.min(canvas.width, canvas.height);
+        const scale = Math.max(0.6, baseDim / 1080);
+
+        const boxMargin = Math.round(16 * scale);
+        const boxPadding = Math.round(18 * scale);
         const overlayWidth = canvas.width - (boxMargin * 2);
-        
-        // We will calculate height dynamically based on lines
+
+        // Responsive font sizes
+        const titleFontSize = Math.round(20 * scale);
+        const bodyFontSize = Math.round(16 * scale);
+        const lineHeight = Math.round(26 * scale);
+
+        // Lines to render
         const lines = [];
         if (loc.lat) {
-          lines.push({ text: loc.address ? loc.address.short : 'Unknown Location', font: 'bold 16px sans-serif', color: 'white' });
+          lines.push({ 
+            text: loc.address ? loc.address.short : 'Unknown Location', 
+            font: `bold ${titleFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`, 
+            color: '#ffffff' 
+          });
           
           if (loc.address && loc.address.full) {
-            // Very basic word wrap for full address
+            // Word wrap address to fit overlayWidth with padding
+            const maxTextWidth = overlayWidth - (boxPadding * 2);
             const words = loc.address.full.split(' ');
             let currentLine = '';
+            ctx.font = `${bodyFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+            
             for (let i = 0; i < words.length; i++) {
               const testLine = currentLine + words[i] + ' ';
-              ctx.font = '14px sans-serif';
               const metrics = ctx.measureText(testLine);
-              if (metrics.width > overlayWidth - 24 && i > 0) {
-                lines.push({ text: currentLine, font: '14px sans-serif', color: '#eaeaea' });
+              if (metrics.width > maxTextWidth && i > 0) {
+                lines.push({ 
+                  text: currentLine.trim(), 
+                  font: `${bodyFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`, 
+                  color: '#e2e8f0' 
+                });
                 currentLine = words[i] + ' ';
               } else {
                 currentLine = testLine;
               }
             }
-            lines.push({ text: currentLine, font: '14px sans-serif', color: '#eaeaea' });
+            if (currentLine.trim()) {
+              lines.push({ 
+                text: currentLine.trim(), 
+                font: `${bodyFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`, 
+                color: '#e2e8f0' 
+              });
+            }
           }
           
-          lines.push({ text: `Lat ${loc.lat.toFixed(6)}°  Long ${loc.lon.toFixed(6)}°`, font: 'bold 14px sans-serif', color: 'white' });
+          lines.push({ 
+            text: `Lat ${loc.lat.toFixed(6)}°  Long ${loc.lon.toFixed(6)}°`, 
+            font: `bold ${bodyFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`, 
+            color: '#ffffff' 
+          });
           
-          const d = new Date(loc.timestamp);
+          const d = new Date(loc.timestamp || Date.now());
           const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' });
           const timeStr = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-          // Format GMT offset
           const offset = -d.getTimezoneOffset();
           const sign = offset >= 0 ? '+' : '-';
           const pad = (num) => String(Math.abs(num)).padStart(2, '0');
           const gmtStr = `GMT${sign}${pad(Math.floor(offset / 60))}:${pad(offset % 60)}`;
           
-          lines.push({ text: `${dateStr} ${timeStr} ${gmtStr}`, font: '14px sans-serif', color: 'white' });
+          lines.push({ 
+            text: `${dateStr}  ${timeStr}  ${gmtStr}`, 
+            font: `${bodyFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`, 
+            color: '#f8fafc' 
+          });
         } else {
-          lines.push({ text: 'GPS Location Unavailable', font: 'bold 16px sans-serif', color: 'white' });
+          lines.push({ 
+            text: 'GPS Location Unavailable', 
+            font: `bold ${titleFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`, 
+            color: '#ffffff' 
+          });
         }
 
-        const lineHeight = 22;
-        const boxHeight = (lines.length * lineHeight) + 20;
+        const boxHeight = (lines.length * lineHeight) + (boxPadding * 2);
         const startY = canvas.height - boxHeight - boxMargin;
 
-        // Draw Rounded Rectangle
-        const radius = 12;
-        ctx.fillStyle = 'rgba(60, 45, 10, 0.75)'; // A dark brownish/olive tint to match reference
+        // Draw Rounded Rectangle with crisp translucent dark background
+        const radius = Math.round(14 * scale);
+        ctx.fillStyle = 'rgba(25, 23, 18, 0.82)'; // Polished dark backdrop
         ctx.beginPath();
         ctx.moveTo(boxMargin + radius, startY);
         ctx.lineTo(boxMargin + overlayWidth - radius, startY);
@@ -253,33 +287,37 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         ctx.fill();
         
         // Draw 7DAYS PROPERTIES Tag above the box
-        const tagWidth = 240;
-        const tagHeight = 36;
-        const tagY = startY - tagHeight + 8;
+        const tagHeight = Math.round(38 * scale);
+        const tagFontSize = Math.round(15 * scale);
+        ctx.font = `bold ${tagFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        const tagText = '7DAYS PROPERTIES';
+        const tagTextWidth = ctx.measureText(tagText).width;
+        const tagWidth = tagTextWidth + Math.round(36 * scale);
+        const tagY = startY - tagHeight + Math.round(4 * scale);
         const tagX = canvas.width - tagWidth - boxMargin;
+        const tagRadius = Math.round(10 * scale);
         
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
         ctx.beginPath();
-        ctx.moveTo(tagX + radius, tagY);
-        ctx.lineTo(tagX + tagWidth - radius, tagY);
-        ctx.quadraticCurveTo(tagX + tagWidth, tagY, tagX + tagWidth, tagY + radius);
+        ctx.moveTo(tagX + tagRadius, tagY);
+        ctx.lineTo(tagX + tagWidth - tagRadius, tagY);
+        ctx.quadraticCurveTo(tagX + tagWidth, tagY, tagX + tagWidth, tagY + tagRadius);
         ctx.lineTo(tagX + tagWidth, tagY + tagHeight);
         ctx.lineTo(tagX, tagY + tagHeight);
-        ctx.lineTo(tagX, tagY + radius);
-        ctx.quadraticCurveTo(tagX, tagY, tagX + radius, tagY);
+        ctx.lineTo(tagX, tagY + tagRadius);
+        ctx.quadraticCurveTo(tagX, tagY, tagX + tagRadius, tagY);
         ctx.closePath();
         ctx.fill();
         
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 15px sans-serif';
-        ctx.fillText('🏢 7DAYS PROPERTIES', tagX + 16, tagY + 24);
+        ctx.fillStyle = '#60a5fa'; // 7Days blue accent
+        ctx.fillText(tagText, tagX + Math.round(18 * scale), tagY + Math.round(25 * scale));
         
         // Draw Text Lines
-        let currentY = startY + 26;
+        let currentY = startY + boxPadding + Math.round(16 * scale);
         lines.forEach(line => {
           ctx.fillStyle = line.color;
           ctx.font = line.font;
-          ctx.fillText(line.text, boxMargin + 16, currentY);
+          ctx.fillText(line.text, boxMargin + boxPadding, currentY);
           currentY += lineHeight;
         });
         
