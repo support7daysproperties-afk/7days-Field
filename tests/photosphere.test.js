@@ -10,12 +10,19 @@ import {
   sphericalToVector,
   createCameraMatrix,
   transformVectorInverse,
+  createCoverageGrid,
+  projectFrameOntoGrid,
+  computeCoveragePercent,
+  getLocalCoverageRatio,
+  findLargestUncapturedGap,
+  updateFrontierAndGapDots,
+  COVERAGE_CONFIG,
 } from '../src/features/photo-sphere/PhotoSphereTargets';
 
 describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
-  it('should generate a complete 360x180 spherical coverage grid', () => {
+  it('should generate a complete 360x180 spherical coverage grid matching index.html', () => {
     const targets = generateSphericalTargets();
-    expect(targets.length).toBe(30);
+    expect(targets.length).toBe(34);
 
     const horizon = targets.filter((t) => t.ring === 'horizon');
     const upper = targets.filter((t) => t.ring === 'upper');
@@ -25,12 +32,14 @@ describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
 
     expect(horizon.length).toBe(10);
     expect(upper.length).toBe(8);
-    expect(zenith.length).toBe(2);
+    expect(zenith.length).toBe(4);
     expect(lower.length).toBe(8);
-    expect(nadir.length).toBe(2);
+    expect(nadir.length).toBe(4);
 
-    expect(zenith[0].pitch).toBe(78);
-    expect(nadir[0].pitch).toBe(-78);
+    expect(upper[0].pitch).toBe(38);
+    expect(lower[0].pitch).toBe(-38);
+    expect(zenith[0].pitch).toBe(74);
+    expect(nadir[0].pitch).toBe(-74);
   });
 
   it('should normalize angles into [0, 360)', () => {
@@ -262,6 +271,106 @@ describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
     expect(left).toBeDefined();
     expect(upper).toBeDefined();
     expect(lower).toBeDefined();
+  });
+
+  it('should guide user through a continuous 360° circular horizontal loop back to starting direction', () => {
+    let targets = generateSphericalTargets();
+    const capturedFrames = [];
+
+    // Capture target_0 (yaw 0, pitch 0)
+    capturedFrames.push({ targetId: 'target_0' });
+    let result = updateFrontierAndGapDots(targets, capturedFrames);
+    targets = result.updatedTargets;
+
+    // Next target to the right along the equator should be at yaw 36° (target_1)
+    const right1 = targets.find((t) => t.yaw === 36 && t.pitch === 0);
+    expect(right1.visible).toBe(true);
+
+    // Sequence through the 10 equatorial targets in order (0°, 36°, 72°, 108°, 144°, 180°, 216°, 252°, 288°, 324°)
+    const expectedYawSequence = [36, 72, 108, 144, 180, 216, 252, 288, 324];
+    for (const expectedYaw of expectedYawSequence) {
+      const nextRight = targets.find((t) => t.yaw === expectedYaw && t.pitch === 0 && !t.captured);
+      expect(nextRight).toBeDefined();
+      expect(nextRight.visible).toBe(true);
+
+      // User captures this target
+      capturedFrames.push({ targetId: nextRight.id });
+      result = updateFrontierAndGapDots(targets, capturedFrames);
+      targets = result.updatedTargets;
+    }
+
+    // After completing the loop around the horizon (capturing up to 324° = -36°),
+    // all 10 horizon targets have been captured
+    const horizonTargets = targets.filter((t) => t.ring === 'horizon');
+    expect(horizonTargets.every((t) => t.captured)).toBe(true);
+
+    // Frontier should now have unlocked adjacent upper (+38°) and lower (-38°) targets
+    const unlockedUpper = targets.filter((t) => t.ring === 'upper' && t.visible);
+    const unlockedLower = targets.filter((t) => t.ring === 'lower' && t.visible);
+    expect(unlockedUpper.length).toBeGreaterThan(0);
+    expect(unlockedLower.length).toBeGreaterThan(0);
+  });
+
+  it('should track coverage on 72x36 grid and calculate weighted percentage', () => {
+    const grid = createCoverageGrid();
+    expect(grid.length).toBe(72 * 36);
+    expect(computeCoveragePercent(grid)).toBe(0);
+
+    // Project single frame at equator (0, 0)
+    projectFrameOntoGrid(grid, 0, 0, 44, 54);
+    const cov1 = computeCoveragePercent(grid);
+    expect(cov1).toBeGreaterThan(2);
+    expect(cov1).toBeLessThan(10);
+
+    // Project overlapping frames around the equator
+    for (let i = 0; i < 10; i++) {
+      projectFrameOntoGrid(grid, i * 36, 0, 44, 54);
+    }
+    const covEquator = computeCoveragePercent(grid);
+    expect(covEquator).toBeGreaterThan(25);
+  });
+
+  it('should auto-retire target when local area coverage is >= 96%', () => {
+    const grid = createCoverageGrid();
+    const targets = generateSphericalTargets();
+
+    // Mark entire region around target_0 (yaw 0, pitch 0) as covered
+    projectFrameOntoGrid(grid, 0, 0, 60, 60);
+
+    const ratio = getLocalCoverageRatio(grid, 0, 0, 10);
+    expect(ratio).toBeGreaterThanOrEqual(0.96);
+
+    const capturedFrames = [{ targetId: 'dummy_frame' }];
+    const { updatedTargets } = updateFrontierAndGapDots(targets, capturedFrames, grid);
+    const target0 = updatedTargets.find((t) => t.id === 'target_0');
+    expect(target0.captured).toBe(true);
+    expect(target0.visible).toBe(false);
+  });
+
+  it('should identify uncaptured gaps and dynamically spawn gap targets when needed', () => {
+    const grid = createCoverageGrid();
+
+    // Fill most of the grid
+    for (let gy = 0; gy < 36; gy++) {
+      for (let gx = 0; gx < 72; gx++) {
+        // Leave a gap around gx=36, gy=18 (yaw ~0°, pitch ~0°)
+        if (Math.abs(gx - 36) > 4 || Math.abs(gy - 18) > 3) {
+          grid[gy * 72 + gx] = 1;
+        }
+      }
+    }
+
+    const gap = findLargestUncapturedGap(grid);
+    expect(gap).not.toBeNull();
+    expect(Math.abs(gap.pitchDeg)).toBeLessThan(20);
+
+    // updateFrontierAndGapDots should spawn gap dot if activeVisible is 0 and coverage < 99
+    const targets = generateSphericalTargets();
+    targets.forEach((t) => { t.captured = true; t.visible = false; });
+    const { updatedTargets } = updateFrontierAndGapDots(targets, [{ targetId: 'all' }], grid);
+    const gapTarget = updatedTargets.find((t) => t.isGapDot);
+    expect(gapTarget).toBeDefined();
+    expect(gapTarget.visible).toBe(true);
   });
 });
 

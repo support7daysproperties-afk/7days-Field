@@ -6,6 +6,11 @@ import {
   selectNextTarget,
   getUnlockedTargets,
   sphericalToVector,
+  createCoverageGrid,
+  projectFrameOntoGrid,
+  computeCoveragePercent,
+  updateFrontierAndGapDots,
+  COVERAGE_CONFIG,
 } from './PhotoSphereTargets';
 import { PhotoSphereOrientation } from './PhotoSphereOrientation';
 import { PhotoSphereStitcher } from './PhotoSphereStitcher';
@@ -57,6 +62,11 @@ export default function PhotoSphereCapture({
   const [activeTargetId, setActiveTargetId] = useState(null);
   const [capturedFrames, setCapturedFrames] = useState([]);
   const hasInitializedFirstTargetRef = useRef(false);
+
+  // 72x36 Coverage Grid & History Stack for Undo
+  const coverageGridRef = useRef(createCoverageGrid());
+  const [coveragePercent, setCoveragePercent] = useState(0);
+  const historyStackRef = useRef([]);
 
   // Auto-capture gating
   const [alignmentProgress, setAlignmentProgress] = useState(0); // 0 to 100%
@@ -286,25 +296,45 @@ export default function PhotoSphereCapture({
       // Persist frame to IndexedDB immediately
       await photoSphereStorage.saveFrame(frameRecord);
 
-      // Update Target State
-      const updatedTargets = targets.map((t) =>
-        t.id === target.id ? { ...t, status: 'captured' } : t
+      // Snapshot for Undo before updating grid
+      const prevGrid = new Uint8Array(coverageGridRef.current);
+      const prevTargets = targets;
+
+      // Project captured frame onto 72x36 coverage grid
+      projectFrameOntoGrid(coverageGridRef.current, target.yaw, target.pitch, 44, 54);
+      const newCovPercent = computeCoveragePercent(coverageGridRef.current);
+      setCoveragePercent(newCovPercent);
+
+      const nextFrames = [...capturedFrames, frameRecord];
+      setCapturedFrames(nextFrames);
+
+      // Update Target State & Frontier expansion
+      const { updatedTargets } = updateFrontierAndGapDots(
+        targets,
+        nextFrames,
+        coverageGridRef.current
       );
       setTargets(updatedTargets);
 
-      setCapturedFrames((prev) => [...prev, frameRecord]);
+      historyStackRef.current.push({
+        prevGrid,
+        prevTargets,
+        frameRecord,
+      });
+      if (historyStackRef.current.length > 20) historyStackRef.current.shift();
 
       // Set reference heading & pitch if this was first capture
       if (orientationTrackerRef.current && orientationTrackerRef.current.referenceHeading === null) {
         orientationTrackerRef.current.setReferenceHeading(orientation.rawYaw, orientation.rawPitch);
       }
 
-      // Advance to the NEXT single target using reference Photo Sphere sequence
+      // Advance to the NEXT single target using 3D angular proximity & circular sweep
       const nextTarget = selectNextTarget(
         updatedTargets,
         target,
         orientation.yaw,
-        orientation.pitch
+        orientation.pitch,
+        coverageGridRef.current
       );
 
       if (nextTarget) {
@@ -323,13 +353,15 @@ export default function PhotoSphereCapture({
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
     }
-  }, [cameraState, isCapturing, orientation.pitch, orientation.rawPitch, orientation.rawYaw, orientation.roll, orientation.yaw, targets]);
+  }, [cameraState, capturedFrames, isCapturing, orientation.pitch, orientation.rawPitch, orientation.rawYaw, orientation.roll, orientation.yaw, targets]);
 
   // Project targets onto viewport and Check Alignment Tick
   const isCameraReady = cameraState === CAMERA_STATES.READY;
 
-  // 1. Get all unlocked target dots (at start: target_0; after shots: adjacent Left/Right/Above/Below marbles)
-  const unlockedRawTargets = isCameraReady ? getUnlockedTargets(targets, capturedFrames) : [];
+  // 1. Get all unlocked target dots using 52° frontier unlocking & coverage grid
+  const unlockedRawTargets = isCameraReady
+    ? getUnlockedTargets(targets, capturedFrames, coverageGridRef.current)
+    : [];
 
   // 2. Project each unlocked target in physical 3D space onto the 2D viewport
   const projectedUnlockedTargets = unlockedRawTargets.map((t) => ({
@@ -363,7 +395,13 @@ export default function PhotoSphereCapture({
   }
 
   const activeDist = activeTarget ? activeTarget.projected.angularDistance : 999;
-  const isAligned = isCameraReady && activeTarget && activeDist <= 3.0;
+  const isTooFast =
+    (orientation.angularVelocity > COVERAGE_CONFIG.MAX_ANGULAR_VELOCITY) ||
+    orientation.isMovingTooFast;
+  const isAligned =
+    isCameraReady &&
+    activeTarget &&
+    activeDist <= COVERAGE_CONFIG.ALIGNMENT_THRESHOLD_DEG;
 
   // Compute diagnostic capture decision reason for live HUD
   const captureDecision = {
@@ -376,10 +414,10 @@ export default function PhotoSphereCapture({
     captureDecision.reason = 'No active target in range';
   } else if (isCapturing || isCapturingRef.current) {
     captureDecision.reason = 'Capture in progress';
-  } else if (orientation.isMovingTooFast) {
-    captureDecision.reason = `Moving too fast (${orientation.angularVelocity}°/s > 50°/s)`;
+  } else if (isTooFast) {
+    captureDecision.reason = `Moving too fast (${orientation.angularVelocity}°/s > ${COVERAGE_CONFIG.MAX_ANGULAR_VELOCITY}°/s)`;
   } else if (!isAligned) {
-    captureDecision.reason = `Aligning dot (${Math.round(activeDist * 10) / 10}° > 3.0°)`;
+    captureDecision.reason = `Aligning dot (${Math.round(activeDist * 10) / 10}° > ${COVERAGE_CONFIG.ALIGNMENT_THRESHOLD_DEG}°)`;
   } else if (alignmentProgress < 100) {
     captureDecision.reason = `Holding steady (${alignmentProgress}%)`;
   } else {
@@ -396,7 +434,7 @@ export default function PhotoSphereCapture({
     }
 
     // Moving too fast breaks steady lock
-    if (orientation.isMovingTooFast) {
+    if (isTooFast) {
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
       return;
@@ -408,7 +446,7 @@ export default function PhotoSphereCapture({
         alignmentStartRef.current = now;
       }
       const elapsed = now - alignmentStartRef.current;
-      const requiredHoldMs = 280; // hold steady for 280ms
+      const requiredHoldMs = COVERAGE_CONFIG.HOLD_DURATION_MS; // 320ms hold steady matching index.html
       const progress = Math.min(100, Math.round((elapsed / requiredHoldMs) * 100));
       setAlignmentProgress(progress);
 
@@ -419,7 +457,7 @@ export default function PhotoSphereCapture({
       alignmentStartRef.current = null;
       setAlignmentProgress(0);
     }
-  }, [activeTarget, captureFrame, isAligned, isCameraReady, isCapturing, isStitching, orientation.isMovingTooFast, stitchedPanorama]);
+  }, [activeTarget, captureFrame, isAligned, isCameraReady, isCapturing, isStitching, isTooFast, stitchedPanorama]);
 
   // Trigger Stitching Pipeline
   const handleStartStitching = async () => {
@@ -468,14 +506,27 @@ export default function PhotoSphereCapture({
     }
   };
 
-  // Undo last capture
+  // Undo last capture with coverage grid rollback
   const handleUndo = () => {
     if (capturedFrames.length === 0) return;
+    const lastEntry = historyStackRef.current.pop();
     const lastFrame = capturedFrames[capturedFrames.length - 1];
-    setCapturedFrames((prev) => prev.slice(0, -1));
-    setTargets((prev) =>
-      prev.map((t) => (t.id === lastFrame.targetId ? { ...t, status: 'pending' } : t))
-    );
+
+    if (lastEntry && lastEntry.prevGrid) {
+      coverageGridRef.current.set(lastEntry.prevGrid);
+      setCoveragePercent(computeCoveragePercent(coverageGridRef.current));
+    }
+
+    const remainingFrames = capturedFrames.slice(0, -1);
+    setCapturedFrames(remainingFrames);
+
+    if (lastEntry && lastEntry.prevTargets) {
+      setTargets(lastEntry.prevTargets);
+    } else {
+      setTargets((prev) =>
+        prev.map((t) => (t.id === lastFrame.targetId ? { ...t, status: 'pending', captured: false } : t))
+      );
+    }
     setActiveTargetId(lastFrame.targetId);
   };
 
@@ -483,6 +534,9 @@ export default function PhotoSphereCapture({
   const handleRetake = () => {
     setStitchedPanorama(null);
     setCapturedFrames([]);
+    coverageGridRef.current = createCoverageGrid();
+    historyStackRef.current = [];
+    setCoveragePercent(0);
     setTargets(generateSphericalTargets());
     setActiveTargetId('target_0');
     hasInitializedFirstTargetRef.current = false;
@@ -521,6 +575,7 @@ export default function PhotoSphereCapture({
 
   const capturedCount = capturedFrames.length;
   const totalCount = targets.length;
+  const remainingCount = targets.filter((t) => !t.captured && t.status !== 'captured').length;
   const progressPercent = Math.round((capturedCount / totalCount) * 100);
 
   return (
@@ -585,6 +640,34 @@ export default function PhotoSphereCapture({
           </span>
         </div>
 
+        {/* HUD Pill: Coverage & Dots Left */}
+        {isCameraReady && (
+          <div
+            style={{
+              background: 'rgba(16, 16, 16, 0.82)',
+              backdropFilter: 'blur(10px)',
+              padding: '6px 14px',
+              borderRadius: '999px',
+              fontSize: '12px',
+              fontWeight: '600',
+              display: 'flex',
+              gap: '8px',
+              alignItems: 'center',
+              border: '1px solid rgba(255, 255, 255, 0.18)',
+            }}
+          >
+            <span style={{ color: '#60a5fa' }}>{coveragePercent}% Captured</span>
+            <span style={{ color: 'rgba(255, 255, 255, 0.3)' }}>•</span>
+            <span>
+              {remainingCount === 0
+                ? 'Sphere Sealed!'
+                : capturedFrames.length === 0
+                ? 'Center Dot Ready'
+                : `${remainingCount} Dots Left`}
+            </span>
+          </div>
+        )}
+
         <button
           onClick={onClose}
           style={{
@@ -603,6 +686,47 @@ export default function PhotoSphereCapture({
           <X size={20} />
         </button>
       </div>
+
+      {/* Instruction Banner */}
+      {isCameraReady && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '70px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            textAlign: 'center',
+            fontSize: '13px',
+            fontWeight: '600',
+            color: 'rgba(255, 255, 255, 0.95)',
+            textShadow: '0 2px 8px rgba(0, 0, 0, 0.9)',
+            pointerEvents: 'none',
+            zIndex: 35,
+            backgroundColor: isTooFast
+              ? 'rgba(239, 68, 68, 0.88)'
+              : isAligned
+              ? 'rgba(37, 99, 235, 0.85)'
+              : 'rgba(18, 18, 18, 0.8)',
+            backdropFilter: 'blur(8px)',
+            padding: '7px 18px',
+            borderRadius: '20px',
+            border: '1px solid rgba(255, 255, 255, 0.18)',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.5)',
+            maxWidth: '90%',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          {coveragePercent >= 99
+            ? '360° Complete! Tap the checkmark ✓'
+            : capturedFrames.length === 0
+            ? 'To start, keep center dot inside circle'
+            : isTooFast
+            ? 'Slow down — hold steady'
+            : isAligned && alignmentProgress > 0
+            ? 'Hold steady...'
+            : 'Aim camera at the next dot to unlock that surface'}
+        </div>
+      )}
 
       {/* ── STATE: INITIALIZING / REQUESTING PERMISSION ── */}
       {(cameraState === CAMERA_STATES.INITIALIZING || cameraState === CAMERA_STATES.REQUESTING_PERMISSION) && (
@@ -859,7 +983,7 @@ export default function PhotoSphereCapture({
           >
             <span>Spherical Coverage</span>
             <span>
-              {capturedCount} / {totalCount} photos ({progressPercent}%)
+              {coveragePercent}% Covered ({capturedCount} photos taken)
             </span>
           </div>
 
@@ -874,10 +998,10 @@ export default function PhotoSphereCapture({
             <div
               style={{
                 height: '100%',
-                width: `${progressPercent}%`,
-                backgroundColor: '#3b82f6',
+                width: `${coveragePercent}%`,
+                backgroundColor: coveragePercent >= 99 ? '#10b981' : '#3b82f6',
                 borderRadius: '3px',
-                transition: 'width 0.2s ease',
+                transition: 'width 0.25s ease',
               }}
             />
           </div>

@@ -127,78 +127,70 @@ export function transformVectorInverse(R, v) {
   ];
 }
 
+export const LATTICE_RINGS = [
+  { pitchDeg: 0, count: 10, name: 'horizon' },
+  { pitchDeg: 38, count: 8, name: 'upper' },
+  { pitchDeg: -38, count: 8, name: 'lower' },
+  { pitchDeg: 74, count: 4, name: 'zenith' },
+  { pitchDeg: -74, count: 4, name: 'nadir' },
+];
+
+export const COVERAGE_CONFIG = {
+  LON_STEPS: 72,
+  LAT_STEPS: 36,
+  NEIGHBOR_DISTANCE_DEG: 52.0,
+  AUTO_RETIRE_COVERAGE_RATIO: 0.96,
+  ALIGNMENT_THRESHOLD_DEG: 4.8,
+  HOLD_DURATION_MS: 320,
+  MAX_ANGULAR_VELOCITY: 20.0,
+  CAPTURE_FOV_H_DEG: 44,
+  CAPTURE_FOV_V_DEG: 54,
+};
+
 /**
- * Generate full spherical capture targets following Google Camera LightCycle layout:
+ * Generate full spherical capture targets following index.html lattice:
  * - Horizon (0°): 10 shots (every 36°)
- * - Upper (+35°): 8 shots (every 45°)
- * - Zenith (+78°): 2 shots (opposite yaw)
- * - Lower (-35°): 8 shots (every 45°)
- * - Nadir (-78°): 2 shots (opposite yaw)
- * Total: 30 targets covering the entire sphere.
+ * - Upper (+38°): 8 shots (every 45°)
+ * - Lower (-38°): 8 shots (every 45°)
+ * - Zenith (+74°): 4 shots (every 90°)
+ * - Nadir (-74°): 4 shots (every 90°)
+ * Total: 34 base targets covering the entire sphere.
  */
 export function generateSphericalTargets() {
   const targets = [];
-  let seq = 0;
+  let id = 0;
 
-  // 1. Horizon ring (pitch = 0°)
-  for (let i = 0; i < 10; i++) {
-    targets.push({
-      id: `target_${seq}`,
-      sequenceIndex: seq++,
-      yaw: i * 36,
-      pitch: 0,
-      ring: 'horizon',
-      status: 'pending',
-    });
-  }
+  LATTICE_RINGS.forEach((ring) => {
+    for (let i = 0; i < ring.count; i++) {
+      let yawDeg = ((360 / ring.count) * i) % 360;
+      if (yawDeg > 180) yawDeg -= 360; // Normalize to [-180, 180]
+      const yawNorm = normalizeAngle(yawDeg); // [0, 360)
+      const pitchNorm = ring.pitchDeg;
+      const isCenterStartDot = id === 0;
 
-  // 2. Upper ring (pitch = +35°)
-  for (let i = 0; i < 8; i++) {
-    targets.push({
-      id: `target_${seq}`,
-      sequenceIndex: seq++,
-      yaw: i * 45,
-      pitch: 35,
-      ring: 'upper',
-      status: 'pending',
-    });
-  }
+      const v = sphericalToVector(yawNorm, pitchNorm);
 
-  // 3. Zenith (pitch = +78°)
-  for (let i = 0; i < 2; i++) {
-    targets.push({
-      id: `target_${seq}`,
-      sequenceIndex: seq++,
-      yaw: i * 180,
-      pitch: 78,
-      ring: 'zenith',
-      status: 'pending',
-    });
-  }
-
-  // 4. Lower ring (pitch = -35°)
-  for (let i = 0; i < 8; i++) {
-    targets.push({
-      id: `target_${seq}`,
-      sequenceIndex: seq++,
-      yaw: i * 45,
-      pitch: -35,
-      ring: 'lower',
-      status: 'pending',
-    });
-  }
-
-  // 5. Nadir (pitch = -78°)
-  for (let i = 0; i < 2; i++) {
-    targets.push({
-      id: `target_${seq}`,
-      sequenceIndex: seq++,
-      yaw: i * 180,
-      pitch: -78,
-      ring: 'nadir',
-      status: 'pending',
-    });
-  }
+      targets.push({
+        id: `target_${id}`,
+        idNum: id,
+        sequenceIndex: id,
+        yaw: yawNorm,
+        pitch: pitchNorm,
+        yawDeg,
+        pitchDeg: ring.pitchDeg,
+        yawRad: (yawDeg * Math.PI) / 180,
+        pitchRad: (ring.pitchDeg * Math.PI) / 180,
+        direction: v,
+        ring: ring.name,
+        status: 'pending',
+        captured: false,
+        visible: isCenterStartDot,
+        isCenterStartDot,
+        isGapDot: false,
+      });
+      id++;
+    }
+  });
 
   return targets;
 }
@@ -302,138 +294,359 @@ export function projectTargetToViewport(
 }
 
 /**
- * Returns the list of currently unlocked targets:
- * - At startup (0 captured): only target_0 (dead center in front of you) is active.
- * - After captures: unlocks the adjacent 4 targets (Left, Right, Above, Below)
- *   around every captured frame so the user sees real floating marbles in physical 3D space.
+ * Initializes a logical coverage grid (72 longitude steps x 36 latitude steps).
+ * Represents 5°x5° patches of the sphere surface area.
+ */
+export function createCoverageGrid() {
+  return new Uint8Array(COVERAGE_CONFIG.LON_STEPS * COVERAGE_CONFIG.LAT_STEPS);
+}
+
+/**
+ * Projects a captured camera frame frustum onto the 72x36 coverage grid.
+ * Any grid cell falling inside the camera's FOV (44° H x 54° V) is marked as 1.
+ */
+export function projectFrameOntoGrid(
+  grid,
+  captureYawDeg,
+  capturePitchDeg,
+  hFovDeg = COVERAGE_CONFIG.CAPTURE_FOV_H_DEG,
+  vFovDeg = COVERAGE_CONFIG.CAPTURE_FOV_V_DEG
+) {
+  if (!grid) return;
+  const toRad = Math.PI / 180;
+  const forward = sphericalToVector(captureYawDeg, capturePitchDeg);
+
+  let worldUp = [0, 1, 0];
+  if (Math.abs(forward[1]) > 0.98) {
+    const yRad = captureYawDeg * toRad;
+    worldUp = [Math.sin(yRad), 0, -Math.cos(yRad)];
+  }
+
+  // right = cross(forward, worldUp).normalize()
+  const right = [
+    forward[1] * worldUp[2] - forward[2] * worldUp[1],
+    forward[2] * worldUp[0] - forward[0] * worldUp[2],
+    forward[0] * worldUp[1] - forward[1] * worldUp[0],
+  ];
+  const rLen = Math.hypot(right[0], right[1], right[2]) || 1;
+  right[0] /= rLen; right[1] /= rLen; right[2] /= rLen;
+
+  // up = cross(right, forward).normalize()
+  const up = [
+    right[1] * forward[2] - right[2] * forward[1],
+    right[2] * forward[0] - right[0] * forward[2],
+    right[0] * forward[1] - right[1] * forward[0],
+  ];
+  const uLen = Math.hypot(up[0], up[1], up[2]) || 1;
+  up[0] /= uLen; up[1] /= uLen; up[2] /= uLen;
+
+  const tanHalfH = Math.tan((hFovDeg / 2) * toRad);
+  const tanHalfV = Math.tan((vFovDeg / 2) * toRad);
+
+  const lonSteps = COVERAGE_CONFIG.LON_STEPS;
+  const latSteps = COVERAGE_CONFIG.LAT_STEPS;
+
+  for (let gy = 0; gy < latSteps; gy++) {
+    const lat = (0.5 - (gy + 0.5) / latSteps) * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+
+    for (let gx = 0; gx < lonSteps; gx++) {
+      const lon = ((gx + 0.5) / lonSteps - 0.5) * 2 * Math.PI;
+      const cellVec = [
+        Math.sin(lon) * cosLat,
+        sinLat,
+        -Math.cos(lon) * cosLat,
+      ];
+
+      const dotZ = cellVec[0] * forward[0] + cellVec[1] * forward[1] + cellVec[2] * forward[2];
+      if (dotZ > 0) {
+        const dotR = cellVec[0] * right[0] + cellVec[1] * right[1] + cellVec[2] * right[2];
+        const dotU = cellVec[0] * up[0] + cellVec[1] * up[1] + cellVec[2] * up[2];
+        const nx = dotR / dotZ / tanHalfH;
+        const ny = dotU / dotZ / tanHalfV;
+        if (Math.abs(nx) <= 0.94 && Math.abs(ny) <= 0.94) {
+          grid[gy * lonSteps + gx] = 1;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Computes spherical coverage percentage weighted by cosine of latitude
+ * to account for shrinking surface area near the poles.
+ */
+export function computeCoveragePercent(grid) {
+  if (!grid) return 0;
+  const lonSteps = COVERAGE_CONFIG.LON_STEPS;
+  const latSteps = COVERAGE_CONFIG.LAT_STEPS;
+  let totalWeight = 0;
+  let coveredWeight = 0;
+
+  for (let gy = 0; gy < latSteps; gy++) {
+    const lat = (0.5 - (gy + 0.5) / latSteps) * Math.PI;
+    const w = Math.cos(lat);
+    for (let gx = 0; gx < lonSteps; gx++) {
+      totalWeight += w;
+      if (grid[gy * lonSteps + gx] === 1) {
+        coveredWeight += w;
+      }
+    }
+  }
+
+  if (totalWeight <= 0) return 0;
+  return Math.min(100, Math.round((coveredWeight / totalWeight) * 100));
+}
+
+/**
+ * Checks local coverage ratio in a radius around a spherical point (yaw, pitch).
+ */
+export function getLocalCoverageRatio(grid, yawRad, pitchRad, radiusDeg = 10) {
+  if (!grid) return 0;
+  const centerCos = Math.cos(pitchRad);
+  const centerVec = [
+    Math.sin(yawRad) * centerCos,
+    Math.sin(pitchRad),
+    -Math.cos(yawRad) * centerCos,
+  ];
+  const cosThresh = Math.cos((radiusDeg * Math.PI) / 180);
+  let total = 0;
+  let covered = 0;
+
+  const lonSteps = COVERAGE_CONFIG.LON_STEPS;
+  const latSteps = COVERAGE_CONFIG.LAT_STEPS;
+
+  for (let gy = 0; gy < latSteps; gy++) {
+    const lat = (0.5 - (gy + 0.5) / latSteps) * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+    for (let gx = 0; gx < lonSteps; gx++) {
+      const lon = ((gx + 0.5) / lonSteps - 0.5) * 2 * Math.PI;
+      const cellVec = [
+        Math.sin(lon) * cosLat,
+        sinLat,
+        -Math.cos(lon) * cosLat,
+      ];
+      const dotVal = centerVec[0] * cellVec[0] + centerVec[1] * cellVec[1] + centerVec[2] * cellVec[2];
+      if (dotVal >= cosThresh) {
+        total++;
+        if (grid[gy * lonSteps + gx] === 1) {
+          covered++;
+        }
+      }
+    }
+  }
+
+  return total === 0 ? 1 : covered / total;
+}
+
+/**
+ * Scans the coverage grid for the largest cluster of uncaptured zeros
+ * and returns the centroid coordinate.
+ */
+export function findLargestUncapturedGap(grid) {
+  if (!grid) return null;
+  let bestScore = -1;
+  let bestLon = 0;
+  let bestLat = 0;
+
+  const lonSteps = COVERAGE_CONFIG.LON_STEPS;
+  const latSteps = COVERAGE_CONFIG.LAT_STEPS;
+
+  for (let gy = 1; gy < latSteps - 1; gy++) {
+    const lat = (0.5 - (gy + 0.5) / latSteps) * Math.PI;
+    const weight = Math.cos(lat);
+    for (let gx = 0; gx < lonSteps; gx++) {
+      if (grid[gy * lonSteps + gx] === 0) {
+        const lon = ((gx + 0.5) / lonSteps - 0.5) * 2 * Math.PI;
+        const uncoveredRatio = 1 - getLocalCoverageRatio(grid, lon, lat, 16);
+        const score = uncoveredRatio * (0.35 + 0.65 * weight);
+        if (score > bestScore) {
+          bestScore = score;
+          bestLon = lon;
+          bestLat = lat;
+        }
+      }
+    }
+  }
+
+  if (bestScore > 0.05) {
+    const yawDeg = normalizeAngle((bestLon * 180) / Math.PI);
+    const pitchDeg = (bestLat * 180) / Math.PI;
+    return {
+      yawRad: bestLon,
+      pitchRad: bestLat,
+      yawDeg,
+      pitchDeg,
+    };
+  }
+  return null;
+}
+
+/**
+ * Spawns a dynamic gap target dot to seal uncovered gaps.
+ */
+export function spawnGapDot(id, yawDeg, pitchDeg) {
+  const yawNorm = normalizeAngle(yawDeg);
+  const v = sphericalToVector(yawNorm, pitchDeg);
+  return {
+    id: `target_gap_${id}`,
+    idNum: id,
+    sequenceIndex: id,
+    yaw: yawNorm,
+    pitch: pitchDeg,
+    yawDeg,
+    pitchDeg,
+    yawRad: (yawDeg * Math.PI) / 180,
+    pitchRad: (pitchDeg * Math.PI) / 180,
+    direction: v,
+    ring: 'gap',
+    status: 'pending',
+    captured: false,
+    visible: true,
+    isCenterStartDot: false,
+    isGapDot: true,
+  };
+}
+
+/**
+ * Updates frontier unlocking, auto-retires over-covered dots, and fills gaps.
+ * Based strictly on index.html updateFrontierAndGapDots():
+ * - Checks uncaptured dots against all captured dots in 3D angular space.
+ * - Angular distance <= 52° unlocks contiguous frontier neighbors.
+ * - Auto-retires dots with >= 96% local coverage.
+ * - Dispatches dynamic gap target if frontier runs out but coverage < 99%.
+ */
+export function updateFrontierAndGapDots(targets, capturedFrames = [], coverageGrid = null) {
+  if (!targets || targets.length === 0) return { updatedTargets: [], coveragePercent: 0 };
+
+  const coveragePercent = coverageGrid ? computeCoveragePercent(coverageGrid) : 0;
+
+  // At start (0 captured)
+  if (capturedFrames.length === 0) {
+    const updated = targets.map((t) => ({
+      ...t,
+      captured: false,
+      status: 'pending',
+      visible: t.isCenterStartDot || t.id === 'target_0',
+    }));
+    return { updatedTargets: updated, coveragePercent };
+  }
+
+  const capturedTargetIds = new Set(capturedFrames.map((f) => f.targetId));
+  const capturedList = targets.filter(
+    (t) => capturedTargetIds.has(t.id) || t.captured || t.status === 'captured'
+  );
+
+  const updated = targets.map((t) => {
+    if (capturedTargetIds.has(t.id) || t.captured || t.status === 'captured') {
+      return { ...t, captured: true, status: 'captured', visible: false };
+    }
+
+    // Auto-retire if coverage >= 96%
+    if (coverageGrid) {
+      const centerCov = getLocalCoverageRatio(coverageGrid, t.yawRad, t.pitchRad, 10);
+      if (centerCov >= COVERAGE_CONFIG.AUTO_RETIRE_COVERAGE_RATIO) {
+        return { ...t, captured: true, status: 'captured', visible: false, autoRetired: true };
+      }
+    }
+
+    // Frontier unlocking: angular distance <= 52° to ANY captured target
+    let isImmediateNeighbor = false;
+    for (const cap of capturedList) {
+      const dotVal =
+        t.direction[0] * cap.direction[0] +
+        t.direction[1] * cap.direction[1] +
+        t.direction[2] * cap.direction[2];
+      const ang = (Math.acos(Math.max(-1, Math.min(1, dotVal))) * 180) / Math.PI;
+      if (ang <= COVERAGE_CONFIG.NEIGHBOR_DISTANCE_DEG) {
+        isImmediateNeighbor = true;
+        break;
+      }
+    }
+
+    const isVisible = isImmediateNeighbor || t.isGapDot;
+    return { ...t, visible: isVisible };
+  });
+
+  // Dynamic gap-filling: if no targets visible but coverage < 99%, locate gap
+  const activeVisible = updated.filter((t) => !t.captured && t.visible);
+  if (activeVisible.length === 0 && coveragePercent < 99 && coverageGrid) {
+    const gap = findLargestUncapturedGap(coverageGrid);
+    if (gap) {
+      const gapTarget = spawnGapDot(updated.length, gap.yawDeg, gap.pitchDeg);
+      updated.push(gapTarget);
+    }
+  }
+
+  return { updatedTargets: updated, coveragePercent };
+}
+
+/**
+ * Returns the list of currently unlocked target dots for projection and rendering.
  *
  * @param {Array} targets Full spherical target list
  * @param {Array} capturedFrames List of captured frame records
+ * @param {Uint8Array} [coverageGrid] Optional 72x36 coverage grid
  */
-export function getUnlockedTargets(targets, capturedFrames = []) {
+export function getUnlockedTargets(targets, capturedFrames = [], coverageGrid = null) {
   if (!targets || targets.length === 0) return [];
 
   // When no photos have been taken yet, only target_0 is visible right in front
   if (capturedFrames.length === 0) {
-    const initialTarget = targets.find((t) => t.id === 'target_0') || targets[0];
-    return [initialTarget];
+    const initialTarget = targets.find((t) => t.isCenterStartDot || t.id === 'target_0') || targets[0];
+    return [{ ...initialTarget, visible: true }];
   }
 
-  const capturedTargetIds = new Set(capturedFrames.map((f) => f.targetId));
-  const unlockedTargetIds = new Set();
-
-  // For every photo captured so far, find its 4 adjacent pending neighbors (Left, Right, Above, Below)
-  capturedFrames.forEach((frame) => {
-    const current = targets.find((t) => t.id === frame.targetId);
-    if (!current) return;
-
-    // Find closest pending neighbors in 4 directions:
-    // 1. Right (dYaw > 0, same/close pitch)
-    // 2. Left (dYaw < 0, same/close pitch)
-    // 3. Above (pitch > current.pitch)
-    // 4. Below (pitch < current.pitch)
-
-    const pending = targets.filter((t) => t.status === 'pending');
-
-    // Horizontal neighbors along the ring
-    const sameRingPending = pending.filter((t) => t.ring === current.ring);
-    let rightNeighbor = null;
-    let minRightDiff = 999;
-    let leftNeighbor = null;
-    let minLeftDiff = 999;
-
-    sameRingPending.forEach((t) => {
-      const diff = signedAngleDiff(t.yaw, current.yaw);
-      if (diff > 0 && diff < minRightDiff) {
-        minRightDiff = diff;
-        rightNeighbor = t;
-      } else if (diff < 0 && Math.abs(diff) < minLeftDiff) {
-        minLeftDiff = Math.abs(diff);
-        leftNeighbor = t;
-      }
-    });
-
-    if (rightNeighbor && minRightDiff <= 55) unlockedTargetIds.add(rightNeighbor.id);
-    if (leftNeighbor && minLeftDiff <= 55) unlockedTargetIds.add(leftNeighbor.id);
-
-    // Vertical neighbors (above / below)
-    let aboveNeighbor = null;
-    let minAboveDist = 999;
-    let belowNeighbor = null;
-    let minBelowDist = 999;
-
-    pending.forEach((t) => {
-      const pDiff = t.pitch - current.pitch;
-      const yDiff = Math.abs(signedAngleDiff(t.yaw, current.yaw));
-
-      if (pDiff > 10 && pDiff < 60 && yDiff <= 45) {
-        const dist = Math.hypot(yDiff, pDiff);
-        if (dist < minAboveDist) {
-          minAboveDist = dist;
-          aboveNeighbor = t;
-        }
-      } else if (pDiff < -10 && pDiff > -60 && yDiff <= 45) {
-        const dist = Math.hypot(yDiff, pDiff);
-        if (dist < minBelowDist) {
-          minBelowDist = dist;
-          belowNeighbor = t;
-        }
-      }
-    });
-
-    if (aboveNeighbor) unlockedTargetIds.add(aboveNeighbor.id);
-    if (belowNeighbor) unlockedTargetIds.add(belowNeighbor.id);
-  });
-
-  // If all adjacent neighbors are somehow taken, unlock remaining pending targets nearest to last shot
-  if (unlockedTargetIds.size === 0) {
-    const remainingPending = targets.filter((t) => t.status === 'pending');
-    if (remainingPending.length > 0) {
-      unlockedTargetIds.add(remainingPending[0].id);
-    }
-  }
-
-  return targets.filter((t) => unlockedTargetIds.has(t.id));
+  const { updatedTargets } = updateFrontierAndGapDots(targets, capturedFrames, coverageGrid);
+  return updatedTargets.filter((t) => !t.captured && t.visible);
 }
 
 /**
- * Select the next target to capture matching Google Camera's sequence:
- * Completes equatorial horizon ring first in a circular sweep,
- * then upper ring, zenith, lower ring, and nadir.
+ * Select the active target to aim at.
+ * Prioritizes the closest visible unlocked target in 3D angular space to the current camera direction.
  */
-export function selectNextTarget(targets, lastTarget = null, currentYaw = 0, currentPitch = 0) {
-  const pendingTargets = targets.filter((t) => t.status === 'pending');
-  if (pendingTargets.length === 0) return null;
+export function selectNextTarget(
+  targets,
+  lastTarget = null,
+  currentYaw = 0,
+  currentPitch = 0,
+  coverageGrid = null
+) {
+  // 1. First look for visible unlocked pending targets
+  const unlocked = targets.filter((t) => !t.captured && t.status !== 'captured' && t.visible);
+  if (unlocked.length > 0) {
+    const camDir = sphericalToVector(currentYaw, currentPitch);
+    let closest = unlocked[0];
+    let minAngle = 999;
 
-  // 1. If currently on a ring, select the next adjacent target on the same ring
-  if (lastTarget) {
-    const sameRingPending = pendingTargets.filter((t) => t.ring === lastTarget.ring);
-    if (sameRingPending.length > 0) {
-      let closest = sameRingPending[0];
-      let minDist = angularDistance(currentYaw, currentPitch, closest.yaw, closest.pitch);
-      for (let i = 1; i < sameRingPending.length; i++) {
-        const d = angularDistance(currentYaw, currentPitch, sameRingPending[i].yaw, sameRingPending[i].pitch);
-        if (d < minDist) {
-          minDist = d;
-          closest = sameRingPending[i];
-        }
+    for (const t of unlocked) {
+      const dotVal = camDir[0] * t.direction[0] + camDir[1] * t.direction[1] + camDir[2] * t.direction[2];
+      const ang = (Math.acos(Math.max(-1, Math.min(1, dotVal))) * 180) / Math.PI;
+      if (ang < minAngle) {
+        minAngle = ang;
+        closest = t;
       }
-      return closest;
     }
+    return closest;
   }
 
-  // 2. Progression order: horizon -> upper -> zenith -> lower -> nadir
-  const ringOrder = ['horizon', 'upper', 'zenith', 'lower', 'nadir'];
-  for (const ring of ringOrder) {
-    const ringPending = pendingTargets.filter((t) => t.ring === ring);
-    if (ringPending.length > 0) {
-      let closest = ringPending[0];
+  // 2. Fallback to any pending targets if frontier unlocking is currently updating
+  const pendingTargets = targets.filter((t) => !t.captured && t.status !== 'captured');
+  if (pendingTargets.length === 0) return null;
+
+  // On same ring as lastTarget first if possible
+  if (lastTarget) {
+    const sameRing = pendingTargets.filter((t) => t.ring === lastTarget.ring);
+    if (sameRing.length > 0) {
+      let closest = sameRing[0];
       let minDist = angularDistance(currentYaw, currentPitch, closest.yaw, closest.pitch);
-      for (let i = 1; i < ringPending.length; i++) {
-        const d = angularDistance(currentYaw, currentPitch, ringPending[i].yaw, ringPending[i].pitch);
+      for (let i = 1; i < sameRing.length; i++) {
+        const d = angularDistance(currentYaw, currentPitch, sameRing[i].yaw, sameRing[i].pitch);
         if (d < minDist) {
           minDist = d;
-          closest = ringPending[i];
+          closest = sameRing[i];
         }
       }
       return closest;
