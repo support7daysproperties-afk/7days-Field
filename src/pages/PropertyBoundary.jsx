@@ -270,24 +270,24 @@ export default function PropertyBoundary({
           const anchorLatLng = new gmaps.LatLng(edgeLabel.midpoint[1], edgeLabel.midpoint[0]);
           const anchorPos = projection.fromLatLngToDivPixel(anchorLatLng);
 
-          // If label has been displaced to an outer lane, draw a connector line to the edge midpoint
+          // If label has been displaced to an outer lane, draw a subtle leader line to the edge midpoint
           if (edgeLabel.hasConnector && svgOverlay && labelPos && anchorPos) {
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             line.setAttribute('x1', `${anchorPos.x}`);
             line.setAttribute('y1', `${anchorPos.y}`);
             line.setAttribute('x2', `${labelPos.x}`);
             line.setAttribute('y2', `${labelPos.y}`);
-            line.setAttribute('stroke', isThisEdgeSelected ? '#f59e0b' : 'rgba(96, 165, 250, 0.6)');
-            line.setAttribute('stroke-width', '1.5');
-            line.setAttribute('stroke-dasharray', '3,3');
+            line.setAttribute('stroke', isThisEdgeSelected ? '#f59e0b' : 'rgba(96, 165, 250, 0.45)');
+            line.setAttribute('stroke-width', '1');
+            line.setAttribute('stroke-dasharray', '2,2');
             svgOverlay.appendChild(line);
 
-            // Small dot on the edge anchor
+            // Small subtle dot on the edge anchor
             const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             circle.setAttribute('cx', `${anchorPos.x}`);
             circle.setAttribute('cy', `${anchorPos.y}`);
-            circle.setAttribute('r', '2.5');
-            circle.setAttribute('fill', isThisEdgeSelected ? '#f59e0b' : '#60a5fa');
+            circle.setAttribute('r', '2');
+            circle.setAttribute('fill', isThisEdgeSelected ? '#f59e0b' : 'rgba(96, 165, 250, 0.7)');
             svgOverlay.appendChild(circle);
           }
 

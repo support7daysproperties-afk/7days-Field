@@ -133,6 +133,7 @@ export function calcEdgeDistances(coords, isClosed = false) {
     const midLat = (from[1] + to[1]) / 2;
 
     edges.push({
+      id: `edge-${i}-${(i + 1) % count}`,
       index: i,
       fromIndex: i,
       toIndex: (i + 1) % count,

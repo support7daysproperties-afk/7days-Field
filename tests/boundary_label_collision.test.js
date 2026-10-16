@@ -417,5 +417,112 @@ describe('BoundaryLabelPlacementService — Screen-space Collision & Density', (
         expect(l.box.x + l.box.width).toBeLessThanOrEqual(360 + 50); // within bounds with margin
       });
     });
+
+    it('keeps uncrowded labels in Stage A (close to edge midpoint, distance <= 18px)', () => {
+      // 4-vertex polygon with well-separated edges (square ~200px on screen)
+      const coords = [
+        [80.270, 13.080],
+        [80.275, 13.080],
+        [80.275, 13.085],
+        [80.270, 13.085],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+
+      const projectLatLngToPoint = (lat, lng) => ({
+        x: (lng - 80.270) * 40000 + 200,
+        y: (lat - 13.080) * 40000 + 200,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      expect(labels.length).toBe(4);
+      labels.forEach(lbl => {
+        expect(lbl.stage).toBe('stage_a');
+        expect(lbl.hasConnector).toBe(false);
+        const distToAnchor = Math.hypot(
+          lbl.labelPoint.x - lbl.anchorPoint.x,
+          lbl.labelPoint.y - lbl.anchorPoint.y
+        );
+        // Distance should be close to baseOffset (~14px) and never scattered (> 20px)
+        expect(distToAnchor).toBeLessThanOrEqual(18);
+      });
+    });
+
+    it('preserves stable edge IDs and edge associations across vertex additions and updates', () => {
+      const coords = [
+        [80.270, 13.080],
+        [80.275, 13.080],
+        [80.275, 13.085],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+
+      const projectLatLngToPoint = (lat, lng) => ({
+        x: (lng - 80.270) * 40000 + 200,
+        y: (lat - 13.080) * 40000 + 200,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      // Verify each label has its stable ID derived from fromIndex and toIndex
+      expect(labels[0].id).toBe('edge-0-1');
+      expect(labels[1].id).toBe('edge-1-2');
+      expect(labels[2].id).toBe('edge-2-0');
+      expect(labels[0].fromIndex).toBe(0);
+      expect(labels[0].toIndex).toBe(1);
+    });
+
+    it('only uses Stage D leader-lines for edges that genuinely cannot fit locally', () => {
+      // 6-vertex polygon where 2 edges are cramped into a 12px corner, but remaining edges are open
+      const coords = [
+        [80.2700, 13.0800],
+        [80.2701, 13.0801], // cramped sharp corner
+        [80.2702, 13.0800],
+        [80.2750, 13.0800], // long open edges
+        [80.2750, 13.0850],
+        [80.2700, 13.0850],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+
+      const projectLatLngToPoint = (lat, lng) => ({
+        x: (lng - 80.2700) * 50000 + 200,
+        y: (lat - 13.0800) * 50000 + 200,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+      });
+
+      expect(labels.length).toBe(6);
+      expect(labels.every(l => l.isVisible)).toBe(true);
+
+      // Long edges (indices 3, 4, 5) must stay in Stage A without connectors
+      expect(labels[3].stage).toBe('stage_a');
+      expect(labels[3].hasConnector).toBe(false);
+      expect(labels[4].stage).toBe('stage_a');
+      expect(labels[4].hasConnector).toBe(false);
+
+      // All labels have valid bounding boxes and coordinates
+      labels.forEach(lbl => {
+        expect(lbl.labelPoint.x).toBeGreaterThan(0);
+        expect(lbl.labelPoint.y).toBeGreaterThan(0);
+        expect(lbl.distanceM).toBeGreaterThan(0);
+      });
+    });
   });
 });

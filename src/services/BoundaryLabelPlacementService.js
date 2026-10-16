@@ -1,29 +1,35 @@
 /**
  * BoundaryLabelPlacementService.js
  *
- * Screen-space collision detection and multi-lane label layout for property boundary measurement labels.
+ * Screen-space collision detection and hybrid edge-attached label layout
+ * for Google Maps property boundary measurement labels.
  *
- * GOAL: Every single edge of an N-sided boundary MUST have a visible measurement label.
- * No arbitrary caps. When edges or corners are cramped:
- * 1. Test multi-lane perpendicular offsets (lane 1 = 18px, lane 2 = 36px, lane 3 = 54px, lane 4 = 72px)
- * 2. Test longitudinal shifts along the edge (±20%, ±40%)
- * 3. Test outside-the-polygon outward lane expansion
- * 4. Connect displaced labels to their edge midpoint using a clean SVG connector line
- * 5. Guarantee that every edge receives an assigned readable label position
+ * PRIMARY ARCHITECTURAL PRINCIPLE:
+ * Measurement labels must stay attached to their respective boundary edges by default.
+ * Labels must NEVER be scattered freely across the property or placed on a generic grid.
+ *
+ * Progressive 4-stage placement:
+ *   Stage A — Preferred Position: Near edge midpoint with small perpendicular offset (~14px).
+ *   Stage B — Small Adjustments: Opposite side of edge, small longitudinal shifts (±15%, ±30%),
+ *             or slightly stepped perpendicular offset (22px).
+ *   Stage C — Local Staggering: Stagger into nearby local lanes (30px, 40px) in the same
+ *             boundary region.
+ *   Stage D — Leader-line Fallback: Only when stages A-C genuine collision cannot fit without
+ *             overlap, move into an outer lane with a subtle, non-intrusive leader line.
  */
 
 export const DEFAULT_LABEL_CONFIG = {
   // Estimated label box dimension for typical formatted distance strings (e.g. "45.2 m", "124 m")
-  estimatedWidth: 54,
-  estimatedHeight: 22,
-  padding: 3,               // Clearance around bounding boxes
-  vertexClearanceRadius: 12,// Clearance around vertex markers
-  edgeOffsetDistance: 16,   // Base normal distance off line segment
+  estimatedWidth: 50,
+  estimatedHeight: 20,
+  padding: 3,                // Clearance between label bounding boxes
+  vertexClearanceRadius: 10, // Clearance around vertex markers
+  edgeOffsetDistance: 14,    // Small perpendicular offset keeping label close to edge
   screenMargin: {
-    top: 90,
-    bottom: 120,
-    left: 8,
-    right: 48,
+    top: 60,
+    bottom: 80,
+    left: 10,
+    right: 40,
   },
 };
 
@@ -74,17 +80,22 @@ export function isBoxInsideViewport(box, viewportWidth, viewportHeight, margins)
 }
 
 /**
- * Generate comprehensive candidate positions across multiple offset lanes and longitudinal positions.
+ * Generate candidate positions strictly structured by progressive stages:
+ *
+ * Stage A: Immediate midpoint offset (Side A & Side B, outward preferred).
+ * Stage B: Small adjustments (longitudinal shifts ±15%, ±30% along edge, slight offset 22px).
+ * Stage C: Local staggering (perpendicular lanes 30px, 40px, keeping close to the edge).
+ * Stage D: Leader-line fallback (outer lanes 52px, 66px, with hasConnector = true).
  *
  * @param {object} p1 - Screen point { x, y } of edge start
  * @param {object} p2 - Screen point { x, y } of edge end
  * @param {object} [options]
- * @param {number} [options.baseOffset] - Base perpendicular offset (default 18px)
+ * @param {number} [options.baseOffset] - Base perpendicular offset (default 14px)
  * @param {object} [options.polygonCenter] - Optional screen centroid to prioritize outward positions
- * @returns {Array<{ x: number, y: number, side: string, lane: number, hasConnector: boolean, score: number }>}
+ * @returns {Array<{ x: number, y: number, side: string, stage: string, lane: number, hasConnector: boolean, score: number, distToMid: number }>}
  */
 export function generateCandidatePositions(p1, p2, options = {}) {
-  const baseOffset = typeof options === 'number' ? options : (options.baseOffset || 18);
+  const baseOffset = typeof options === 'number' ? options : (options.baseOffset || 14);
   const polygonCenter = (typeof options === 'object' && options !== null) ? options.polygonCenter : null;
 
   const dx = p2.x - p1.x;
@@ -95,7 +106,16 @@ export function generateCandidatePositions(p1, p2, options = {}) {
   const midY = (p1.y + p2.y) / 2;
 
   if (len < 1e-4) {
-    return [{ x: midX, y: midY, side: 'center', lane: 1, hasConnector: false, score: 0 }];
+    return [{
+      x: midX,
+      y: midY,
+      side: 'center',
+      stage: 'stage_a',
+      lane: 1,
+      hasConnector: false,
+      score: 0,
+      distToMid: 0,
+    }];
   }
 
   // Normalized direction vector along edge
@@ -113,69 +133,99 @@ export function generateCandidatePositions(p1, p2, options = {}) {
   if (polygonCenter) {
     const toCentroidX = polygonCenter.x - midX;
     const toCentroidY = polygonCenter.y - midY;
-    // Dot product with normal A
     const dotA = nxA * toCentroidX + nyA * toCentroidY;
     outwardSide = dotA < 0 ? 'side_a' : 'side_b';
   }
 
-  // 4 offset lanes: lane 1 (close ~18px), lane 2 (~36px), lane 3 (~54px), lane 4 (~72px)
-  const lanes = [1, 2, 3, 4];
-  // Longitudinal offsets: center (0), slight forward (+22%), slight backward (-22%), outer (+40%, -40%)
-  const longOffsets = [0, 0.22, -0.22, 0.40, -0.40];
+  const inwardSide = outwardSide === 'side_a' ? 'side_b' : 'side_a';
 
-  const candidates = [];
+  // Helper to build a candidate
+  const makeCand = (side, perpDist, longRatio, stage, lane, hasConnector, baseStageScore) => {
+    const nx = side === 'side_a' ? nxA : nxB;
+    const ny = side === 'side_a' ? nyA : nyB;
+    const x = midX + ux * (len * longRatio) + nx * perpDist;
+    const y = midY + uy * (len * longRatio) + ny * perpDist;
+    const distToMid = Math.hypot(x - midX, y - midY);
+    const sidePenalty = side === outwardSide ? 0 : 5;
+    const shiftPenalty = Math.abs(longRatio) * 10;
+    return {
+      x,
+      y,
+      side,
+      stage,
+      lane,
+      hasConnector,
+      score: baseStageScore + sidePenalty + shiftPenalty + distToMid * 0.1,
+      distToMid,
+    };
+  };
 
-  for (const lane of lanes) {
-    const laneDist = baseOffset * lane;
-    const hasConnector = lane > 1;
+  const stageA = [];
+  const stageB = [];
+  const stageC = [];
+  const stageD = [];
 
-    for (const lo of longOffsets) {
-      const baseX = midX + ux * (len * lo);
-      const baseY = midY + uy * (len * lo);
+  // ── Stage A: Preferred close-to-edge midpoint (outward then inward) ───────────
+  // Distance: ~14px. No longitudinal shift.
+  stageA.push(makeCand(outwardSide, baseOffset, 0, 'stage_a', 1, false, 0));
+  stageA.push(makeCand(inwardSide, baseOffset, 0, 'stage_a', 1, false, 2));
 
-      // Candidate on Side A
-      const candA = {
-        x: baseX + nxA * laneDist,
-        y: baseY + nyA * laneDist,
-        side: 'side_a',
-        lane,
-        hasConnector: hasConnector || Math.abs(lo) > 0.25,
-        score: (outwardSide === 'side_a' ? 0 : 2) + (lane - 1) * 3 + Math.abs(lo) * 2,
-      };
+  // ── Stage B: Small adjustments along and slightly off edge ─────────────────────
+  // Small longitudinal shifts (±15%, ±30%) and slightly larger offset (1.5x ~21px)
+  for (const shift of [0.15, -0.15, 0.30, -0.30]) {
+    stageB.push(makeCand(outwardSide, baseOffset, shift, 'stage_b', 1, false, 10));
+    stageB.push(makeCand(inwardSide, baseOffset, shift, 'stage_b', 1, false, 12));
+  }
+  const offsetB = baseOffset * 1.5;
+  stageB.push(makeCand(outwardSide, offsetB, 0, 'stage_b', 2, false, 15));
+  stageB.push(makeCand(inwardSide, offsetB, 0, 'stage_b', 2, false, 17));
+  for (const shift of [0.15, -0.15]) {
+    stageB.push(makeCand(outwardSide, offsetB, shift, 'stage_b', 2, false, 20));
+    stageB.push(makeCand(inwardSide, offsetB, shift, 'stage_b', 2, false, 22));
+  }
 
-      // Candidate on Side B
-      const candB = {
-        x: baseX + nxB * laneDist,
-        y: baseY + nyB * laneDist,
-        side: 'side_b',
-        lane,
-        hasConnector: hasConnector || Math.abs(lo) > 0.25,
-        score: (outwardSide === 'side_b' ? 0 : 2) + (lane - 1) * 3 + Math.abs(lo) * 2,
-      };
-
-      candidates.push(candA, candB);
+  // ── Stage C: Local staggering in nearby lanes ──────────────────────────────────
+  // Perpendicular lanes: 2.2x (~31px) and 3.0x (~42px) with small shifts
+  for (const laneMult of [2.2, 3.0]) {
+    const perp = baseOffset * laneMult;
+    stageC.push(makeCand(outwardSide, perp, 0, 'stage_c', 3, false, 40));
+    stageC.push(makeCand(inwardSide, perp, 0, 'stage_c', 3, false, 43));
+    for (const shift of [0.18, -0.18]) {
+      stageC.push(makeCand(outwardSide, perp, shift, 'stage_c', 3, false, 46));
+      stageC.push(makeCand(inwardSide, perp, shift, 'stage_c', 3, false, 49));
     }
   }
 
-  // Fallback candidate at exact midpoint
-  candidates.push({
-    x: midX,
-    y: midY,
-    side: 'on_edge',
-    lane: 0,
-    hasConnector: false,
-    score: 20,
-  });
+  // ── Stage D: Leader-line fallback (displaced outward into outer clear lane) ────
+  // Only reached when tight corners/dense vertices prevent local placement.
+  for (const laneMult of [3.8, 4.8]) {
+    const perp = baseOffset * laneMult;
+    stageD.push(makeCand(outwardSide, perp, 0, 'stage_d', 4, true, 80));
+    for (const shift of [0.15, -0.15, 0.30, -0.30]) {
+      stageD.push(makeCand(outwardSide, perp, shift, 'stage_d', 4, true, 85));
+    }
+  }
 
-  // Sort by score ascending (lowest score = highest preference)
-  candidates.sort((a, b) => a.score - b.score);
-  return candidates;
+  // Sort each stage internally by score
+  stageA.sort((a, b) => a.score - b.score);
+  stageB.sort((a, b) => a.score - b.score);
+  stageC.sort((a, b) => a.score - b.score);
+  stageD.sort((a, b) => a.score - b.score);
+
+  // Return strictly ordered: all Stage A, then Stage B, then Stage C, then Stage D
+  return [...stageA, ...stageB, ...stageC, ...stageD];
 }
 
 /**
  * Calculate collision-free label placements for ALL boundary edges.
  *
- * Guarantees every edge receives a visible measurement label.
+ * PROGRESSIVE STAGE GUARANTEE:
+ * 1. Edges are placed in natural boundary order so each edge gets first access
+ *    to its own immediate edge-attached midpoint (Stage A).
+ * 2. If a collision occurs, Stage B (small shifts) is attempted.
+ * 3. Then Stage C (local staggering in same region) is attempted.
+ * 4. Only if genuine dense clustering occurs is Stage D (leader-line) used.
+ * 5. Every edge retains a stable ID and its exact geographic measurement.
  *
  * @param {object} params
  * @param {Array}  params.edges - Edge objects from BoundaryService.calcEdgeDistances
@@ -196,6 +246,8 @@ export function computeCollisionFreeLabels({
   verticesLatLng = [],
   customConfig = {},
 }) {
+  if (!edges || edges.length === 0) return [];
+
   const config = { ...DEFAULT_LABEL_CONFIG, ...customConfig };
   const margins = config.screenMargin;
 
@@ -215,32 +267,19 @@ export function computeCollisionFreeLabels({
     };
   }
 
-  // 1. Project all vertex obstacle circles
-  const vertexObstacles = (verticesLatLng || []).map((coord) => {
+  // Project all vertex obstacle circles
+  const vertexObstacles = (verticesLatLng || []).map((coord, idx) => {
     const pt = projectLatLngToPoint(coord[1], coord[0]);
     return {
+      index: idx,
       x: pt.x,
       y: pt.y,
       radius: config.vertexClearanceRadius,
     };
   });
 
-  // Sort edges by distance descending: place long edges first, then fit shorter edges around them
-  const edgePriorities = edges.map((edge, idx) => ({
-    edge,
-    originalIndex: idx,
-    length: edge.distanceM || 0,
-  }));
-  edgePriorities.sort((a, b) => b.length - a.length);
-
-  const placedBoxes = [];
-  const results = new Array(edges.length);
-
-  for (const item of edgePriorities) {
-    const edge = item.edge;
-    const origIdx = item.originalIndex;
-
-    // Project edge endpoints & midpoint to screen
+  // Prepare edge metadata and candidate sets in natural boundary sequence
+  const edgeMeta = edges.map((edge, idx) => {
     const p1 = projectLatLngToPoint(edge.from[1], edge.from[0]);
     const p2 = projectLatLngToPoint(edge.to[1], edge.to[0]);
     const edgeMidScreen = {
@@ -249,7 +288,7 @@ export function computeCollisionFreeLabels({
     };
 
     const textLen = (edge.formattedDistance || '').length;
-    const estimatedWidth = Math.max(config.estimatedWidth, textLen * 7.0 + 14);
+    const estimatedWidth = Math.max(config.estimatedWidth, textLen * 7.0 + 12);
     const estimatedHeight = config.estimatedHeight;
 
     const candidates = generateCandidatePositions(p1, p2, {
@@ -257,11 +296,46 @@ export function computeCollisionFreeLabels({
       polygonCenter: polygonScreenCenter,
     });
 
+    // Vertex obstacles to avoid: other vertices are obstacles; own endpoints are acceptable if not fully overlapping
+    const otherVertexObstacles = vertexObstacles.filter(
+      v => v.index !== edge.fromIndex && v.index !== edge.toIndex
+    );
+
+    return {
+      edge,
+      originalIndex: idx,
+      stableId: edge.id || `edge-${edge.fromIndex}-${edge.toIndex}`,
+      p1,
+      p2,
+      edgeMidScreen,
+      estimatedWidth,
+      estimatedHeight,
+      candidates,
+      otherVertexObstacles,
+    };
+  });
+
+  const placedBoxes = [];
+  const results = new Array(edges.length);
+
+  // Progressive placement: Process edges sequentially to maximize clean, edge-attached alignment
+  for (const item of edgeMeta) {
+    const {
+      edge,
+      originalIndex,
+      stableId,
+      edgeMidScreen,
+      estimatedWidth,
+      estimatedHeight,
+      candidates,
+      otherVertexObstacles,
+    } = item;
+
     let chosenCandidate = null;
     let chosenBox = null;
 
-    // First pass: Find non-colliding candidate that respects viewport margins
-    for (const cand of candidates) {
+    // Helper: Test if candidate box fits with given clearance and margin restrictions
+    const testCandidate = (cand, padding, useStrictMargins) => {
       const box = {
         x: cand.x - estimatedWidth / 2,
         y: cand.y - estimatedHeight / 2,
@@ -269,57 +343,49 @@ export function computeCollisionFreeLabels({
         height: estimatedHeight,
       };
 
-      if (!isBoxInsideViewport(box, viewportWidth, viewportHeight, margins)) {
-        continue;
+      if (useStrictMargins) {
+        if (!isBoxInsideViewport(box, viewportWidth, viewportHeight, margins)) {
+          return null;
+        }
+      } else {
+        // Relaxed margin: keep inside screen canvas
+        if (box.x < 2 || box.y < 2 || box.x + box.width > viewportWidth - 2 || box.y + box.height > viewportHeight - 2) {
+          return null;
+        }
       }
 
-      let collidesWithPlaced = false;
+      // Check collision with already placed labels
       for (const placed of placedBoxes) {
-        if (doBoxesIntersect(box, placed, config.padding)) {
-          collidesWithPlaced = true;
-          break;
+        if (doBoxesIntersect(box, placed, padding)) {
+          return null;
         }
       }
-      if (collidesWithPlaced) continue;
 
-      let collidesWithVertex = false;
-      for (const vObs of vertexObstacles) {
+      // Check collision with other vertices
+      for (const vObs of otherVertexObstacles) {
         if (doesBoxIntersectCircle(box, vObs)) {
-          collidesWithVertex = true;
-          break;
+          return null;
         }
       }
-      if (collidesWithVertex) continue;
 
-      chosenCandidate = cand;
-      chosenBox = box;
-      break;
+      return box;
+    };
+
+    // Pass 1: Strict viewport margins and full padding clearance
+    for (const cand of candidates) {
+      const box = testCandidate(cand, config.padding, true);
+      if (box) {
+        chosenCandidate = cand;
+        chosenBox = box;
+        break;
+      }
     }
 
-    // Second pass: If strict padding/margins were too tight on a dense polygon,
-    // relax padding and screen margins so the measurement is STILL VISIBLE (never hidden!)
+    // Pass 2: If no strict candidate fit (e.g. narrow mobile screen), relax margins and minimal padding (1px)
     if (!chosenCandidate) {
       for (const cand of candidates) {
-        const box = {
-          x: cand.x - estimatedWidth / 2,
-          y: cand.y - estimatedHeight / 2,
-          width: estimatedWidth,
-          height: estimatedHeight,
-        };
-
-        // Allow candidate if it's anywhere within the actual screen canvas
-        if (box.x < 2 || box.y < 2 || box.x + box.width > viewportWidth - 2 || box.y + box.height > viewportHeight - 2) {
-          continue;
-        }
-
-        let collides = false;
-        for (const placed of placedBoxes) {
-          if (doBoxesIntersect(box, placed, 1)) {
-            collides = true;
-            break;
-          }
-        }
-        if (!collides) {
+        const box = testCandidate(cand, 1, false);
+        if (box) {
           chosenCandidate = cand;
           chosenBox = box;
           break;
@@ -327,15 +393,16 @@ export function computeCollisionFreeLabels({
       }
     }
 
-    // Guaranteed fallback: If absolutely every candidate was touched, take the best candidate
-    // with outward displacement so no measurement is ever dropped!
+    // Pass 3 (Guaranteed Fallback): Absolutely preserve measurement visibility
     if (!chosenCandidate) {
+      // Pick best Stage A/B candidate or first candidate
       chosenCandidate = candidates[0] || {
-        x: edgeMidScreen.x + 24,
-        y: edgeMidScreen.y - 24,
+        x: edgeMidScreen.x + 14,
+        y: edgeMidScreen.y - 14,
         side: 'fallback',
-        lane: 2,
-        hasConnector: true,
+        stage: 'stage_b',
+        lane: 1,
+        hasConnector: false,
       };
       chosenBox = {
         x: chosenCandidate.x - estimatedWidth / 2,
@@ -347,6 +414,7 @@ export function computeCollisionFreeLabels({
 
     placedBoxes.push(chosenBox);
 
+    // Compute geographic coordinate of label center
     let labelLatLng = null;
     if (typeof projectPointToLatLng === 'function') {
       const ll = projectPointToLatLng(chosenCandidate.x, chosenCandidate.y);
@@ -355,15 +423,17 @@ export function computeCollisionFreeLabels({
       labelLatLng = [edge.midpoint[1], edge.midpoint[0]];
     }
 
-    results[origIdx] = {
+    results[originalIndex] = {
       ...edge,
-      isVisible: true, // Always true! All measurements must show
+      id: stableId,
+      isVisible: true, // Always true: all edge measurements remain visible
       labelPoint: { x: chosenCandidate.x, y: chosenCandidate.y },
       anchorPoint: edgeMidScreen,
       labelLatLng,
       box: chosenBox,
       lane: chosenCandidate.lane,
-      hasConnector: chosenCandidate.hasConnector,
+      stage: chosenCandidate.stage,
+      hasConnector: Boolean(chosenCandidate.hasConnector),
       side: chosenCandidate.side,
     };
   }
