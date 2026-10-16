@@ -28,7 +28,7 @@ import { toPng } from 'html-to-image';
 import {
   ArrowLeft, Plus, Minus, Navigation2, Layers,
   Undo2, Trash2, Save, CheckCircle2, Check,
-  MapPin, Edit3, X, Ruler, AlertTriangle, RefreshCw
+  MapPin, Edit3, X, Ruler, AlertTriangle, RefreshCw, Focus
 } from 'lucide-react';
 import BoundaryRepository from '../services/offline/BoundaryRepository';
 import {
@@ -229,6 +229,7 @@ export default function PropertyBoundary({
           return { lat: latLng.lat(), lng: latLng.lng() };
         };
 
+        const currentZoom = map.getZoom ? map.getZoom() : null;
         const placedLabels = computeCollisionFreeLabels({
           edges,
           projectLatLngToPoint,
@@ -236,6 +237,7 @@ export default function PropertyBoundary({
           viewportWidth,
           viewportHeight,
           verticesLatLng: pts,
+          zoom: currentZoom,
         });
 
         const overlayPanes = overlay.getPanes();
@@ -608,6 +610,7 @@ export default function PropertyBoundary({
 
         map.addListener('idle', handleMapMovement);
         map.addListener('zoom_changed', handleMapMovement);
+        map.addListener('bounds_changed', handleMapMovement);
 
         // Dismiss selected edge popup when user taps anywhere on map background
         map.addListener('click', () => {
@@ -671,8 +674,12 @@ export default function PropertyBoundary({
 
             const bounds = new gmaps.LatLngBounds();
             existing.coordinates.forEach(p => bounds.extend(toLatLng(p)));
-            map.fitBounds(bounds, 80);
+            map.fitBounds(bounds, 70);
 
+            // Re-render once bounds have settled to ensure overlay projection is ready
+            gmaps.event.addListenerOnce(map, 'idle', () => {
+              renderLayers(existing.coordinates, 'completed');
+            });
             renderLayers(existing.coordinates, 'completed');
           }
         });
@@ -714,8 +721,26 @@ export default function PropertyBoundary({
     if (gpsMarkerRef.current && mapRef.current) {
       mapRef.current.setCenter(gpsMarkerRef.current.getPosition());
       mapRef.current.setZoom(19);
+      showToast('Centered on device GPS');
+    } else {
+      showToast('GPS position unavailable');
     }
   };
+
+  const locateBoundary = useCallback(() => {
+    const pts = drawCoordsRef.current;
+    if (!pts || pts.length < 2) {
+      showToast('No boundary points to locate');
+      return;
+    }
+    if (mapRef.current && googleMapsRef.current) {
+      const bounds = new googleMapsRef.current.LatLngBounds();
+      pts.forEach(p => bounds.extend(toLatLng(p)));
+      // fitBounds with 70px padding so vertices and edge measurement badges are fully visible without clipping
+      mapRef.current.fitBounds(bounds, 70);
+      showToast('Centered on property boundary');
+    }
+  }, [showToast]);
 
   const toggleSatelliteHybrid = () => {
     if (!mapRef.current || !googleMapsRef.current) return;
@@ -889,6 +914,7 @@ export default function PropertyBoundary({
         >
           <Layers size={16}/>
         </MapBtn>
+        <MapBtn title="Locate Boundary" onClick={locateBoundary}><Focus size={16}/></MapBtn>
         <MapBtn title="My location" onClick={goToGPS}><Navigation2 size={16}/></MapBtn>
         <MapBtn title="Zoom in"  onClick={zoomIn}><Plus size={16}/></MapBtn>
         <MapBtn title="Zoom out" onClick={zoomOut}><Minus size={16}/></MapBtn>
@@ -1023,7 +1049,8 @@ export default function PropertyBoundary({
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 12, marginTop: 'auto' }}>
+            <div style={{ display: 'flex', gap: 12, marginTop: 'auto', flexWrap: 'wrap' }}>
+              <Btn onClick={() => setMode('completed')}><Focus size={16}/> Interactive Map</Btn>
               <Btn onClick={enterEditMode}><Edit3 size={16}/> Edit Boundary</Btn>
               <Btn primary onClick={onCancel}>Done</Btn>
             </div>

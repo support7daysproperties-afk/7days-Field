@@ -524,5 +524,44 @@ describe('BoundaryLabelPlacementService — Screen-space Collision & Density', (
         expect(lbl.distanceM).toBeGreaterThan(0);
       });
     });
+
+    it('at close zoom (zoom >= 18), all labels stay in Stage A tight edge midpoints', () => {
+      // 4-vertex boundary with well-spaced edges on close zoom
+      const coords = [
+        [80.2700, 13.0800],
+        [80.2720, 13.0800],
+        [80.2720, 13.0820],
+        [80.2700, 13.0820],
+      ];
+      const edges = calcEdgeDistances(coords, true);
+
+      // Scale points representing close zoom (pixel distance > 150px per edge)
+      const projectLatLngToPoint = (lat, lng) => ({
+        x: (lng - 80.2700) * 100000 + 200,
+        y: (lat - 13.0800) * 100000 + 200,
+      });
+
+      const labels = computeCollisionFreeLabels({
+        edges,
+        projectLatLngToPoint,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        verticesLatLng: coords,
+        zoom: 19,
+      });
+
+      expect(labels.length).toBe(4);
+      // Every edge label must be in Stage A and have no connector lines
+      labels.forEach(lbl => {
+        expect(lbl.stage).toBe('stage_a');
+        expect(lbl.hasConnector).toBe(false);
+        // Distance to anchor midpoint must be close (~12-14px)
+        const distToAnchor = Math.hypot(
+          lbl.labelPoint.x - lbl.anchorPoint.x,
+          lbl.labelPoint.y - lbl.anchorPoint.y
+        );
+        expect(distToAnchor).toBeLessThanOrEqual(16);
+      });
+    });
   });
 });

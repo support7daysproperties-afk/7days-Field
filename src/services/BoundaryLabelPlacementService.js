@@ -89,14 +89,16 @@ export function isBoxInsideViewport(box, viewportWidth, viewportHeight, margins)
  *
  * @param {object} p1 - Screen point { x, y } of edge start
  * @param {object} p2 - Screen point { x, y } of edge end
- * @param {object} [options]
+ * @param {object|number} [options]
  * @param {number} [options.baseOffset] - Base perpendicular offset (default 14px)
  * @param {object} [options.polygonCenter] - Optional screen centroid to prioritize outward positions
+ * @param {number} [options.zoom] - Map zoom level (e.g. 18, 19 for close zoom)
  * @returns {Array<{ x: number, y: number, side: string, stage: string, lane: number, hasConnector: boolean, score: number, distToMid: number }>}
  */
 export function generateCandidatePositions(p1, p2, options = {}) {
   const baseOffset = typeof options === 'number' ? options : (options.baseOffset || 14);
   const polygonCenter = (typeof options === 'object' && options !== null) ? options.polygonCenter : null;
+  const zoom = (typeof options === 'object' && options !== null && typeof options.zoom === 'number') ? options.zoom : null;
 
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
@@ -165,18 +167,24 @@ export function generateCandidatePositions(p1, p2, options = {}) {
   const stageC = [];
   const stageD = [];
 
+  // Zoom-adaptive behavior:
+  // Close zoom (zoom >= 18): edges have ample screen pixel length (> 60px).
+  // Keep labels tightly anchored to midpoint (Stage A) with small base offset (~12-14px).
+  const isCloseZoom = zoom !== null && zoom >= 18;
+  const effectiveBaseOffset = isCloseZoom ? Math.min(baseOffset, 13) : baseOffset;
+
   // ── Stage A: Preferred close-to-edge midpoint (outward then inward) ───────────
-  // Distance: ~14px. No longitudinal shift.
-  stageA.push(makeCand(outwardSide, baseOffset, 0, 'stage_a', 1, false, 0));
-  stageA.push(makeCand(inwardSide, baseOffset, 0, 'stage_a', 1, false, 2));
+  // Distance: ~12-14px. No longitudinal shift.
+  stageA.push(makeCand(outwardSide, effectiveBaseOffset, 0, 'stage_a', 1, false, 0));
+  stageA.push(makeCand(inwardSide, effectiveBaseOffset, 0, 'stage_a', 1, false, 2));
 
   // ── Stage B: Small adjustments along and slightly off edge ─────────────────────
-  // Small longitudinal shifts (±15%, ±30%) and slightly larger offset (1.5x ~21px)
+  // Small longitudinal shifts (±15%, ±30%) and slightly larger offset (1.4x ~18-20px)
   for (const shift of [0.15, -0.15, 0.30, -0.30]) {
-    stageB.push(makeCand(outwardSide, baseOffset, shift, 'stage_b', 1, false, 10));
-    stageB.push(makeCand(inwardSide, baseOffset, shift, 'stage_b', 1, false, 12));
+    stageB.push(makeCand(outwardSide, effectiveBaseOffset, shift, 'stage_b', 1, false, 10));
+    stageB.push(makeCand(inwardSide, effectiveBaseOffset, shift, 'stage_b', 1, false, 12));
   }
-  const offsetB = baseOffset * 1.5;
+  const offsetB = effectiveBaseOffset * 1.45;
   stageB.push(makeCand(outwardSide, offsetB, 0, 'stage_b', 2, false, 15));
   stageB.push(makeCand(inwardSide, offsetB, 0, 'stage_b', 2, false, 17));
   for (const shift of [0.15, -0.15]) {
@@ -185,9 +193,9 @@ export function generateCandidatePositions(p1, p2, options = {}) {
   }
 
   // ── Stage C: Local staggering in nearby lanes ──────────────────────────────────
-  // Perpendicular lanes: 2.2x (~31px) and 3.0x (~42px) with small shifts
-  for (const laneMult of [2.2, 3.0]) {
-    const perp = baseOffset * laneMult;
+  // Perpendicular lanes: 2.0x and 2.8x with small shifts
+  for (const laneMult of [2.0, 2.8]) {
+    const perp = effectiveBaseOffset * laneMult;
     stageC.push(makeCand(outwardSide, perp, 0, 'stage_c', 3, false, 40));
     stageC.push(makeCand(inwardSide, perp, 0, 'stage_c', 3, false, 43));
     for (const shift of [0.18, -0.18]) {
@@ -197,9 +205,10 @@ export function generateCandidatePositions(p1, p2, options = {}) {
   }
 
   // ── Stage D: Leader-line fallback (displaced outward into outer clear lane) ────
-  // Only reached when tight corners/dense vertices prevent local placement.
-  for (const laneMult of [3.8, 4.8]) {
-    const perp = baseOffset * laneMult;
+  // If close zoom, suppress outer leader lines unless absolutely necessary, or use minimal offset
+  const laneMultipliersD = isCloseZoom ? [3.2] : [3.6, 4.6];
+  for (const laneMult of laneMultipliersD) {
+    const perp = effectiveBaseOffset * laneMult;
     stageD.push(makeCand(outwardSide, perp, 0, 'stage_d', 4, true, 80));
     for (const shift of [0.15, -0.15, 0.30, -0.30]) {
       stageD.push(makeCand(outwardSide, perp, shift, 'stage_d', 4, true, 85));
@@ -245,6 +254,7 @@ export function computeCollisionFreeLabels({
   viewportHeight = 600,
   verticesLatLng = [],
   customConfig = {},
+  zoom = null,
 }) {
   if (!edges || edges.length === 0) return [];
 
@@ -294,6 +304,7 @@ export function computeCollisionFreeLabels({
     const candidates = generateCandidatePositions(p1, p2, {
       baseOffset: config.edgeOffsetDistance,
       polygonCenter: polygonScreenCenter,
+      zoom,
     });
 
     // Vertex obstacles to avoid: other vertices are obstacles; own endpoints are acceptable if not fully overlapping

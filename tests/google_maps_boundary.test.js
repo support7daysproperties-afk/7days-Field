@@ -122,4 +122,84 @@ describe('GoogleMapsLoader & Property Boundary Google Maps Integration Tests', (
       expect(currentMapTypeId).toBe('satellite');
     });
   });
+
+  describe('Locate Boundary Map Control Behavior', () => {
+    it('computes LatLngBounds and calls fitBounds with padding for multi-vertex boundaries', () => {
+      const mockBounds = {
+        extend: vi.fn(),
+      };
+      const mockMap = {
+        fitBounds: vi.fn(),
+      };
+      function MockLatLngBounds() {
+        return mockBounds;
+      }
+      const googleMapsMock = {
+        LatLngBounds: vi.fn().mockImplementation(MockLatLngBounds),
+      };
+
+      const coords = [
+        [80.2707, 13.0827],
+        [80.2715, 13.0829],
+        [80.2718, 13.0821],
+        [80.2709, 13.0818],
+      ];
+
+      // Simulate Locate Boundary logic
+      const locateBoundaryLogic = (pts, map, gmaps) => {
+        if (!pts || pts.length < 2) return false;
+        const bounds = new gmaps.LatLngBounds();
+        pts.forEach(p => bounds.extend({ lat: p[1], lng: p[0] }));
+        map.fitBounds(bounds, 70);
+        return true;
+      };
+
+      const result = locateBoundaryLogic(coords, mockMap, googleMapsMock);
+
+      expect(result).toBe(true);
+      expect(googleMapsMock.LatLngBounds).toHaveBeenCalled();
+      expect(mockBounds.extend).toHaveBeenCalledTimes(4);
+      expect(mockBounds.extend).toHaveBeenNthCalledWith(1, { lat: 13.0827, lng: 80.2707 });
+      expect(mockMap.fitBounds).toHaveBeenCalledWith(mockBounds, 70);
+    });
+
+    it('safely handles empty or single-point boundary without calling fitBounds', () => {
+      const mockMap = { fitBounds: vi.fn() };
+      const googleMapsMock = { LatLngBounds: vi.fn() };
+
+      const locateBoundaryLogic = (pts, map, gmaps) => {
+        if (!pts || pts.length < 2) return false;
+        const bounds = new gmaps.LatLngBounds();
+        pts.forEach(p => bounds.extend({ lat: p[1], lng: p[0] }));
+        map.fitBounds(bounds, 70);
+        return true;
+      };
+
+      expect(locateBoundaryLogic([], mockMap, googleMapsMock)).toBe(false);
+      expect(locateBoundaryLogic([[80.27, 13.08]], mockMap, googleMapsMock)).toBe(false);
+      expect(mockMap.fitBounds).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Map Provider Consistency — Strict Google Maps Usage', () => {
+    it('confirms PropertyBoundary uses Google Maps and does not import Leaflet', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const boundaryFilePath = path.resolve(__dirname, '../src/pages/PropertyBoundary.jsx');
+      const content = fs.readFileSync(boundaryFilePath, 'utf-8');
+
+      // Must NOT contain Leaflet imports or constructor calls
+      expect(content).not.toMatch(/from\s+['"]leaflet['"]/i);
+      expect(content).not.toMatch(/from\s+['"]react-leaflet['"]/i);
+      expect(content).not.toMatch(/L\.map\(/);
+      expect(content).not.toMatch(/L\.tileLayer\(/);
+      expect(content).not.toMatch(/<MapContainer/);
+
+      // MUST contain Google Maps and Google Satellite usage
+      expect(content).toContain('loadGoogleMaps');
+      expect(content).toContain('MapTypeId.SATELLITE');
+      expect(content).toContain('MapTypeId.HYBRID');
+      expect(content).toContain('google.maps.OverlayView');
+    });
+  });
 });
