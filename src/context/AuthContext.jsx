@@ -58,6 +58,24 @@ export function AuthProvider({ children }) {
       }
 
       if (!data) {
+        // Check if we have previously verified this supervisor profile locally
+        const cachedProfileStr = localStorage.getItem(`supervisor_profile_${sessionUser.id}`);
+        if (cachedProfileStr) {
+          try {
+            const cachedProfile = JSON.parse(cachedProfileStr);
+            setAuthError('');
+            const fullUser = { ...sessionUser, supervisorProfile: cachedProfile };
+            currentUserRef.current = fullUser;
+            setUser(fullUser);
+            setAuthenticated(true);
+            await restoreDriveConnection(fullUser, providerToken);
+            setLoading(false);
+            return;
+          } catch (e) {
+            console.warn('Failed to parse cached profile:', e);
+          }
+        }
+
         // Not registered as a field supervisor
         await supabase.auth.signOut();
         setAuthError('Access not authorized. This Google account is not registered as a 7Days Field Supervisor. Please contact the administrator.');
@@ -70,6 +88,13 @@ export function AuthProvider({ children }) {
 
       // Authorized supervisor
       setAuthError('');
+      // Cache profile locally for instant offline launches
+      try {
+        localStorage.setItem(`supervisor_profile_${sessionUser.id}`, JSON.stringify(data));
+      } catch (e) {
+        console.warn('Could not cache supervisor profile:', e);
+      }
+
       const fullUser = { ...sessionUser, supervisorProfile: data };
       currentUserRef.current = fullUser;
       setUser(fullUser);
@@ -78,11 +103,32 @@ export function AuthProvider({ children }) {
       // Restore supervisor-scoped Drive authorization
       await restoreDriveConnection(fullUser, providerToken);
     } catch (err) {
-      setAuthError('Error verifying your supervisor access. Please try again.');
-      await supabase.auth.signOut();
-      currentUserRef.current = null;
-      setUser(null);
-      setAuthenticated(false);
+      // Check if we have cached profile for offline/network error scenarios
+      const cachedProfileStr = localStorage.getItem(`supervisor_profile_${sessionUser.id}`);
+      if (cachedProfileStr && (!navigator.onLine || err?.message?.includes('fetch') || err?.message?.includes('network'))) {
+        try {
+          const cachedProfile = JSON.parse(cachedProfileStr);
+          setAuthError('');
+          const fullUser = { ...sessionUser, supervisorProfile: cachedProfile };
+          currentUserRef.current = fullUser;
+          setUser(fullUser);
+          setAuthenticated(true);
+          await restoreDriveConnection(fullUser, providerToken);
+          setLoading(false);
+          return;
+        } catch (e) {
+          console.warn('Failed to parse cached profile:', e);
+        }
+      }
+
+      setAuthError('Error verifying your supervisor access. Please check your network and try again.');
+      // Do not signOut if network error so offline PWA continues to work
+      if (navigator.onLine && !err?.message?.includes('fetch')) {
+        await supabase.auth.signOut();
+        currentUserRef.current = null;
+        setUser(null);
+        setAuthenticated(false);
+      }
     }
     
     setLoading(false);
@@ -262,6 +308,9 @@ export function AuthProvider({ children }) {
   const signOut = async () => {
     localStorage.removeItem('pending_drive_onboarding');
     localStorage.removeItem('drive_onboarding_done');
+    if (currentUserRef.current?.id) {
+      localStorage.removeItem(`supervisor_profile_${currentUserRef.current.id}`);
+    }
     GoogleDriveService.setTokenData({ accessToken: null });
     currentUserRef.current = null;
     setUser(null);

@@ -47,7 +47,7 @@ export default function Login() {
           scopes: 'https://www.googleapis.com/auth/drive.file',
           queryParams: {
             access_type: 'offline',
-            prompt: 'consent',
+            prompt: 'select_account consent',
           }
         }
       });
