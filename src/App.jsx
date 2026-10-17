@@ -58,6 +58,9 @@ function App() {
             <Route path="/google-drive-access" element={<GoogleDriveAccess />} />
             <Route path="/inspection/:id/*" element={<InspectionSession />} />
           </Route>
+          
+          {/* Catch-all fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
     </Router>
