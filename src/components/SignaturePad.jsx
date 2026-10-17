@@ -7,57 +7,55 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasSignature, setHasSignature] = useState(!!initialSignature);
   const [isFullScreen, setIsFullScreen] = useState(false);
-  const savedDataUrlRef = useRef(null);
+  const savedDataUrlRef = useRef(initialSignature);
+  const lastPointRef = useRef(null);
 
-  // Initialize canvas
+  // Initialize canvas with proper scale and ink style
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
     const resizeCanvas = () => {
-      // Save existing image data before resize if there's a signature
       const ctx = canvas.getContext('2d');
       if (hasSignature && canvas.width > 0 && canvas.height > 0) {
         try {
-          savedDataUrlRef.current = canvas.toDataURL();
+          savedDataUrlRef.current = canvas.toDataURL('image/png');
         } catch (e) {
-          console.error("Could not save image data during resize", e);
+          console.error('Could not save image data during resize', e);
         }
       }
 
       const rect = container.getBoundingClientRect();
       const ratio = Math.max(window.devicePixelRatio || 1, 1);
-      
-      // Set actual internal dimensions based on container layout size and DPR
+
       canvas.width = rect.width * ratio;
       canvas.height = rect.height * ratio;
-      
-      ctx.strokeStyle = '#ffffff'; // White ink for dark theme
-      ctx.lineWidth = 3 * ratio; // Scale stroke width by DPR
+
+      // Dark professional ink for maximum clarity and visibility
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 3.5 * ratio;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
       if (savedDataUrlRef.current) {
         const img = new Image();
         img.onload = () => {
-          ctx.drawImage(img, 0, 0);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         };
         img.src = savedDataUrlRef.current;
       }
     };
 
-    // Use ResizeObserver for robust layout changes
     const resizeObserver = new ResizeObserver(() => {
       resizeCanvas();
     });
     resizeObserver.observe(container);
-    
-    // Prevent scrolling while touching the canvas
+
     const preventScroll = (e) => e.preventDefault();
     canvas.addEventListener('touchstart', preventScroll, { passive: false });
     canvas.addEventListener('touchmove', preventScroll, { passive: false });
-    
+
     return () => {
       resizeObserver.disconnect();
       canvas.removeEventListener('touchstart', preventScroll);
@@ -70,11 +68,10 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
     const rect = canvas.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    
-    // Calculate scale factors in case CSS dimensions differ from internal dimensions
+
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    
+
     return {
       x: (clientX - rect.left) * scaleX,
       y: (clientY - rect.top) * scaleY
@@ -85,9 +82,10 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     const { x, y } = getCoordinates(e);
-    
+
     ctx.beginPath();
     ctx.moveTo(x, y);
+    lastPointRef.current = { x, y };
     setIsDrawing(true);
     setHasSignature(true);
   };
@@ -97,9 +95,19 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     const { x, y } = getCoordinates(e);
-    
-    ctx.lineTo(x, y);
-    ctx.stroke();
+
+    if (lastPointRef.current) {
+      // Smooth midpoint curve for authentic, natural handwriting
+      const midX = (lastPointRef.current.x + x) / 2;
+      const midY = (lastPointRef.current.y + y) / 2;
+      ctx.quadraticCurveTo(lastPointRef.current.x, lastPointRef.current.y, midX, midY);
+      ctx.stroke();
+      lastPointRef.current = { x, y };
+    } else {
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      lastPointRef.current = { x, y };
+    }
   };
 
   const stopDrawing = () => {
@@ -108,6 +116,7 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
       const ctx = canvas.getContext('2d');
       ctx.closePath();
       setIsDrawing(false);
+      lastPointRef.current = null;
     }
   };
 
@@ -118,6 +127,7 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
     savedDataUrlRef.current = null;
+    lastPointRef.current = null;
     setHasSignature(false);
     if (onClear) onClear();
   };
@@ -125,16 +135,34 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
   const handleSave = () => {
     if (!hasSignature) return;
     const canvas = canvasRef.current;
-    canvas.toBlob((blob) => {
-      const dataUrl = URL.createObjectURL(blob);
-      onSave(dataUrl, blob);
+    if (!canvas) return;
+
+    // Create an export canvas with solid white background so the signature
+    // is crystal clear everywhere: Google Drive, gallery, and PDF reports.
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const expCtx = exportCanvas.getContext('2d');
+
+    // Fill crisp white background
+    expCtx.fillStyle = '#ffffff';
+    expCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+    // Draw the signature strokes
+    expCtx.drawImage(canvas, 0, 0);
+
+    const dataUrl = exportCanvas.toDataURL('image/png');
+    exportCanvas.toBlob((blob) => {
+      if (blob) {
+        onSave(dataUrl, blob);
+      }
     }, 'image/png');
   };
 
   const handleOpenFullScreen = () => {
     if (hasSignature && canvasRef.current) {
       try {
-        savedDataUrlRef.current = canvasRef.current.toDataURL();
+        savedDataUrlRef.current = canvasRef.current.toDataURL('image/png');
       } catch (e) {}
     }
     setIsFullScreen(true);
@@ -143,7 +171,7 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
   const handleExitFullScreen = () => {
     if (hasSignature && canvasRef.current) {
       try {
-        savedDataUrlRef.current = canvasRef.current.toDataURL();
+        savedDataUrlRef.current = canvasRef.current.toDataURL('image/png');
       } catch (e) {}
     }
     setIsFullScreen(false);
@@ -161,7 +189,7 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
           right: 0,
           bottom: 0,
           zIndex: 10002,
-          backgroundColor: 'var(--bg-color)',
+          backgroundColor: '#0f172a',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden'
@@ -171,19 +199,19 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
         <div 
           style={{
             padding: '12px 16px',
-            backgroundColor: 'var(--surface-color)',
-            borderBottom: '1px solid var(--border-color)',
+            backgroundColor: '#1e293b',
+            borderBottom: '1px solid #334155',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between'
           }}
         >
           <div>
-            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#f8fafc' }}>
               Owner Signature (Full Screen)
             </h3>
-            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-              Sign with finger or stylus • Rotate phone for more space
+            <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+              Sign with finger or stylus • Rotate phone horizontally for more space
             </span>
           </div>
           <button
@@ -191,30 +219,31 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
             onClick={handleExitFullScreen}
             className="btn btn-secondary"
             style={{
-              padding: '6px 12px',
-              fontSize: '12px',
+              padding: '8px 14px',
+              fontSize: '13px',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
               borderRadius: '8px'
             }}
           >
-            <Minimize2 size={15} /> Exit Full Screen
+            <Minimize2 size={16} /> Exit Full Screen
           </button>
         </div>
 
-        {/* Canvas Area */}
+        {/* Canvas Area with Paper White Background */}
         <div 
           ref={containerRef}
           style={{
             flex: 1,
             margin: '12px 16px',
-            backgroundColor: 'var(--surface-color)',
-            border: '1.5px dashed rgba(59, 130, 246, 0.4)',
+            backgroundColor: '#ffffff',
+            border: '2px solid #cbd5e1',
             borderRadius: '12px',
             touchAction: 'none',
             overflow: 'hidden',
-            position: 'relative'
+            position: 'relative',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.2)'
           }}
         >
           {!hasSignature && (
@@ -227,14 +256,15 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
                 alignItems: 'center',
                 justifyContent: 'center',
                 pointerEvents: 'none',
-                color: 'var(--text-secondary)'
+                color: '#64748b'
               }}
             >
-              <span style={{ fontSize: '18px', fontWeight: 500, opacity: 0.7 }}>Sign anywhere in this space</span>
-              <span style={{ fontSize: '12px', marginTop: '4px', opacity: 0.5 }}>Rotate device horizontally if more width is needed</span>
+              <span style={{ fontSize: '18px', fontWeight: 600, color: '#334155' }}>Sign anywhere in this space</span>
+              <span style={{ fontSize: '13px', marginTop: '4px', color: '#94a3b8' }}>Use finger or stylus</span>
             </div>
           )}
 
+          {/* Baseline guide */}
           <div 
             style={{ 
               position: 'absolute', 
@@ -242,14 +272,16 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
               left: '30px', 
               right: '30px', 
               height: '1px', 
-              backgroundColor: 'rgba(255, 255, 255, 0.2)',
+              backgroundColor: '#cbd5e1',
               pointerEvents: 'none',
               display: 'flex',
-              justifyContent: 'flex-end'
+              alignItems: 'center',
+              justifyContent: 'space-between'
             }}
           >
-            <span style={{ fontSize: '10px', color: 'rgba(255, 255, 255, 0.35)', marginTop: '4px' }}>
-              Signature Line
+            <span style={{ fontSize: '16px', fontWeight: 700, color: '#94a3b8', marginTop: '-20px' }}>✕</span>
+            <span style={{ fontSize: '12px', fontWeight: 500, color: '#94a3b8', marginTop: '16px' }}>
+              Signature of Owner / Representative
             </span>
           </div>
 
@@ -269,8 +301,8 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
         <div 
           style={{
             padding: '14px 16px',
-            backgroundColor: 'var(--surface-color)',
-            borderTop: '1px solid var(--border-color)',
+            backgroundColor: '#1e293b',
+            borderTop: '1px solid #334155',
             display: 'flex',
             gap: '12px',
             paddingBottom: 'calc(14px + env(safe-area-inset-bottom))'
@@ -307,13 +339,15 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
     <div className="signature-pad-wrapper flex flex-col gap-md">
       <div 
         ref={containerRef}
-        className="relative bg-surface rounded"
+        className="relative rounded-lg"
         style={{ 
           height: '220px', 
-          border: '1px solid var(--border-color)',
+          backgroundColor: '#ffffff',
+          border: '1.5px solid #cbd5e1',
           touchAction: 'none',
           overflow: 'hidden',
-          position: 'relative'
+          position: 'relative',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.1)'
         }}
       >
         {/* Full Screen button overlay in corner */}
@@ -326,10 +360,10 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
             top: '8px',
             right: '8px',
             zIndex: 10,
-            backgroundColor: 'rgba(30, 41, 59, 0.85)',
-            border: '1px solid rgba(59, 130, 246, 0.4)',
+            backgroundColor: '#f8fafc',
+            border: '1px solid #cbd5e1',
             borderRadius: '6px',
-            color: '#60a5fa',
+            color: '#1e40af',
             padding: '5px 10px',
             fontSize: '12px',
             fontWeight: 600,
@@ -337,8 +371,7 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
             alignItems: 'center',
             gap: '5px',
             cursor: 'pointer',
-            backdropFilter: 'blur(4px)',
-            boxShadow: '0 2px 6px rgba(0,0,0,0.3)'
+            boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
           }}
         >
           <Maximize2 size={13} strokeWidth={2.5} /> Full Screen
@@ -346,9 +379,9 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
 
         {/* Placeholder text */}
         {!hasSignature && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-secondary">
-            <span style={{ fontSize: '14px', fontWeight: 500 }}>Sign here</span>
-            <span style={{ fontSize: '11px', marginTop: '2px', opacity: 0.6 }}>or tap Full Screen for more space</span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ color: '#94a3b8' }}>
+            <span style={{ fontSize: '15px', fontWeight: 600, color: '#475569' }}>Sign here</span>
+            <span style={{ fontSize: '11px', marginTop: '4px', color: '#94a3b8' }}>Use finger or stylus • or tap Full Screen</span>
           </div>
         )}
         
@@ -357,9 +390,13 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
           className="absolute pointer-events-none" 
           style={{ 
             bottom: '40px', left: '20px', right: '20px', 
-            height: '1px', backgroundColor: 'var(--border-color)', opacity: 0.5 
+            height: '1px', backgroundColor: '#e2e8f0',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between'
           }}
-        ></div>
+        >
+          <span style={{ fontSize: '14px', fontWeight: 600, color: '#94a3b8', marginTop: '-18px' }}>✕</span>
+          <span style={{ fontSize: '10px', color: '#94a3b8', marginTop: '16px' }}>Signature</span>
+        </div>
 
         <canvas
           ref={canvasRef}

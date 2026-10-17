@@ -169,6 +169,7 @@ class SyncEngine {
           propertyId: inspection.property_id,
           propertyName: inspection.property_name,
           inspectionId: inspection.id,
+          inspection,
         });
       } catch (driveErr) {
         if (driveErr.code === 'NEEDS_DRIVE_AUTH') {
@@ -183,7 +184,7 @@ class SyncEngine {
       
       const uploadPool = new BoundedQueue(this.concurrency);
       const uploadTasks = unuploadedMedia.map(media => {
-        return uploadPool.add(() => this._uploadMediaItem(media, folders, supabaseInspectionId, inspection));
+        return uploadPool.add(() => this._uploadMediaItem(media, folders, supabaseInspectionId, inspection, allMedia));
       });
 
       await Promise.allSettled(uploadTasks);
@@ -201,12 +202,13 @@ class SyncEngine {
           const byteArray = new Uint8Array(byteNumbers);
           const blob = new Blob([byteArray], { type: 'image/png' });
 
-          const filename = `boundary_snapshot_${inspection.id}.png`;
-          const existing = await GoogleDriveService.findExistingFile(filename, folders.boundaryFolder).catch(() => null);
+          const targetBoundaryFolder = folders.boundaryFolder || folders.photosFolder;
+          const filename = 'plot_area.png';
+          const existing = await GoogleDriveService.findExistingFile(filename, targetBoundaryFolder).catch(() => null);
           
           let driveFile = existing;
           if (!driveFile) {
-            driveFile = await GoogleDriveService.uploadFile(blob, filename, 'image/png', folders.boundaryFolder);
+            driveFile = await GoogleDriveService.uploadFile(blob, filename, 'image/png', targetBoundaryFolder);
           }
           
           await BoundaryRepository.saveBoundary({
@@ -223,7 +225,8 @@ class SyncEngine {
       // ── STEP 5: Write optional inspection summary JSON to Drive ────────────
       try {
         const freshMediaList = await MediaRepository.getMediaForInspection(inspection.id);
-        await this._writeDriveSummary(inspection, freshMediaList, folders.inspectionFolder);
+        const targetDataFolder = folders.dataFolder || folders.inspectionFolder;
+        await this._writeDriveSummary(inspection, freshMediaList, targetDataFolder);
       } catch (_e) {
         console.warn('[SyncEngine] Drive summary write non-fatal notice:', _e.message);
       }
@@ -265,19 +268,25 @@ class SyncEngine {
 
   // ─── Single Media Upload Pipeline (Idempotent & Resumable) ─────────────────
 
-  async _uploadMediaItem(media, folders, supabaseInspectionId, inspection) {
+  async _uploadMediaItem(media, folders, supabaseInspectionId, inspection, allMedia = []) {
     if (!ConnectivityService.online) return false;
     if (this._inFlightMediaIds.has(media.id)) return true; // prevent duplicate parallel workers
 
     this._inFlightMediaIds.add(media.id);
     const startTime = Date.now();
 
-    const mediaType = media.type || media.mediaType;
+    const mediaType = media.type || media.mediaType || 'photo';
     const evidenceType = media.evidenceType || '';
     let targetFolder;
-    if (mediaType === 'video') targetFolder = folders.videosFolder;
-    else if (mediaType === 'signature') targetFolder = folders.signaturesFolder;
-    else targetFolder = folders.photosFolder;
+    if (evidenceType === 'Location Verification') {
+      targetFolder = folders.locationFolder || folders.photosFolder;
+    } else if (mediaType === 'video') {
+      targetFolder = folders.videosFolder;
+    } else if (mediaType === 'signature') {
+      targetFolder = folders.signaturesFolder;
+    } else {
+      targetFolder = folders.photosFolder;
+    }
 
     // Transition state: AUTHORIZING -> UPLOADING
     this._setLocalProgress(media.id, inspection.id, 0, 'authorizing');
@@ -302,10 +311,8 @@ class SyncEngine {
         return true;
       }
 
-      // 2. Build stable filename: <categorySlug>_<id>.<ext>
-      const ext = (media.mime_type || 'application/octet-stream').split('/')[1]?.split(';')[0] || 'bin';
-      const categorySlug = (evidenceType || mediaType || 'media').replace(/\s+/g, '_').toLowerCase();
-      const filename = `${categorySlug}_${media.id}.${ext}`;
+      // 2. Build simple human-readable filename: photo-1.jpg, video-1.mp4, signature-1.png, location-1.jpg
+      const filename = media.drive_filename || this._getSimpleMediaFilename(media, inspection, allMedia);
 
       // 3. IDEMPOTENCY: Check if file already exists in target Drive folder
       const existing = await GoogleDriveService.findExistingFile(filename, targetFolder).catch(() => null);
@@ -329,7 +336,10 @@ class SyncEngine {
 
       // 5. If geotagged blob exists (location photos), upload separately
       if (media.geotagged_blob && !media.geotagged_asset_id) {
-        const geoFilename = `${categorySlug}_${media.id}_geotagged.${ext}`;
+        const extMatch = filename.match(/\.([^.]+)$/);
+        const ext = extMatch ? extMatch[1] : 'jpg';
+        const baseName = filename.replace(/\.[^.]+$/, '');
+        const geoFilename = `${baseName}-geotagged.${ext}`;
         const existingGeo = await GoogleDriveService.findExistingFile(geoFilename, targetFolder).catch(() => null);
         const geoDriveFile = existingGeo || await GoogleDriveService.uploadFile(
           media.geotagged_blob,
@@ -633,6 +643,56 @@ class SyncEngine {
     } catch (_err) {
       // Non-fatal: Drive is the primary resilient evidence store
     }
+  }
+
+  /**
+   * Deterministically generate human-readable file names (photo-1, video-1, location-1, signature-1).
+   */
+  _getSimpleMediaFilename(media, inspection, allMedia = []) {
+    const mediaType = media.type || media.mediaType || 'photo';
+    const evidenceType = media.evidenceType || '';
+    const rawExt = (media.mime_type || 'application/octet-stream').split('/')[1]?.split(';')[0] || 'jpg';
+    const ext = (rawExt === 'jpeg' ? 'jpg' : rawExt === 'octet-stream' ? (mediaType === 'video' ? 'mp4' : (mediaType === 'signature' ? 'png' : 'jpg')) : rawExt).toLowerCase();
+
+    const mediaList = Array.isArray(allMedia) && allMedia.length > 0 ? allMedia : [media];
+
+    const sortFn = (a, b) => {
+      const timeA = new Date(a.captured_at || a.created_at || 0).getTime();
+      const timeB = new Date(b.captured_at || b.created_at || 0).getTime();
+      if (timeA !== timeB) return timeA - timeB;
+      return (a.id || '').localeCompare(b.id || '');
+    };
+
+    if (evidenceType === 'Location Verification') {
+      const locItems = mediaList.filter(m => m.evidenceType === 'Location Verification').sort(sortFn);
+      const idx = locItems.findIndex(m => m.id === media.id);
+      const num = idx >= 0 ? idx + 1 : 1;
+      return mediaType === 'video' ? `location-video-${num}.${ext}` : `location-${num}.${ext}`;
+    }
+
+    if (mediaType === 'video') {
+      const videoItems = mediaList.filter(m => (m.type || m.mediaType) === 'video' && m.evidenceType !== 'Location Verification').sort(sortFn);
+      const idx = videoItems.findIndex(m => m.id === media.id);
+      const num = idx >= 0 ? idx + 1 : 1;
+      return `video-${num}.${ext}`;
+    }
+
+    if (mediaType === 'signature') {
+      const sigItems = mediaList.filter(m => (m.type || m.mediaType) === 'signature').sort(sortFn);
+      const idx = sigItems.findIndex(m => m.id === media.id);
+      const num = idx >= 0 ? idx + 1 : 1;
+      return `signature-${num}.${ext}`;
+    }
+
+    // Default: photo (exterior, interior, boundary, etc.)
+    const photoItems = mediaList.filter(m => 
+      (m.type || m.mediaType) !== 'video' && 
+      (m.type || m.mediaType) !== 'signature' && 
+      m.evidenceType !== 'Location Verification'
+    ).sort(sortFn);
+    const idx = photoItems.findIndex(m => m.id === media.id);
+    const num = idx >= 0 ? idx + 1 : 1;
+    return `photo-${num}.${ext}`;
   }
 
   // ─── Drive Summary ───────────────────────────────────────────────────────────

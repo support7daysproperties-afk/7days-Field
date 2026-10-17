@@ -1835,10 +1835,21 @@ export default function InspectionSession() {
                 <h3 className="mb-md">Owner Signature</h3>
                 {signature ? (
                   <div className="flex flex-col gap-md">
-                    <div className="bg-bg-color rounded p-sm" style={{ border: '1px solid var(--success-color)' }}>
-                      <img src={signature} alt="Owner Signature" style={{ width: '100%', maxHeight: '200px', objectFit: 'contain' }} />
-                      <div className="text-success text-center text-sm font-medium mt-sm flex items-center justify-center gap-xs">
-                        <Check size={16} /> Signature Saved
+                    <div 
+                      style={{ 
+                        backgroundColor: '#ffffff', 
+                        borderRadius: '10px', 
+                        padding: '16px', 
+                        border: '2px solid var(--success-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+                      }}
+                    >
+                      <img src={signature} alt="Owner Signature" style={{ width: '100%', maxHeight: '180px', objectFit: 'contain' }} />
+                      <div className="text-success text-center text-sm font-semibold mt-sm flex items-center justify-center gap-xs">
+                        <Check size={16} strokeWidth={2.5} /> Signature Saved & Verified
                       </div>
                     </div>
                     <div className="flex gap-sm">

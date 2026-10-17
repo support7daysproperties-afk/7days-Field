@@ -507,17 +507,21 @@ class GoogleDriveService {
   /**
    * Get or create a Drive folder by name under an optional parent.
    */
-  async getOrCreateFolder(folderName, parentId = null) {
-    let q = `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-    if (parentId) q += ` and '${parentId}' in parents`;
+  async getOrCreateFolder(folderName, parentId = null, aliases = []) {
+    const candidateNames = [folderName, ...(aliases || [])];
 
-    const searchRes = await this._fetchWithRetry(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&spaces=drive&fields=files(id,name)`
-    );
-    const searchData = await searchRes.json();
-    if (!searchRes.ok) throw new Error(searchData.error?.message || 'Drive search failed');
+    for (const name of candidateNames) {
+      let q = `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+      if (parentId) q += ` and '${parentId}' in parents`;
 
-    if (searchData.files?.length > 0) return searchData.files[0].id;
+      const searchRes = await this._fetchWithRetry(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&spaces=drive&fields=files(id,name)`
+      );
+      const searchData = await searchRes.json();
+      if (!searchRes.ok) throw new Error(searchData.error?.message || 'Drive search failed');
+
+      if (searchData.files?.length > 0) return searchData.files[0].id;
+    }
 
     const metadata = {
       name: folderName,
@@ -536,26 +540,90 @@ class GoogleDriveService {
   }
 
   /**
-   * Build the full inspection folder structure and return folder IDs.
+   * Helper to check if a folder exists under a parent.
    */
-  async ensureInspectionFolders({ propertyId, propertyName, inspectionId }) {
-    const root = await this.getOrCreateFolder('7Days Field');
-    const inspectionsRoot = await this.getOrCreateFolder('Inspections', root);
-    const propertyLabel = propertyName
-      ? `${propertyName} - ${propertyId}`.substring(0, 60)
-      : `Property - ${propertyId}`;
-    const propertyFolder = await this.getOrCreateFolder(propertyLabel, inspectionsRoot);
-    const inspectionFolder = await this.getOrCreateFolder(inspectionId, propertyFolder);
+  async _checkFolderExists(folderName, parentId) {
+    try {
+      const q = `name='${folderName}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+      const res = await this._fetchWithRetry(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&spaces=drive&fields=files(id,name)`
+      );
+      const data = await res.json();
+      return data.files?.[0]?.id || null;
+    } catch {
+      return null;
+    }
+  }
 
-    const [photosFolder, videosFolder, signaturesFolder, otherFolder, boundaryFolder] = await Promise.all([
-      this.getOrCreateFolder('Photos', inspectionFolder),
-      this.getOrCreateFolder('Videos', inspectionFolder),
-      this.getOrCreateFolder('Signatures', inspectionFolder),
-      this.getOrCreateFolder('Other', inspectionFolder),
-      this.getOrCreateFolder('Plot Area (Property Boundary)', inspectionFolder),
+  /**
+   * Build the full inspection folder structure and return folder IDs.
+   * Clean, easily readable folder structure:
+   * 7Days Field
+   *   └── Inspections
+   *        └── [Property Name]
+   *             ├── Data
+   *             ├── Photo
+   *             ├── Video
+   *             ├── Location Verification
+   *             ├── Signature
+   *             └── Plot Area
+   */
+  async ensureInspectionFolders({ propertyId, propertyName, inspectionId, inspection = null }) {
+    const root = await this.getOrCreateFolder('7Days Field', null, ['7days field', '7DaysField']);
+    const inspectionsRoot = await this.getOrCreateFolder('Inspections', root, ['Inspection', 'inspections']);
+
+    const isUUID = (str) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str || '');
+
+    let cleanPropName = (propertyName || inspection?.title || '').trim();
+    if (!cleanPropName || isUUID(cleanPropName)) {
+      const shortId = propertyId ? (isUUID(propertyId) ? propertyId.slice(0, 8).toUpperCase() : propertyId) : '1';
+      cleanPropName = `Property - ${shortId}`;
+    }
+
+    // Clean folder label without forbidden characters
+    const propertyFolderLabel = cleanPropName.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 60);
+
+    // Support legacy folder names if one already exists
+    const legacyAliases = [];
+    if (propertyId) {
+      legacyAliases.push(`${cleanPropName} - ${propertyId}`.substring(0, 60));
+      legacyAliases.push(`Property - ${propertyId}`);
+    }
+
+    const propertyFolder = await this.getOrCreateFolder(propertyFolderLabel, inspectionsRoot, legacyAliases);
+
+    // If an existing legacy inspectionId subfolder exists under propertyFolder, reuse it;
+    // otherwise the clean propertyFolder itself is the inspectionFolder!
+    let inspectionFolder = propertyFolder;
+    if (inspectionId && isUUID(inspectionId)) {
+      const legacySub = await this._checkFolderExists(inspectionId, propertyFolder);
+      if (legacySub) {
+        inspectionFolder = legacySub;
+      }
+    }
+
+    const [dataFolder, photosFolder, videosFolder, locationFolder, signaturesFolder, boundaryFolder] = await Promise.all([
+      this.getOrCreateFolder('Data', inspectionFolder, ['data']),
+      this.getOrCreateFolder('Photo', inspectionFolder, ['Photos', 'photo', 'photos']),
+      this.getOrCreateFolder('Video', inspectionFolder, ['Videos', 'video', 'videos']),
+      this.getOrCreateFolder('Location Verification', inspectionFolder, ['location verification', 'Location', 'location']),
+      this.getOrCreateFolder('Signature', inspectionFolder, ['Signatures', 'signature', 'signatures']),
+      this.getOrCreateFolder('Plot Area', inspectionFolder, ['plot area', 'Plot Area (Property Boundary)', 'PlotArea']),
     ]);
 
-    return { root, inspectionsRoot, propertyFolder, inspectionFolder, photosFolder, videosFolder, signaturesFolder, otherFolder, boundaryFolder };
+    return {
+      root,
+      inspectionsRoot,
+      propertyFolder,
+      inspectionFolder,
+      dataFolder,
+      photosFolder,
+      videosFolder,
+      locationFolder,
+      signaturesFolder,
+      boundaryFolder,
+      otherFolder: inspectionFolder
+    };
   }
 
   /**

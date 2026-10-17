@@ -165,7 +165,7 @@ describe('SyncEngine — Fast, Reliable & Resumable Bounded Concurrency Sync Tes
     mockInspections.set(inspectionId, { id: inspectionId, sync_status: 'QUEUED' });
 
     vi.spyOn(GoogleDriveService, 'uploadFile').mockImplementation(async (blob, filename) => {
-      if (filename.includes('p2')) {
+      if (filename.includes('p2') || filename.includes('photo-2')) {
         throw new Error('Socket timeout on photo 2');
       }
       return { id: `drive_${filename}`, webViewLink: `https://drive.google.com/${filename}` };
