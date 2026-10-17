@@ -7,7 +7,7 @@ import BoundaryRepository from '../src/services/offline/BoundaryRepository';
 import ConnectivityService from '../src/services/offline/ConnectivityService';
 import GoogleDriveService from '../src/services/GoogleDriveService';
 import { supabase } from '../src/lib/supabase';
-import { FIELD_INSPECTION_COLUMNS, DB_ENUMS } from '../src/lib/database.types';
+import { FIELD_INSPECTION_COLUMNS, DB_ENUMS, isValidUUID } from '../src/lib/database.types';
 
 const mockInspections = new Map();
 const mockMedia = new Map();
@@ -168,6 +168,11 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     expect(sentRecord.remarks).toBe('Site clear and verified');
     expect(sentRecord.checklist).toEqual({ 'Road accessible': true, 'Meter checked': true });
 
+    // task_id must NEVER be null (violates PostgreSQL not-null constraint)
+    expect(sentRecord.task_id).toBeDefined();
+    expect(sentRecord.task_id).not.toBeNull();
+    expect(isValidUUID(sentRecord.task_id)).toBe(true);
+
     // Validate enum constraints
     expect(DB_ENUMS.sync_status).toContain(sentRecord.sync_status);
     expect(DB_ENUMS.inspection_status).toContain(sentRecord.status);
@@ -178,8 +183,8 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     }
   });
 
-  // 2. Server identity resolution & persistence: generates / resolves UUID and saves to local inspection record
-  it('resolves server UUID identity and persists server_id locally for idempotent retries', async () => {
+  // 2. Server identity & task_id resolution & persistence: generates / resolves UUID and saves to local inspection record
+  it('resolves server UUID identity and persists server_id and task_id locally for idempotent retries', async () => {
     const inspectionId = 'INS-20261017-291';
     mockInspections.set(inspectionId, {
       id: inspectionId,
@@ -198,6 +203,11 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     expect(updatedInspection.server_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect(updatedInspection.server_id).toBe(capturedUpsertPayloads[0].id);
     expect(updatedInspection.supabase_id).toBe(updatedInspection.server_id);
+
+    // Verify task_id is resolved to a valid UUID and persisted locally
+    expect(updatedInspection.task_id).toBeDefined();
+    expect(isValidUUID(updatedInspection.task_id)).toBe(true);
+    expect(updatedInspection.task_id).toBe(capturedUpsertPayloads[0].task_id);
   });
 
   // 3. Existing inspection retry without duplicates: uses onConflict: 'id' with server_id

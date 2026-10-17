@@ -96,8 +96,17 @@ export default function CreateInspection() {
       const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
       const id = `INS-${dateStr}-${randomPart}`;
       
+      const taskId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+            const r = (Math.random() * 16) | 0;
+            const v = c === 'x' ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          });
+
       const newInspection = {
         id,
+        task_id: taskId,
         title: formData.title,
         property_name: formData.title,
         location_name: formData.location_name,

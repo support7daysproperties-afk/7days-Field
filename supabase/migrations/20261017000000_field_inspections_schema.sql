@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS public.field_inspections (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   property_id uuid,
   supervisor_id uuid REFERENCES public.field_supervisors(id) ON DELETE SET NULL,
-  task_id uuid,
+  task_id uuid DEFAULT gen_random_uuid(),
   status inspection_status DEFAULT 'COMPLETED',
   sync_status sync_status DEFAULT 'UPLOADING',
   checklist jsonb,

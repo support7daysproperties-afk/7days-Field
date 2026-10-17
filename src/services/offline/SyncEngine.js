@@ -511,9 +511,10 @@ class SyncEngine {
     const serverId = existingServerId || generateUUID();
 
     const propertyId = isValidUUID(inspection.property_id) ? inspection.property_id : null;
-    const taskId = isValidUUID(inspection.task_id || inspection.field_task_id)
-      ? (inspection.task_id || inspection.field_task_id)
-      : null;
+    const existingTaskId = (isValidUUID(inspection.task_id) && inspection.task_id) ||
+                           (isValidUUID(inspection.field_task_id) && inspection.field_task_id) ||
+                           null;
+    const taskId = existingTaskId || generateUUID();
 
     // 3. Build payload matching confirmed schema of public.field_inspections:
     // Columns: id, property_id, supervisor_id, task_id, status, sync_status, checklist, remarks, owner_name, owner_phone, consent_given, signature_url, updated_at
@@ -543,16 +544,16 @@ class SyncEngine {
 
     const confirmedServerId = data?.id || serverId;
 
-    // Persist confirmed server ID locally so subsequent retries are strictly idempotent
-    if (confirmedServerId) {
-      inspection.server_id = confirmedServerId;
-      inspection.supabase_id = confirmedServerId;
-      await InspectionRepository.saveInspection({
-        ...inspection,
-        server_id: confirmedServerId,
-        supabase_id: confirmedServerId,
-      });
-    }
+    // Persist confirmed server ID and task ID locally so subsequent retries are strictly idempotent
+    inspection.server_id = confirmedServerId;
+    inspection.supabase_id = confirmedServerId;
+    inspection.task_id = taskId;
+    await InspectionRepository.saveInspection({
+      ...inspection,
+      server_id: confirmedServerId,
+      supabase_id: confirmedServerId,
+      task_id: taskId,
+    });
 
     return confirmedServerId;
   }
