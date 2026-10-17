@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">7Days Field</string>
+    <string name="title_activity_main">7Days Field</string>
+    <string name="package_name">com.sevendays.field</string>
+    <string name="custom_url_scheme">com.sevendays.field</string>
+</resources>

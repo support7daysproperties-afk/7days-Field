@@ -1,7 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { X, RefreshCw, Undo2, Check, Download, Globe, Orbit, Image as ImageIcon } from 'lucide-react';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { photoSphereStorage } from './storage/PhotoSphereStorage';
+
+const PhotoSphereSensor = registerPlugin('PhotoSphereSensor');
+
 import { injectXmpIntoJpeg } from './PhotoSphereXMP';
 import {
   PHOTO_SPHERE_TARGETS,
@@ -1365,7 +1369,40 @@ export default function PhotoSphereCapture({
 
     eng.onDeviceOrientation = onDeviceOrientation;
 
-    if (
+    let nativeSensorHandle = null;
+    const isNative = Capacitor.isNativePlatform();
+
+    if (isNative) {
+      setNeedsGyroPermission(false);
+      try {
+        PhotoSphereSensor.start().catch((err) => {
+          console.warn('Native rotation sensor start note:', err);
+        });
+        PhotoSphereSensor.addListener('sensorOrientation', (data) => {
+          if (!eng.camera || !data) return;
+          const targetYaw = ((data.yaw % 360) + 360) % 360;
+          const targetPitch = Math.max(-85, Math.min(85, data.pitch));
+
+          const now = performance.now();
+          if (eng.lastOrientTime) {
+            const dt = Math.max(0.005, (now - eng.lastOrientTime) / 1000);
+            const dYaw = ((targetYaw - eng.camYaw + 540) % 360) - 180;
+            const dPitch = targetPitch - eng.camPitch;
+            const instSpeed = Math.hypot(dYaw, dPitch) / dt;
+            eng.angularVelocity = 0.8 * (eng.angularVelocity || 0) + 0.2 * instSpeed;
+          }
+          eng.lastOrientTime = now;
+
+          // 200Hz direct sensor fusion from Snapdragon/MediaTek DSP
+          eng.camYaw = lerpAngleDeg(eng.camYaw, targetYaw, 0.4);
+          eng.camPitch = eng.camPitch + (targetPitch - eng.camPitch) * 0.4;
+        }).then((handle) => {
+          nativeSensorHandle = handle;
+        }).catch(() => {});
+      } catch (err) {
+        console.warn('Could not initialize native sensor plugin:', err);
+      }
+    } else if (
       typeof DeviceOrientationEvent !== 'undefined' &&
       typeof DeviceOrientationEvent.requestPermission === 'function'
     ) {
@@ -1392,6 +1429,14 @@ export default function PhotoSphereCapture({
     return () => {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('deviceorientation', onDeviceOrientation, true);
+      if (nativeSensorHandle && typeof nativeSensorHandle.remove === 'function') {
+        nativeSensorHandle.remove();
+      }
+      if (isNative) {
+        try {
+          PhotoSphereSensor.stop().catch(() => {});
+        } catch (_) {}
+      }
       if (canvasEl) {
         canvasEl.removeEventListener('pointerdown', onPointerDown);
       }

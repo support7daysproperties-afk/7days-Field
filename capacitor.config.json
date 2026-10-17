@@ -1,0 +1,16 @@
+{
+  "appId": "com.sevendays.field",
+  "appName": "7Days Field",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#000000"
+    }
+  }
+}
