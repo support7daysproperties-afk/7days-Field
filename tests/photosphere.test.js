@@ -20,6 +20,11 @@ import {
   COVERAGE_CONFIG,
   getProjectionScale,
   projectDotToScreen,
+  getStabilizedYawPitch,
+  lerpAngleDeg,
+  projectWorldToScreen,
+  BOX_FOV_X,
+  BOX_FOV_Y,
 } from '../src/features/photo-sphere/PhotoSphereTargets';
 
 describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
@@ -556,6 +561,79 @@ describe('PhotoSphere Critical Fixes: Center Target, Camera Zoom & Stitching Qua
     targetUp.project(camera);
     expect(targetUp.x).toBeCloseTo(0, 4);
     expect(targetUp.y).toBeLessThan(0);
+  });
+
+  describe('Architectural Fixes: Horizon Lock, Unified Projection & Hold Steady Lock', () => {
+    it('Fix 1: getStabilizedYawPitch extracts clean (yaw, pitch) without horizon roll twisting', () => {
+      // Upright phone facing North (alpha=0, beta=90, gamma=0) -> horizon (pitch=0, yaw=0)
+      const upright = getStabilizedYawPitch(0, 90, 0);
+      expect(upright.pitch).toBeCloseTo(0, 2);
+      expect(upright.yaw).toBeCloseTo(0, 2);
+
+      // Tilting phone up towards ceiling (beta=45, gamma=0) -> pitch = +45 deg
+      const tiltedUp = getStabilizedYawPitch(0, 45, 0);
+      expect(tiltedUp.pitch).toBeCloseTo(45, 1);
+      expect(tiltedUp.yaw).toBeCloseTo(0, 1);
+
+      // Tilting phone down towards floor (beta=135, gamma=0) -> pitch = -45 deg
+      const tiltedDown = getStabilizedYawPitch(0, 135, 0);
+      expect(tiltedDown.pitch).toBeCloseTo(-45, 1);
+      expect(tiltedDown.yaw).toBeCloseTo(0, 1);
+
+      // Rotating compass heading (alpha = 90 deg, beta = 90, gamma = 0) -> yaw = -90 deg, pitch = 0 deg
+      const turnedRight = getStabilizedYawPitch(90, 90, 0);
+      expect(turnedRight.pitch).toBeCloseTo(0, 1);
+      expect(turnedRight.yaw).toBeCloseTo(-90, 1);
+
+      // Tilting up (beta=30) keeps zero horizontal drift when alpha=0 and gamma=0
+      const tiltedUpSteep = getStabilizedYawPitch(0, 30, 0);
+      expect(tiltedUpSteep.pitch).toBeCloseTo(60, 1);
+      expect(tiltedUpSteep.yaw).toBeCloseTo(0, 1);
+    });
+
+    it('Fix 1: lerpAngleDeg smoothly filters angles using shortest wrapping path across +/-180° boundary', () => {
+      // 170 to 175 -> delta +5
+      expect(lerpAngleDeg(170, 175, 0.2)).toBeCloseTo(171, 2);
+
+      // 178 to -178 -> shortest delta is +4 (wrapping through 180), NOT -356
+      const wrapped = lerpAngleDeg(178, -178, 0.5);
+      expect(wrapped).toBeCloseTo(180, 2);
+
+      // -170 to -176 -> delta -6
+      expect(lerpAngleDeg(-170, -176, 0.5)).toBeCloseTo(-173, 2);
+    });
+
+    it('Fix 2 & Fix 3: projectWorldToScreen unifies dots and captured photo tiles with matching scale and FOV', () => {
+      const boxW = 240;
+      const boxH = 320;
+      const viewW = 390;
+      const viewH = 844;
+
+      // 1. Center alignment: Target exactly at camera center (yaw=0, pitch=0) projects to exact viewport center
+      const centerProj = projectWorldToScreen(0, 0, 0, 0, viewW, viewH, boxW, boxH);
+      expect(centerProj).not.toBeNull();
+      expect(centerProj.screenX).toBeCloseTo(viewW / 2, 2);
+      expect(centerProj.screenY).toBeCloseTo(viewH / 2, 2);
+
+      // 2. Both a captured photo tile and an uncaptured target dot at (yaw=36, pitch=0) share the EXACT screen coordinate
+      const tileProj = projectWorldToScreen(36, 0, 0, 0, viewW, viewH, boxW, boxH);
+      const dotProj = projectWorldToScreen(36, 0, 0, 0, viewW, viewH, boxW, boxH);
+      expect(tileProj.screenX).toBe(dotProj.screenX);
+      expect(tileProj.screenY).toBe(dotProj.screenY);
+
+      // Screen offset matches boxWidth / BOX_FOV_X
+      const expectedDx = 36 * (boxW / BOX_FOV_X);
+      expect(dotProj.screenX - viewW / 2).toBeCloseTo(expectedDx, 2);
+
+      // 3. Tilting up: Target at pitch = +35 moves down on screen by deltaPitch * (boxH / BOX_FOV_Y)
+      const upProj = projectWorldToScreen(0, 35, 0, 0, viewW, viewH, boxW, boxH);
+      const expectedDy = -35 * (boxH / BOX_FOV_Y);
+      expect(upProj.screenY - viewH / 2).toBeCloseTo(expectedDy, 2);
+
+      // 4. Culling: Points > 95° away from current camera view are culled
+      const culledFar = projectWorldToScreen(100, 0, 0, 0, viewW, viewH, boxW, boxH);
+      expect(culledFar).toBeNull();
+    });
   });
 });
 

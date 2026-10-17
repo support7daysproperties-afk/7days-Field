@@ -748,3 +748,81 @@ export function selectNextTarget(
 
   return pendingTargets[0];
 }
+
+/**
+ * Convert W3C DeviceOrientation (alpha, beta, gamma) to a clean camera look direction (yaw, pitch)
+ * WITHOUT allowing wrist roll (gamma) to twist the horizon!
+ */
+export function getStabilizedYawPitch(alphaDeg, betaDeg, gammaDeg) {
+  const deg2rad = Math.PI / 180;
+  const rad2deg = 180 / Math.PI;
+
+  const alpha = (alphaDeg || 0) * deg2rad;
+  const beta  = (betaDeg !== null && betaDeg !== undefined ? betaDeg : 90) * deg2rad;
+  const gamma = (gammaDeg || 0) * deg2rad;
+
+  // Compute forward camera vector in world space using W3C Z-X'-Y'' matrix
+  const cA = Math.cos(alpha), sA = Math.sin(alpha);
+  const cB = Math.cos(beta),  sB = Math.sin(beta);
+  const cG = Math.cos(gamma), sG = Math.sin(gamma);
+
+  // Forward look vector of back camera (-Z axis of device in world space)
+  const vx = -sA * sB * cG - cA * sG;
+  const vy =  cA * sB * cG - sA * sG;
+  const vz = -cB * cG;
+
+  // Pitch: elevation above/below horizon (-90° to +90°)
+  // When phone is held upright (beta = 90°), pitch = 0° (horizon)
+  const pitch = Math.asin(Math.max(-1, Math.min(1, -vz))) * rad2deg;
+
+  // Compass-free stabilized Yaw (-180° to +180°)
+  const yaw = Math.atan2(vx, vy) * rad2deg;
+
+  return { yaw, pitch };
+}
+
+/**
+ * Circular angle low-pass smoothing (shortest wrapping path)
+ */
+export function lerpAngleDeg(current, target, factor = 0.22) {
+  let delta = ((target - current + 540) % 360) - 180;
+  return current + delta * factor;
+}
+
+// Center viewfinder box field of view
+export const BOX_FOV_X = 42; // degrees
+export const BOX_FOV_Y = 56; // degrees
+
+/**
+ * Shared projection function for BOTH captured photo tiles AND target dots.
+ * Ensures both sit at the exact same screen coordinates and move at identical speeds.
+ */
+export function projectWorldToScreen(
+  targetYaw,
+  targetPitch,
+  currentYaw,
+  currentPitch,
+  viewportWidth,
+  viewportHeight,
+  boxWidth,
+  boxHeight
+) {
+  const pxPerDegX = boxWidth / BOX_FOV_X;
+  const pxPerDegY = boxHeight / BOX_FOV_Y;
+
+  // Shortest angular delta from current camera center (currentYaw, currentPitch)
+  const deltaYaw = ((targetYaw - currentYaw + 540) % 360) - 180;
+  const deltaPitch = targetPitch - currentPitch;
+
+  // Cull if more than 95° away from current view
+  if (Math.abs(deltaYaw) > 95 || Math.abs(deltaPitch) > 95) return null;
+
+  // Scale horizontal offset by cos(pitch) so upper/lower rings converge naturally without stretching
+  const pitchCos = Math.max(0.25, Math.cos((targetPitch * Math.PI) / 180));
+
+  const screenX = (viewportWidth / 2) + (deltaYaw * pitchCos) * pxPerDegX;
+  const screenY = (viewportHeight / 2) - deltaPitch * pxPerDegY;
+
+  return { screenX, screenY, deltaYaw, deltaPitch };
+}
+

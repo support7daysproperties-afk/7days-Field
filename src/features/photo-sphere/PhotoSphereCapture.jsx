@@ -2,8 +2,14 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { X, RefreshCw, Undo2, Check, Download, Globe, Orbit, Image as ImageIcon } from 'lucide-react';
 import { photoSphereStorage } from './storage/PhotoSphereStorage';
-import { injectXmpIntoJpeg } from './PhotoSphereXMP';
-import { PHOTO_SPHERE_TARGETS } from './PhotoSphereTargets';
+import {
+  PHOTO_SPHERE_TARGETS,
+  getStabilizedYawPitch,
+  lerpAngleDeg,
+  projectWorldToScreen,
+  BOX_FOV_X,
+  BOX_FOV_Y,
+} from './PhotoSphereTargets';
 
 const RETICLE_CIRCUMFERENCE = 138.23;
 
@@ -72,12 +78,15 @@ export default function PhotoSphereCapture({
     holdStartTime: 0,
     isCapturing: false,
     useGyro: false,
-    baseSensorQuaternion: null,
-    initialAlphaOffset: null,
-    yaw: 0,
-    pitch: 0,
+    initialYaw: null,
+    camYaw: 0,
+    camPitch: 0,
+    currentBoxWidth: 240,
+    currentBoxHeight: 320,
     angularVelocity: 0,
+    lastOrientTime: null,
     targets: [],
+    capturedTiles: [],
     historyStack: [],
     coverageGrid: null,
     coveragePercent: 0,
@@ -209,11 +218,16 @@ export default function PhotoSphereCapture({
     mesh.visible = visibleInitially;
     eng.targetGroup.add(mesh);
 
+    const yawDeg = targetMeta ? targetMeta.yaw : THREE.MathUtils.radToDeg(yawRad);
+    const pitchDeg = targetMeta ? targetMeta.pitch : THREE.MathUtils.radToDeg(pitchRad);
+
     const target = {
       id,
       targetId: targetMeta ? targetMeta.id : `t_${id}`,
       dotNumber: targetMeta ? targetMeta.dotNumber : id,
       region: targetMeta ? targetMeta.region : (isGapDot ? 'gap' : 'horizon'),
+      yaw: yawDeg,
+      pitch: pitchDeg,
       yawRad,
       pitchRad,
       direction: dir,
@@ -390,11 +404,9 @@ export default function PhotoSphereCapture({
       up = new THREE.Vector3().crossVectors(right, forward).normalize();
     }
 
-    const aspect = srcW / srcH;
-    // Calibrated wide-angle smartphone diagonal FOV ~74.0 degrees
-    const tanHalfD = Math.tan(THREE.MathUtils.degToRad(37.0));
-    const tanHalfV = tanHalfD / Math.sqrt(1 + aspect * aspect);
-    const tanHalfH = aspect * tanHalfV;
+    const tanHalfH = Math.tan(THREE.MathUtils.degToRad(BOX_FOV_X / 2));
+    const tanHalfV = Math.tan(THREE.MathUtils.degToRad(BOX_FOV_Y / 2));
+    const tanHalfD = Math.hypot(tanHalfH, tanHalfV);
 
     const angularRadius = Math.atan(tanHalfD);
     const maxCosRadius = Math.cos(angularRadius * 1.08);
@@ -508,41 +520,64 @@ export default function PhotoSphereCapture({
       }, 140);
     }
 
-    // 1. Capture FULL UNCROPPED CAMERA FRAME directly from camera sensor
+    // 1. Crop exact center 3:4 region matching the viewfinder box
     const vw = videoEl.videoWidth;
     const vh = videoEl.videoHeight;
-    const fullFrameCanvas = document.createElement('canvas');
-    fullFrameCanvas.width = vw;
-    fullFrameCanvas.height = vh;
-    const fullFrameCtx = fullFrameCanvas.getContext('2d');
-    fullFrameCtx.drawImage(videoEl, 0, 0, vw, vh);
+    const targetAspect = 3 / 4;
+    const videoAspect = vw / vh;
+    let cropW, cropH, cropX, cropY;
 
-    // 2. Capture EXACT camera pose at this precise millisecond
-    const captureQuat = eng.camera.quaternion.clone();
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(captureQuat);
-    const exactPitch = Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1));
-    const exactYaw = Math.atan2(forward.x, -forward.z);
+    if (videoAspect > targetAspect) {
+      cropH = vh;
+      cropW = Math.round(vh * targetAspect);
+      cropX = Math.round((vw - cropW) / 2);
+      cropY = 0;
+    } else {
+      cropW = vw;
+      cropH = Math.round(vw / targetAspect);
+      cropX = 0;
+      cropY = Math.round((vh - cropH) / 2);
+    }
 
-    // 3. Paint frame into 3D sphere texture using exact pose & continuous cosine blending
-    projectLiveCameraFrameOntoSphere(fullFrameCanvas, captureQuat);
+    const tileCanvas = document.createElement('canvas');
+    tileCanvas.width = cropW;
+    tileCanvas.height = cropH;
+    const tileCtx = tileCanvas.getContext('2d');
+    tileCtx.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-    // 4. Save full uncropped frame with exact pose to IndexedDB
+    // Save snapped tile in capturedTiles (Fix 3: snap to target.yaw, target.pitch)
+    eng.capturedTiles.push({
+      targetId: target.id,
+      dotNumber: target.dotNumber !== undefined ? target.dotNumber : target.id,
+      yaw: target.yaw,
+      pitch: target.pitch,
+      canvas: tileCanvas,
+      width: cropW,
+      height: cropH,
+    });
+
+    // 2. Paint frame into 3D sphere texture using exact target pose & zero roll
+    const targetYawRad = (target.yaw * Math.PI) / 180;
+    const targetPitchRad = (target.pitch * Math.PI) / 180;
+    projectLiveCameraFrameOntoSphere(tileCanvas, targetYawRad, targetPitchRad);
+
+    // 3. Save uncropped tile frame to IndexedDB
     try {
-      fullFrameCanvas.toBlob(async (blob) => {
+      tileCanvas.toBlob(async (blob) => {
         if (blob) {
           eng.capturedCount++;
           await photoSphereStorage.saveFrame({
             id: `frame_${target.id}_${Date.now()}`,
             sessionId: eng.sessionId,
-            targetId: target.targetId || `t_${target.id}`,
-            sequenceIndex: target.id,
-            yaw: (exactYaw * 180) / Math.PI,
-            pitch: (exactPitch * 180) / Math.PI,
+            targetId: target.targetId || `t_${target.dotNumber !== undefined ? target.dotNumber : target.id}`,
+            sequenceIndex: target.dotNumber !== undefined ? target.dotNumber : target.id,
+            yaw: target.yaw,
+            pitch: target.pitch,
             roll: 0,
-            quaternion: [captureQuat.x, captureQuat.y, captureQuat.z, captureQuat.w],
+            quaternion: [0, 0, 0, 1],
             blob,
-            width: vw,
-            height: vh,
+            width: cropW,
+            height: cropH,
             capturedAt: Date.now(),
           });
         }
@@ -559,30 +594,132 @@ export default function PhotoSphereCapture({
     }, 160);
   }, []);
 
-  // Evaluate Dot Alignment in Real 3D Angular Space
+  // Render Unified Live 2D Stage (Fix 2 & Fix 3)
+  function renderLiveStage() {
+    const eng = engineRef.current;
+    const canvas = webglCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // Viewfinder box size: clamp(220, 42vw, 280) with 3:4 aspect ratio
+    const boxWidth = Math.min(Math.max(220, W * 0.42), 280);
+    const boxHeight = boxWidth * (4 / 3);
+    eng.currentBoxWidth = boxWidth;
+    eng.currentBoxHeight = boxHeight;
+
+    // 1. Dark 3D stage background
+    ctx.fillStyle = '#0d0d0d';
+    ctx.fillRect(0, 0, W, H);
+
+    const curYaw = eng.camYaw;
+    const curPitch = eng.camPitch;
+
+    // 2. Render all captured photo tiles at (screenX, screenY) with width boxWidth, height boxHeight (0° rotation)
+    if (eng.capturedTiles && eng.capturedTiles.length > 0) {
+      for (const tile of eng.capturedTiles) {
+        const proj = projectWorldToScreen(
+          tile.yaw,
+          tile.pitch,
+          curYaw,
+          curPitch,
+          W,
+          H,
+          boxWidth,
+          boxHeight
+        );
+        if (!proj) continue;
+
+        const x = Math.round(proj.screenX - boxWidth / 2);
+        const y = Math.round(proj.screenY - boxHeight / 2);
+
+        ctx.save();
+        ctx.drawImage(tile.canvas, x, y, boxWidth, boxHeight);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x, y, boxWidth, boxHeight);
+        ctx.restore();
+      }
+    }
+
+    // 3. Render all uncaptured visible target dots using the exact same projection!
+    for (const target of eng.targets) {
+      if (target.captured) continue; // FIX 4: Permanently hide captured dots!
+      if (!target.visible) continue;
+
+      const proj = projectWorldToScreen(
+        target.yaw,
+        target.pitch,
+        curYaw,
+        curPitch,
+        W,
+        H,
+        boxWidth,
+        boxHeight
+      );
+      if (!proj) continue;
+
+      const r = target.isGapDot ? 16 : 15; // 30px-32px diameter
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(proj.screenX, proj.screenY, r, 0, 2 * Math.PI);
+      ctx.fillStyle = target.isGapDot ? '#66b2ff' : '#aaaaaa';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.stroke();
+
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+      ctx.shadowBlur = 8;
+      ctx.restore();
+    }
+  }
+
+  // Strict Hold-Steady Lock & Dot Alignment (Fix 4)
   function evaluateDotAlignment(timestamp) {
     const eng = engineRef.current;
-    if (!eng.camera) return;
+    const canvas = webglCanvasRef.current;
+    if (!canvas) return;
 
-    // Exact optical center vector in 3D world space directly matching WebGL viewport
-    const opticalCenter = new THREE.Vector3(0, 0, -1).applyQuaternion(eng.camera.quaternion).normalize();
+    const viewportW = canvas.width || window.innerWidth;
+    const viewportH = canvas.height || window.innerHeight;
+    const centerX = viewportW / 2;
+    const centerY = viewportH / 2;
+    const boxWidth = eng.currentBoxWidth || 240;
+    const boxHeight = eng.currentBoxHeight || 320;
 
     let closest = null;
-    let minAngleDeg = Infinity;
+    let minScreenDist = Infinity;
+    let closestProj = null;
 
     for (const t of eng.targets) {
       if (t.captured || !t.visible) continue;
 
-      const angleDeg = THREE.MathUtils.radToDeg(
-        Math.acos(THREE.MathUtils.clamp(opticalCenter.dot(t.direction), -1, 1))
+      const proj = projectWorldToScreen(
+        t.yaw,
+        t.pitch,
+        eng.camYaw,
+        eng.camPitch,
+        viewportW,
+        viewportH,
+        boxWidth,
+        boxHeight
       );
+      if (!proj) continue;
 
-      t.mesh.material.color.setHex(t.isGapDot ? 0x66b2ff : 0xb5b5b5);
-      t.mesh.scale.setScalar(1.0);
-
-      if (angleDeg < minAngleDeg) {
-        minAngleDeg = angleDeg;
+      const dist = Math.hypot(proj.screenX - centerX, proj.screenY - centerY);
+      if (dist < minScreenDist) {
+        minScreenDist = dist;
         closest = t;
+        closestProj = proj;
       }
     }
 
@@ -590,12 +727,12 @@ export default function PhotoSphereCapture({
     const ringProgress = ringProgressRef.current;
     const banner = instructionBannerRef.current;
 
-    if (closest && minAngleDeg <= CONFIG.ALIGNMENT_THRESHOLD_DEG) {
-      closest.mesh.material.color.setHex(0x4285f4);
-      closest.mesh.scale.setScalar(1.35);
-      if (centerBlueDot) centerBlueDot.classList.add('aligned');
+    // Strict Hold-Steady Lock: dot inside center circle (< 22px) and angularVelocity < 15
+    const isInsideReticle = closest && minScreenDist < 22;
+    const isMovingTooFast = (eng.angularVelocity || 0) > 15;
 
-      if (eng.angularVelocity > CONFIG.MAX_ANGULAR_VELOCITY) {
+    if (isInsideReticle) {
+      if (isMovingTooFast) {
         if (banner) banner.textContent = 'Slow down — hold steady';
         resetHoldProgress();
         return;
@@ -606,7 +743,17 @@ export default function PhotoSphereCapture({
         eng.holdStartTime = timestamp;
       }
 
-      const progress = Math.min(1, (timestamp - eng.holdStartTime) / CONFIG.HOLD_DURATION_MS);
+      const progress = Math.min(1, (timestamp - eng.holdStartTime) / 350);
+
+      // Smoothly pull blue dot toward exact center (centerX, centerY)
+      if (centerBlueDot) {
+        centerBlueDot.style.opacity = '1';
+        const pullFactor = Math.min(1, progress * 1.5);
+        const pullX = (closestProj.screenX - centerX) * (1 - pullFactor);
+        const pullY = (closestProj.screenY - centerY) * (1 - pullFactor);
+        centerBlueDot.style.transform = `translate(calc(-50% + ${pullX.toFixed(1)}px), calc(-50% + ${pullY.toFixed(1)}px)) scale(${0.7 + 0.3 * progress})`;
+      }
+
       if (ringProgress) {
         ringProgress.style.strokeDashoffset = (RETICLE_CIRCUMFERENCE * (1 - progress)).toFixed(1);
       }
@@ -616,40 +763,22 @@ export default function PhotoSphereCapture({
         triggerSingleDotCapture(closest);
       }
     } else {
-      if (centerBlueDot) centerBlueDot.classList.remove('aligned');
+      if (centerBlueDot) {
+        centerBlueDot.style.opacity = '0';
+        centerBlueDot.style.transform = 'translate(-50%, -50%) scale(0.4)';
+      }
       resetHoldProgress();
 
       if (banner) {
         if (eng.coveragePercent >= 99) {
           banner.textContent = '360° Complete! Tap the checkmark ✓';
-        } else if (eng.historyStack.length === 0) {
+        } else if (eng.capturedTiles && eng.capturedTiles.length === 0) {
           banner.textContent = 'To start, keep center dot inside circle';
         } else {
           banner.textContent = 'Aim camera at the next dot to unlock that surface';
         }
       }
     }
-  }
-
-  // Draw Live Viewfinder into Preview Canvas without digital zoom
-  function drawLiveViewfinder() {
-    const videoEl = videoRef.current;
-    const previewCanvas = previewCanvasRef.current;
-    if (!previewCanvas) return;
-    const ctx = previewCanvas.getContext('2d');
-    const cw = previewCanvas.width;
-    const ch = previewCanvas.height;
-
-    if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) {
-      ctx.fillStyle = '#1c1c1c';
-      ctx.fillRect(0, 0, cw, ch);
-      return;
-    }
-
-    const vw = videoEl.videoWidth;
-    const vh = videoEl.videoHeight;
-    // Fit entire camera frame cleanly into preview canvas without zoom or crop
-    ctx.drawImage(videoEl, 0, 0, vw, vh, 0, 0, cw, ch);
   }
 
   // Master Render Loop
@@ -661,12 +790,8 @@ export default function PhotoSphereCapture({
       eng.angularVelocity *= 0.85;
     }
 
-    drawLiveViewfinder();
+    renderLiveStage();
     evaluateDotAlignment(timestamp);
-
-    if (eng.renderer && eng.scene && eng.camera) {
-      eng.renderer.render(eng.scene, eng.camera);
-    }
   }, [triggerSingleDotCapture]);
 
   // Start Hardware Camera Stream
@@ -1005,61 +1130,24 @@ export default function PhotoSphereCapture({
     eng.masterPanoCtx.fillStyle = '#121212';
     eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
 
-    // Three.js Scene Setup
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x111111);
-    eng.scene = scene;
-
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.5, 2000);
-    camera.position.set(0, 0, 0);
-    eng.camera = camera;
-    updateCameraFromYawPitch();
-
-    const renderer = new THREE.WebGLRenderer({ canvas: webglCanvasRef.current, antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    eng.renderer = renderer;
-
-    // Outer 3D world canvas uses wide 75°–90° FOV so dots at ±36° stay visible on screen
-    const updateCameraFov = () => {
-      if (!eng.camera || !eng.renderer) return;
-      const aspect = window.innerWidth / window.innerHeight;
-      eng.camera.aspect = aspect;
-
-      if (aspect < 1) {
-        const targetHFovRad = (80 * Math.PI) / 180;
-        const vFovRad = 2 * Math.atan(Math.tan(targetHFovRad / 2) / aspect);
-        eng.camera.fov = Math.min(95, Math.max(75, (vFovRad * 180) / Math.PI));
-      } else {
-        eng.camera.fov = 75;
-      }
-      eng.camera.updateProjectionMatrix();
-      eng.renderer.setSize(window.innerWidth, window.innerHeight);
-    };
-    updateCameraFov();
-
-    const sphereGeo = createTrueAlignedSphereGeometry(CONFIG.SPHERE_RADIUS, 72, 48);
-    const sphereTexture = new THREE.CanvasTexture(masterCanvas);
-    sphereTexture.minFilter = THREE.LinearFilter;
-    sphereTexture.magFilter = THREE.LinearFilter;
-    eng.sphereTexture = sphereTexture;
-
-    const sphereMat = new THREE.MeshBasicMaterial({ map: sphereTexture, side: THREE.DoubleSide });
-    eng.sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
-    scene.add(eng.sphereMesh);
-
-    eng.targetGroup = new THREE.Group();
-    scene.add(eng.targetGroup);
+    // Setup 2D Live Stage Canvas
+    if (webglCanvasRef.current) {
+      webglCanvasRef.current.width = window.innerWidth;
+      webglCanvasRef.current.height = window.innerHeight;
+    }
 
     initTargetLattice();
 
     // Resize Handler
     const handleResize = () => {
-      updateCameraFov();
+      if (webglCanvasRef.current) {
+        webglCanvasRef.current.width = window.innerWidth;
+        webglCanvasRef.current.height = window.innerHeight;
+      }
     };
     window.addEventListener('resize', handleResize);
 
-    // Pointer Drag Controls
+    // Pointer Drag Controls (Fallback / Desktop)
     let dragging = false, px = 0, py = 0;
     const canvasEl = webglCanvasRef.current;
     const onPointerDown = (e) => {
@@ -1074,18 +1162,9 @@ export default function PhotoSphereCapture({
       px = e.clientX;
       py = e.clientY;
 
-      eng.yaw += dx * 0.0055;
-      if (eng.yaw > Math.PI) eng.yaw -= 2 * Math.PI;
-      if (eng.yaw < -Math.PI) eng.yaw += 2 * Math.PI;
-
-      eng.pitch = THREE.MathUtils.clamp(
-        eng.pitch - dy * 0.0055,
-        -Math.PI / 2 + 0.04,
-        Math.PI / 2 - 0.04
-      );
-
-      eng.angularVelocity = Math.hypot(dx, dy) * 1.4;
-      updateCameraFromYawPitch();
+      eng.camYaw = ((eng.camYaw + dx * 0.18 + 540) % 360) - 180;
+      eng.camPitch = THREE.MathUtils.clamp(eng.camPitch - dy * 0.18, -89, 89);
+      eng.angularVelocity = Math.hypot(dx, dy) * 1.5;
     };
     const onPointerUp = () => {
       dragging = false;
@@ -1098,53 +1177,39 @@ export default function PhotoSphereCapture({
       window.addEventListener('pointerup', onPointerUp);
     }
 
-    // Gyroscope DeviceOrientation Binding with Stable Reference Orientation Anchoring
+    // Gyroscope DeviceOrientation Binding with Horizon-Locked ZXY Looking Direction (Fix 1)
     const onDeviceOrientation = (e) => {
       if (e.alpha === null || e.beta === null) return;
       eng.useGyro = true;
 
+      // Extract clean, horizon-locked yaw and pitch without wrist roll (gamma)
+      const { yaw: rawYaw, pitch: rawPitch } = getStabilizedYawPitch(e.alpha, e.beta, e.gamma);
+
       // Lock initial reference orientation when opening capture mode
-      if (eng.initialAlphaOffset === null) {
-        eng.initialAlphaOffset = e.alpha || 0;
-        eng.initialBetaOffset = (e.beta || 90) - 90;
-        eng.initialGammaOffset = e.gamma || 0;
+      if (eng.initialYaw === null) {
+        eng.initialYaw = rawYaw;
+        eng.camYaw = 0;
+        eng.camPitch = rawPitch;
       }
 
-      // Compute stable relative angles without quaternion inversion
-      const relAlpha = (e.alpha || 0) - eng.initialAlphaOffset;
-      const relBeta = (e.beta || 90) - eng.initialBetaOffset;
-      const relGamma = (e.gamma || 0) - eng.initialGammaOffset;
+      // Compass-free relative yaw anchored to starting frame
+      const targetYaw = ((rawYaw - eng.initialYaw + 540) % 360) - 180;
+      const targetPitch = THREE.MathUtils.clamp(rawPitch, -89, 89);
 
-      const alpha = THREE.MathUtils.degToRad(relAlpha);
-      const beta = THREE.MathUtils.degToRad(relBeta);
-      const gamma = THREE.MathUtils.degToRad(relGamma);
-      const orient = window.screen?.orientation
-        ? THREE.MathUtils.degToRad(window.screen.orientation.angle)
-        : (typeof window.orientation === 'number' ? THREE.MathUtils.degToRad(window.orientation) : 0);
-
-      const euler = new THREE.Euler(beta, alpha, -gamma, 'YXZ');
-      const q = new THREE.Quaternion().setFromEuler(euler);
-      q.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
-      q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient));
-
-      // Filtered angular velocity tracking with actual dt measurement (prevents false speed guards)
+      // Track movement speed (deg/sec) with dt measurement to protect against jerky motion
       const now = performance.now();
       if (eng.lastOrientTime) {
         const dt = Math.max(0.005, (now - eng.lastOrientTime) / 1000);
-        const prev = eng.camera.quaternion.clone();
-        const deltaRad = 2 * Math.acos(Math.min(1, Math.abs(prev.dot(q))));
-        const deltaDeg = THREE.MathUtils.radToDeg(deltaRad);
-        const instVel = deltaDeg > 0.08 ? (deltaDeg / dt) : 0;
-        eng.angularVelocity = 0.8 * (eng.angularVelocity || 0) + 0.2 * instVel;
+        const dYaw = ((targetYaw - eng.camYaw + 540) % 360) - 180;
+        const dPitch = targetPitch - eng.camPitch;
+        const instSpeed = Math.hypot(dYaw, dPitch) / dt;
+        eng.angularVelocity = 0.8 * (eng.angularVelocity || 0) + 0.2 * instSpeed;
       }
       eng.lastOrientTime = now;
 
-      // Smooth camera orientation transition
-      eng.camera.quaternion.slerp(q, 0.40);
-
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(eng.camera.quaternion);
-      eng.pitch = Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1));
-      eng.yaw = Math.atan2(forward.x, -forward.z);
+      // Smooth with circular EMA (shortest wrapping path)
+      eng.camYaw = lerpAngleDeg(eng.camYaw, targetYaw, 0.22);
+      eng.camPitch = eng.camPitch + (targetPitch - eng.camPitch) * 0.22;
     };
 
     eng.onDeviceOrientation = onDeviceOrientation;
