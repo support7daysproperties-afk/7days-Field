@@ -518,6 +518,26 @@ class SyncEngine {
                            null;
     const taskId = existingTaskId || generateUUID();
 
+    // 2b. Attempt to auto-create parent task in field_tasks so foreign key constraint (field_inspections_task_id_fkey) is satisfied
+    if (taskId) {
+      try {
+        await supabase
+          .from('field_tasks')
+          .upsert({
+            id: taskId,
+            name: inspection.property_name || inspection.title || `Site Survey ${inspection.id}`,
+            type: inspection.inspection_type || 'Property Verification',
+            location: inspection.location_name || '',
+            status: ['PENDING', 'IN_PROGRESS', 'COMPLETED'].includes(inspection.status) ? inspection.status : 'COMPLETED',
+            supervisor_id: supervisorId,
+            property_id: propertyId,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'id' });
+      } catch (_taskErr) {
+        // Silently continue if field_tasks is managed separately or restricted by RLS
+      }
+    }
+
     // 3. Build payload matching confirmed schema of public.field_inspections:
     // Columns: id, property_id, supervisor_id, task_id, status, sync_status, checklist, remarks, owner_name, owner_phone, consent_given, signature_url, updated_at
     const record = {
@@ -536,11 +556,25 @@ class SyncEngine {
       updated_at: new Date().toISOString(),
     };
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('field_inspections')
       .upsert(record, { onConflict: 'id' })
       .select('id')
       .single();
+
+    // Resilient fallback: If Supabase foreign key constraint rejects ad-hoc task_id,
+    // retry upserting without the unlinked task_id:
+    if (error && error.message && error.message.includes('field_inspections_task_id_fkey')) {
+      console.warn('[SyncEngine] Retrying inspection upsert without unlinked task_id:', error.message);
+      const fallbackRecord = { ...record, task_id: null };
+      const fallbackRes = await supabase
+        .from('field_inspections')
+        .upsert(fallbackRecord, { onConflict: 'id' })
+        .select('id')
+        .single();
+      data = fallbackRes.data;
+      error = fallbackRes.error;
+    }
 
     if (error) throw new Error(`Supabase inspection record upsert failed: ${error.message}`);
 

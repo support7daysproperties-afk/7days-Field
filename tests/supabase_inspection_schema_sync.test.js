@@ -350,4 +350,58 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     expect(mockJobs.get('job_fail').status).toBe('FAILED');
     expect(mockJobs.get('job_fail').last_error).toContain('Supabase inspection record upsert failed');
   });
+
+  // 6. Graceful foreign key fallback retry
+  it('gracefully falls back and retries upsert without task_id when field_inspections_task_id_fkey is violated', async () => {
+    const inspectionId = 'INS-20261017-291';
+    let upsertAttempts = 0;
+    const capturedPayloads = [];
+
+    vi.spyOn(supabase, 'from').mockImplementation((table) => {
+      if (table === 'field_inspections') {
+        return {
+          upsert: vi.fn().mockImplementation((payload) => {
+            capturedPayloads.push(payload);
+            upsertAttempts++;
+            if (upsertAttempts === 1) {
+              return {
+                select: vi.fn().mockReturnValue({
+                  single: vi.fn().mockResolvedValue({
+                    data: null,
+                    error: { message: 'insert or update on table "field_inspections" violates foreign key constraint "field_inspections_task_id_fkey"' }
+                  })
+                })
+              };
+            }
+            return {
+              select: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({
+                  data: { id: 'c8d67a91-4e4b-4b2a-8745-f09b2b512c01' },
+                  error: null
+                })
+              })
+            };
+          }),
+          update: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: null, error: null })
+          })
+        };
+      }
+      return {
+        upsert: vi.fn().mockReturnValue({ error: null }),
+        update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ data: null, error: null }) })
+      };
+    });
+
+    mockInspections.set(inspectionId, { id: inspectionId, status: 'COMPLETED', sync_status: 'QUEUED' });
+    mockJobs.set('job_fk_retry', { id: 'job_fk_retry', inspection_id: inspectionId, status: 'QUEUED' });
+
+    await SyncEngine.startSync();
+
+    // Verify first attempt sent generated task_id, and second fallback attempt sent task_id: null
+    expect(capturedPayloads.length).toBe(2);
+    expect(capturedPayloads[0].task_id).toBeDefined();
+    expect(capturedPayloads[1].task_id).toBeNull();
+    expect(mockInspections.get(inspectionId).server_id).toBe('c8d67a91-4e4b-4b2a-8745-f09b2b512c01');
+  });
 });
