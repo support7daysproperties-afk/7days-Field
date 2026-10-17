@@ -65,6 +65,10 @@ public class MainActivity extends BridgeActivity {
             WebView webView = getBridge().getWebView();
             webView.getSettings().setGeolocationEnabled(true);
             webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);
+            webView.getSettings().setDomStorageEnabled(true);
+            webView.getSettings().setDatabaseEnabled(true);
+            WebView.setWebContentsDebuggingEnabled(true);
+            webView.clearCache(true);
         }
     }
 }
