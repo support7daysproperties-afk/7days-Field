@@ -199,6 +199,7 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
         <div 
           style={{
             padding: '12px 16px',
+            paddingTop: 'calc(var(--safe-area-top, 36px) + 12px)',
             backgroundColor: '#1e293b',
             borderBottom: '1px solid #334155',
             display: 'flex',

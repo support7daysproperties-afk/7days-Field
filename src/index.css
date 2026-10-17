@@ -65,7 +65,22 @@
   /* Shadows & Depth */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.35);
   --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -1px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 10px 25px -4px rgba(0, 0, 0, 0.55), 0 4px 10px -2px rgba(0, 0, 0, 0.4);
+  /* Device Safe Area Insets (Android status bar / notch accommodation) */
+  --safe-area-top: 0px;
+}
+
+@media (max-width: 768px) {
+  :root {
+    --safe-area-top: max(env(safe-area-inset-top, 0px), 36px);
+  }
+}
+
+.is-native {
+  --safe-area-top: max(env(safe-area-inset-top, 0px), 38px) !important;
+}
+
+.safe-top-header {
+  padding-top: calc(var(--safe-area-top, 36px) + 12px) !important;
 }
 
 * {
@@ -121,6 +136,7 @@ h4 { font-size: 13px; font-weight: 600; }
 
 .page-content {
   padding: 14px 16px;
+  padding-top: calc(var(--safe-area-top, 0px) + 14px);
   animation: fade-in 0.22s ease-out;
 }
 

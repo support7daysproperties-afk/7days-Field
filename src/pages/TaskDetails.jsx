@@ -6,7 +6,7 @@ export default function TaskDetails() {
   const { id } = useParams();
 
   return (
-    <div className="task-details-page pb-xl" style={{ backgroundColor: 'var(--bg-color)', minHeight: '100vh', padding: '16px' }}>
+    <div className="task-details-page pb-xl" style={{ backgroundColor: 'var(--bg-color)', minHeight: '100vh', padding: '16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 14px)' }}>
       <header className="flex items-center gap-md mb-md">
         <button onClick={() => navigate(-1)} className="text-primary" style={{ background: 'none', border: 'none', padding: 0 }}>
           <ArrowLeft size={24} />

@@ -1213,6 +1213,7 @@ const S = {
   header: {
     position: 'absolute', top: 0, left: 0, right: 0, zIndex: 500,
     display: 'flex', alignItems: 'center', padding: '10px 12px',
+    paddingTop: 'calc(var(--safe-area-top, 36px) + 10px)',
     background: 'rgba(15,17,21,0.90)', backdropFilter: 'blur(10px)',
     borderBottom: '1px solid rgba(255,255,255,0.07)',
     gap: 8,

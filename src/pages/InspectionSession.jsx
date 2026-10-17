@@ -520,7 +520,14 @@ export default function InspectionSession() {
     
     return (
       <div style={{ minHeight: '100vh', paddingBottom: '100px' }}>
-        <header className="flex items-center justify-between p-md border-b border-color relative" style={{ backgroundColor: 'var(--surface-color)', padding: '16px' }}>
+        <header 
+          className="flex items-center justify-between p-md border-b border-color relative safe-top-header" 
+          style={{ 
+            backgroundColor: 'var(--surface-color)', 
+            padding: '14px 16px',
+            paddingTop: 'calc(var(--safe-area-top, 36px) + 12px)'
+          }}
+        >
           <div>
             <h2 style={{ fontSize: '18px', margin: 0, fontWeight: 700, color: 'var(--text-primary)' }}>Inspection Dashboard</h2>
             <div className="text-secondary text-xs" style={{ marginTop: '2px' }}>Site Progress & Section Checklist</div>
@@ -1778,7 +1785,18 @@ export default function InspectionSession() {
       )}
 
       {activeStepId !== 'overview' && (
-        <header className="p-md" style={{ padding: '16px', backgroundColor: 'var(--surface-color)', borderBottom: '1px solid var(--border-color)', position: 'sticky', top: 0, zIndex: 10 }}>
+        <header 
+          className="p-md safe-top-header" 
+          style={{ 
+            padding: '12px 16px 14px 16px', 
+            paddingTop: 'calc(var(--safe-area-top, 36px) + 12px)',
+            backgroundColor: 'var(--surface-color)', 
+            borderBottom: '1px solid var(--border-color)', 
+            position: 'sticky', 
+            top: 0, 
+            zIndex: 10 
+          }}
+        >
           <div className="flex justify-between items-center mb-sm">
             <div className="flex items-center gap-sm">
               <button onClick={() => setActiveStepId('overview')} className="text-primary flex items-center" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
@@ -1945,7 +1963,7 @@ export default function InspectionSession() {
           {/* Close Button */}
           <button 
             onClick={() => setSelectedMediaIndex(null)} 
-            style={{ position: 'absolute', top: '16px', right: '16px', backgroundColor: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: '50%', padding: '8px', cursor: 'pointer', zIndex: 10000 }}
+            style={{ position: 'absolute', top: 'calc(var(--safe-area-top, 36px) + 12px)', right: '16px', backgroundColor: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: '50%', padding: '8px', cursor: 'pointer', zIndex: 10000 }}
           >
             <X size={24} color="white" />
           </button>
@@ -1953,7 +1971,7 @@ export default function InspectionSession() {
           {/* Delete Button */}
           <button 
             onClick={() => setShowDeleteConfirm(true)} 
-            style={{ position: 'absolute', top: '16px', right: '64px', backgroundColor: 'rgba(255,0,0,0.4)', border: 'none', borderRadius: '50%', padding: '8px', cursor: 'pointer', zIndex: 10000 }}
+            style={{ position: 'absolute', top: 'calc(var(--safe-area-top, 36px) + 12px)', right: '64px', backgroundColor: 'rgba(255,0,0,0.4)', border: 'none', borderRadius: '50%', padding: '8px', cursor: 'pointer', zIndex: 10000 }}
           >
             <Trash2 size={24} color="white" />
           </button>

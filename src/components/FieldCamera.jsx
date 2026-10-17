@@ -381,7 +381,7 @@ export default function FieldCamera({
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 100 }}>
       {/* Header */}
-      <div className="flex justify-between items-center p-md" style={{ padding: '16px', color: 'white', zIndex: 20 }}>
+      <div className="flex justify-between items-center p-md" style={{ padding: '12px 16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 12px)', color: 'white', zIndex: 20 }}>
         <button onClick={handleFinish} className="text-white flex items-center gap-xs" style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '20px', padding: '6px 14px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}>
           <X size={18} /> Done ({capturedCount})
         </button>
@@ -395,7 +395,7 @@ export default function FieldCamera({
 
       {/* Live GPS Status */}
       {evidenceType === 'Location Verification' && (
-        <div className="absolute w-full z-10 flex justify-center mt-2" style={{ top: '64px' }}>
+        <div className="absolute w-full z-10 flex justify-center mt-2" style={{ top: 'calc(var(--safe-area-top, 36px) + 60px)' }}>
           {liveLocation.loading ? (
              <div className="bg-black bg-opacity-70 text-white px-md py-xs rounded-full flex items-center gap-sm text-sm" style={{ padding: '4px 16px', borderRadius: '16px', backgroundColor: 'rgba(0,0,0,0.6)'}}>
                <div className="spinner" style={{ width: '12px', height: '12px', border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>

@@ -176,7 +176,7 @@ export default function CreateInspection() {
   };
 
   return (
-    <div className="pb-xl" style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', minHeight: '100vh', padding: '16px', paddingBottom: '110px' }}>
+    <div className="pb-xl" style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', minHeight: '100vh', padding: '16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 14px)', paddingBottom: '110px' }}>
       <header className="flex items-center gap-md mb-lg">
         <button 
           onClick={() => navigate(-1)} 

@@ -279,7 +279,7 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
   if (!recordedVideoUrl) {
     return (
       <div className="fixed inset-0 bg-black z-50 flex flex-col" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 100, display: 'flex', flexDirection: 'column' }}>
-        <div className="flex justify-between items-center p-md" style={{ padding: '16px', color: 'white' }}>
+        <div className="flex justify-between items-center p-md" style={{ padding: '12px 16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 12px)', color: 'white' }}>
           <button onClick={onCancel} className="text-white" style={{ background: 'none', border: 'none' }} disabled={isRecording}><X size={28} /></button>
           <span className="font-medium">{isRecording ? <span className="text-danger flex items-center gap-xs"><span style={{width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--danger-color)'}}></span> Recording {formatTime(recordingTime)}</span> : evidenceType}</span>
           <button onClick={toggleCamera} className="text-white" style={{ background: 'none', border: 'none' }} disabled={isRecording}><RotateCcw size={24} /></button>
@@ -366,7 +366,7 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
 
   return (
     <div className="fixed inset-0 bg-surface z-50 flex flex-col overflow-y-auto" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'var(--bg-color)', zIndex: 100, display: 'flex', flexDirection: 'column' }}>
-      <div className="p-md bg-surface-color border-b border-color" style={{ padding: '16px', backgroundColor: 'var(--surface-color)', borderBottom: '1px solid var(--border-color)' }}>
+      <div className="p-md bg-surface-color border-b border-color" style={{ padding: '14px 16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 12px)', backgroundColor: 'var(--surface-color)', borderBottom: '1px solid var(--border-color)' }}>
         <h2 className="text-center" style={{ fontSize: '18px' }}>Review Video</h2>
       </div>
 

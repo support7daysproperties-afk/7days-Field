@@ -18,6 +18,11 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(GoogleAuthPlugin.class);
         super.onCreate(savedInstanceState);
 
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setStatusBarColor(android.graphics.Color.parseColor("#141821"));
+            getWindow().setNavigationBarColor(android.graphics.Color.parseColor("#0b0e14"));
+        }
+
         requestAppPermissions();
         configureWebViewPermissions();
     }
