@@ -18,6 +18,8 @@ import {
   findLargestUncapturedGap,
   updateFrontierAndGapDots,
   COVERAGE_CONFIG,
+  getProjectionScale,
+  projectDotToScreen,
 } from '../src/features/photo-sphere/PhotoSphereTargets';
 
 describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
@@ -119,6 +121,32 @@ describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
     expect(Math.round(angularDistance(0, 0, 90, 0))).toBe(90);
     expect(Math.round(angularDistance(0, 0, 0, 90))).toBe(90);
     expect(Math.round(angularDistance(0, 45, 0, -45))).toBe(90);
+  });
+
+  it('should calculate projection scale and place 36-deg dots cleanly outside the viewfinder box', () => {
+    // Viewfinder width 240px with 45-deg camera horizontal FOV
+    const viewfinderWidth = 240;
+    const focalPx = getProjectionScale(viewfinderWidth);
+    // focalPx = (240 / 2) / tan(22.5°) ≈ 120 / 0.4142 ≈ 289.7px
+    expect(Math.round(focalPx)).toBe(290);
+
+    // Test dot at yaw +36° (x_c = sin(36°)*R, z_c = -cos(36°)*R)
+    const yaw36Rad = (36 * Math.PI) / 180;
+    const xc = Math.sin(yaw36Rad);
+    const zc = -Math.cos(yaw36Rad);
+    const screenW = 400;
+    const screenH = 800;
+
+    const proj = projectDotToScreen(xc, 0, zc, screenW, screenH, viewfinderWidth);
+    expect(proj).not.toBeNull();
+    // Delta from screen center (200px):
+    const deltaX = proj.screenX - screenW / 2;
+    // tan(36°) * focalPx ≈ 0.7265 * 289.7 ≈ 210.5px
+    expect(Math.round(deltaX)).toBe(210);
+
+    // Center viewfinder box half-width is 120px (240 / 2)
+    // 210px is well beyond the 120px border, proving the dot sits cleanly in the margin outside the box!
+    expect(deltaX).toBeGreaterThan(viewfinderWidth / 2);
   });
 
   it('should select adjacent targets on the same ring before transitioning', () => {

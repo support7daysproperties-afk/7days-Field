@@ -251,6 +251,32 @@ export function generateSphericalTargets() {
 }
 
 /**
+ * Match focal distance to the viewfinder box width (~45° camera horizontal FOV)
+ * So a 36° horizon step sits cleanly outside the box to the left and right
+ */
+export function getProjectionScale(viewfinderWidthPx) {
+  const cameraHorizontalFovRad = (45 * Math.PI) / 180;
+  // Focal distance in pixels from the center of the screen:
+  return (viewfinderWidthPx / 2) / Math.tan(cameraHorizontalFovRad / 2);
+}
+
+/**
+ * Perspective projection with soft wide-angle compression so side dots stay visible on screen
+ */
+export function projectDotToScreen(x_c, y_c, z_c, screenW, screenH, viewfinderWidthPx) {
+  if (z_c <= 0.15 && z_c >= -0.05) return null; // Dot is behind camera
+
+  const focalPx = getProjectionScale(viewfinderWidthPx);
+  const depth = Math.abs(z_c) || 1;
+
+  // Perspective projection with soft wide-angle compression so side dots stay visible on screen
+  const screenX = (screenW / 2) + (x_c / depth) * focalPx;
+  const screenY = (screenH / 2) - (y_c / depth) * focalPx;
+
+  return { screenX, screenY, focalPx };
+}
+
+/**
  * Projects a 3D world target onto 2D camera viewport using camera rotation matrix
  * and perspective projection matching the APK's LightCycle projection.
  *

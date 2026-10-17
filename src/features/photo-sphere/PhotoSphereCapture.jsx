@@ -5,13 +5,15 @@ import { photoSphereStorage } from './storage/PhotoSphereStorage';
 import { injectXmpIntoJpeg } from './PhotoSphereXMP';
 import { PHOTO_SPHERE_TARGETS } from './PhotoSphereTargets';
 
+const RETICLE_CIRCUMFERENCE = 138.23;
+
 const CONFIG = {
   ALIGNMENT_THRESHOLD_DEG: 4.8,
   MAX_ANGULAR_VELOCITY: 45.0,
   HOLD_DURATION_MS: 320,
   CAPTURE_FOV_H_DEG: 44,
   CAPTURE_FOV_V_DEG: 54,
-  SPHERE_RADIUS: 12,
+  SPHERE_RADIUS: 500, // Exact 3D sphere radius R = 500 units
   PANO_WIDTH: 2048,
   PANO_HEIGHT: 1024,
   COVERAGE_LON_STEPS: 72,
@@ -192,9 +194,10 @@ export default function PhotoSphereCapture({
   function spawnTargetDot(id, yawRad, pitchRad, visibleInitially, isGapDot, targetMeta = null) {
     const eng = engineRef.current;
     const dir = sphericalToCartesian(yawRad, pitchRad).normalize();
-    const pos = dir.clone().multiplyScalar(CONFIG.SPHERE_RADIUS * 0.9);
+    const pos = dir.clone().multiplyScalar(CONFIG.SPHERE_RADIUS * 0.92);
 
-    const dotGeo = new THREE.SphereGeometry(isGapDot ? 0.35 : 0.31, 24, 24);
+    // Exact 28px-32px diameter (30px diameter uncaptured target dots, radius 15 units)
+    const dotGeo = new THREE.SphereGeometry(isGapDot ? 17 : 15, 24, 24);
     const dotMat = new THREE.MeshBasicMaterial({
       color: isGapDot ? 0x66b2ff : 0xaaaaaa,
       transparent: true,
@@ -344,7 +347,7 @@ export default function PhotoSphereCapture({
     eng.activeTarget = null;
     eng.holdStartTime = 0;
     if (ringProgressRef.current) {
-      ringProgressRef.current.style.strokeDashoffset = '219.9';
+      ringProgressRef.current.style.strokeDashoffset = String(RETICLE_CIRCUMFERENCE);
     }
   }
 
@@ -605,7 +608,7 @@ export default function PhotoSphereCapture({
 
       const progress = Math.min(1, (timestamp - eng.holdStartTime) / CONFIG.HOLD_DURATION_MS);
       if (ringProgress) {
-        ringProgress.style.strokeDashoffset = (219.9 * (1 - progress)).toFixed(1);
+        ringProgress.style.strokeDashoffset = (RETICLE_CIRCUMFERENCE * (1 - progress)).toFixed(1);
       }
       if (banner) banner.textContent = 'Hold steady...';
 
@@ -678,6 +681,15 @@ export default function PhotoSphereCapture({
         video: {
           facingMode: { ideal: facingMode },
           width: { ideal: 1280 },
+          height: { ideal: 960 }, // Native 4:3 sensor aspect ratio (prevents browser zoom crop)
+          aspectRatio: { ideal: 1.333333 },
+        },
+        audio: false,
+      },
+      {
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1280 },
           height: { ideal: 720 },
         },
         audio: false,
@@ -697,6 +709,19 @@ export default function PhotoSphereCapture({
     if (!stream) {
       console.warn('Camera access unavailable or blocked');
       return false;
+    }
+
+    // Explicitly lock zoom to 1.0x if the mobile browser supports hardware zoom
+    const [track] = stream.getVideoTracks();
+    const capabilities = track?.getCapabilities?.() || {};
+    if ('zoom' in capabilities) {
+      try {
+        await track.applyConstraints({
+          advanced: [{ zoom: capabilities.zoom?.min || 1.0 }],
+        });
+      } catch (err) {
+        console.warn('Could not lock hardware zoom to 1.0x:', err);
+      }
     }
 
     eng.currentStream = stream;
@@ -985,7 +1010,7 @@ export default function PhotoSphereCapture({
     scene.background = new THREE.Color(0x111111);
     eng.scene = scene;
 
-    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 100);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.5, 2000);
     camera.position.set(0, 0, 0);
     eng.camera = camera;
     updateCameraFromYawPitch();
@@ -994,6 +1019,24 @@ export default function PhotoSphereCapture({
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     eng.renderer = renderer;
+
+    // Outer 3D world canvas uses wide 75°–90° FOV so dots at ±36° stay visible on screen
+    const updateCameraFov = () => {
+      if (!eng.camera || !eng.renderer) return;
+      const aspect = window.innerWidth / window.innerHeight;
+      eng.camera.aspect = aspect;
+
+      if (aspect < 1) {
+        const targetHFovRad = (80 * Math.PI) / 180;
+        const vFovRad = 2 * Math.atan(Math.tan(targetHFovRad / 2) / aspect);
+        eng.camera.fov = Math.min(95, Math.max(75, (vFovRad * 180) / Math.PI));
+      } else {
+        eng.camera.fov = 75;
+      }
+      eng.camera.updateProjectionMatrix();
+      eng.renderer.setSize(window.innerWidth, window.innerHeight);
+    };
+    updateCameraFov();
 
     const sphereGeo = createTrueAlignedSphereGeometry(CONFIG.SPHERE_RADIUS, 72, 48);
     const sphereTexture = new THREE.CanvasTexture(masterCanvas);
@@ -1012,10 +1055,7 @@ export default function PhotoSphereCapture({
 
     // Resize Handler
     const handleResize = () => {
-      if (!eng.camera || !eng.renderer) return;
-      eng.camera.aspect = window.innerWidth / window.innerHeight;
-      eng.camera.updateProjectionMatrix();
-      eng.renderer.setSize(window.innerWidth, window.innerHeight);
+      updateCameraFov();
     };
     window.addEventListener('resize', handleResize);
 
@@ -1159,12 +1199,13 @@ export default function PhotoSphereCapture({
   return (
     <div
       ref={containerRef}
+      className="photosphere-stage"
       style={{
         position: 'fixed',
         inset: 0,
         width: '100vw',
         height: '100dvh',
-        backgroundColor: '#111111',
+        backgroundColor: '#0d0d0d',
         color: '#ffffff',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         overflow: 'hidden',
@@ -1173,11 +1214,11 @@ export default function PhotoSphereCapture({
         userSelect: 'none',
         WebkitUserSelect: 'none',
         overscrollBehavior: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
       }}
     >
-      {/* Hidden Live Video Element */}
-      <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
-
       {/* 3D WebGL Canvas */}
       <canvas
         ref={webglCanvasRef}
@@ -1344,67 +1385,75 @@ export default function PhotoSphereCapture({
         To start, keep center dot inside circle
       </div>
 
-      {/* Center Live Camera Viewfinder Box */}
+      {/* The centered white-bordered camera viewfinder box (exact distance from video & screenshot) */}
       <div
+        className="camera-viewfinder-box"
         style={{
           position: 'absolute',
           top: '50%',
           left: '50%',
-          width: 'min(220px, 60vw)',
-          height: 'min(275px, calc(60vw * 1.25))',
           transform: 'translate(-50%, -50%)',
-          border: '2px solid rgba(255, 255, 255, 0.95)',
-          boxShadow: '0 0 30px rgba(0, 0, 0, 0.8)',
-          zIndex: 5,
+          width: 'clamp(220px, 42vw, 280px)',
+          aspectRatio: '3 / 4',
+          border: '2px solid rgba(255, 255, 255, 0.85)',
+          boxShadow: '0 0 24px rgba(0, 0, 0, 0.6)',
+          borderRadius: '4px',
           overflow: 'hidden',
+          zIndex: 5,
           pointerEvents: 'none',
+          backgroundColor: '#0d0d0d',
         }}
       >
-        <canvas
-          ref={previewCanvasRef}
-          width={440}
-          height={550}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain', // CRITICAL: Shows full uncropped sensor, zero artificial zoom!
+            display: 'block',
+            pointerEvents: 'none',
+          }}
         />
 
-        {/* Center Reticle & Blue Alignment Circle */}
+        {/* Fixed center target ring inside the viewfinder box */}
         <div
+          className="center-reticle-ring"
           style={{
             position: 'absolute',
             top: '50%',
             left: '50%',
+            width: '54px',
+            height: '54px',
             transform: 'translate(-50%, -50%)',
-            width: '86px',
-            height: '86px',
+            border: '2.5px solid rgba(255, 255, 255, 0.9)',
+            borderRadius: '50%',
+            pointerEvents: 'none',
+            zIndex: 10,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            boxSizing: 'border-box',
           }}
         >
           <svg
-            width="86"
-            height="86"
-            viewBox="0 0 86 86"
-            style={{ transform: 'rotate(-90deg)', zIndex: 2 }}
+            width="54"
+            height="54"
+            viewBox="0 0 54 54"
+            style={{ position: 'absolute', transform: 'rotate(-90deg)', zIndex: 2 }}
           >
             <circle
-              cx="43"
-              cy="43"
-              r="35"
-              fill="none"
-              stroke="rgba(255, 255, 255, 0.78)"
-              strokeWidth="3"
-            />
-            <circle
               ref={ringProgressRef}
-              cx="43"
-              cy="43"
-              r="35"
+              cx="27"
+              cy="27"
+              r="22"
               fill="none"
               stroke="#4285F4"
-              strokeWidth="5.5"
-              strokeDasharray="219.9"
-              strokeDashoffset="219.9"
+              strokeWidth="4"
+              strokeDasharray={String(RETICLE_CIRCUMFERENCE)}
+              strokeDashoffset={String(RETICLE_CIRCUMFERENCE)}
               strokeLinecap="round"
               style={{ transition: 'stroke-dashoffset 0.05s linear' }}
             />
@@ -1414,8 +1463,8 @@ export default function PhotoSphereCapture({
             id="center-blue-dot"
             style={{
               position: 'absolute',
-              width: '56px',
-              height: '56px',
+              width: '30px',
+              height: '30px',
               borderRadius: '50%',
               background: '#4285F4',
               opacity: 0,
