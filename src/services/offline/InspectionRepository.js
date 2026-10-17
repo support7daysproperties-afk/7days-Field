@@ -14,6 +14,7 @@ class InspectionRepository {
     };
 
     await db.put('inspections', record);
+    DatabaseService._notify({ type: 'inspection_saved', inspectionId: record.id, status: record.status });
     return record;
   }
 
@@ -42,6 +43,7 @@ class InspectionRepository {
   async deleteInspection(id) {
     const db = await DatabaseService.getDB();
     await db.delete('inspections', id);
+    DatabaseService._notify({ type: 'inspection_deleted', inspectionId: id });
   }
 }
 

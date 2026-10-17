@@ -11,6 +11,7 @@ import MediaRepository from '../services/offline/MediaRepository';
 import SyncJobRepository from '../services/offline/SyncJobRepository';
 import ConnectivityService from '../services/offline/ConnectivityService';
 import SyncEngine from '../services/offline/SyncEngine';
+import DatabaseService from '../services/offline/DatabaseService';
 import { useAuth } from '../context/AuthContext';
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -154,7 +155,7 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
               </div>
             )}
 
-            {job?.last_error && inspection.sync_status !== 'SYNCED' && (
+            {job?.last_error && !['SYNCED', 'SYNCING', 'QUEUED'].includes(inspection.sync_status) && (
               <div style={{ padding: '8px 10px', borderRadius: '8px', backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', fontSize: '12px', color: 'var(--warning-color)' }}>
                 <div style={{ fontWeight: '600', marginBottom: '2px' }}>Notice:</div>
                 <div>{job.last_error}</div>
@@ -264,27 +265,52 @@ export default function Sync() {
   }, [loadData]);
 
   useEffect(() => {
-    const unsub = ConnectivityService.subscribe(setIsOnline);
-    return unsub;
-  }, []);
+    const unsubDb = DatabaseService.subscribe(() => {
+      loadData();
+    });
 
-  useEffect(() => {
-    const unsub = SyncEngine.subscribe(() => {
+    const unsubConn = ConnectivityService.subscribe((status) => {
+      const isOnlineBool = typeof status === 'boolean' ? status : Boolean(status?.online ?? navigator.onLine);
+      setIsOnline(isOnlineBool);
+    });
+
+    const unsubSync = SyncEngine.subscribe(() => {
       setIsSyncing(SyncEngine.isSyncing);
       loadData();
     });
-    return unsub;
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+        ConnectivityService.checkConnectivity();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', loadData);
+
+    return () => {
+      unsubDb();
+      unsubConn();
+      unsubSync();
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', loadData);
+    };
   }, [loadData]);
 
   const handleSyncNow = async () => {
     await ConnectivityService.checkConnectivity();
-    await SyncEngine.startSync();
+    await SyncEngine.startSync(true);
   };
 
   const handleRetry = async (inspectionId) => {
+    // Clear local error immediately in UI state
+    setJobMap(prev => ({
+      ...prev,
+      [inspectionId]: { ...(prev[inspectionId] || {}), last_error: null, status: 'QUEUED' }
+    }));
     await ConnectivityService.checkConnectivity();
     await SyncEngine.enqueueInspection(inspectionId);
-    await SyncEngine.startSync();
+    await SyncEngine.startSync(true);
   };
 
   const handleConnectDrive = (inspectionId) => {
@@ -365,7 +391,7 @@ export default function Sync() {
 
         <button
           onClick={handleSyncNow}
-          disabled={!isOnline || isSyncing}
+          disabled={(!isOnline && !navigator?.onLine) || isSyncing}
           className="btn btn-primary"
           style={{
             width: '100%', padding: '12px', borderRadius: '10px',

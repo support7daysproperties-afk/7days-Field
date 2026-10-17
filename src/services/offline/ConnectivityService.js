@@ -11,6 +11,23 @@ class ConnectivityService {
       });
       window.addEventListener('offline', () => this.setOffline());
     }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          if (typeof navigator !== 'undefined' && navigator.onLine) {
+            this.setOnline();
+          }
+          this.checkConnectivity();
+        }
+      });
+      window.addEventListener('focus', () => {
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          this.setOnline();
+        }
+        this.checkConnectivity();
+      });
+    }
     
     // Initial connectivity verification
     if (this.online && typeof window !== 'undefined') {

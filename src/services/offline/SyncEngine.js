@@ -96,7 +96,7 @@ class SyncEngine {
 
     this._notify();
 
-    if (ConnectivityService.online && !this.isSyncing) {
+    if ((ConnectivityService.online || navigator?.onLine) && !this.isSyncing) {
       this.startSync();
     }
   }
@@ -116,9 +116,15 @@ class SyncEngine {
     return Array.from(this._activeProgress.values()).filter(p => p.inspectionId === inspectionId);
   }
 
-  async startSync() {
+  async startSync(force = false) {
     if (this.isSyncing) return;
-    if (!ConnectivityService.online) return;
+    if (!force && !ConnectivityService.online && !navigator?.onLine) return;
+
+    if (!ConnectivityService.online && navigator?.onLine) {
+      await ConnectivityService.checkConnectivity();
+    }
+    if (!ConnectivityService.online && !force) return;
+
     this.isSyncing = true;
     this._notify();
     try {
@@ -132,7 +138,7 @@ class SyncEngine {
   async processQueue() {
     const jobs = await SyncJobRepository.getPendingJobs();
     for (const job of jobs) {
-      if (!ConnectivityService.online) break;
+      if (!ConnectivityService.online && !navigator?.onLine) break;
       await this._processJob(job);
     }
   }
@@ -146,7 +152,12 @@ class SyncEngine {
       return;
     }
 
-    await SyncJobRepository.upsertJob({ ...job, status: 'SYNCING', attempts: (job.attempts || 0) + 1 });
+    await SyncJobRepository.upsertJob({
+      ...job,
+      status: 'SYNCING',
+      last_error: null,
+      attempts: (job.attempts || 0) + 1
+    });
     await InspectionRepository.saveInspection({ ...inspection, sync_status: 'SYNCING' });
     this._notify();
 

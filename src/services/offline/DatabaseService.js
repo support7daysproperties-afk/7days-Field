@@ -8,6 +8,23 @@ class DatabaseService {
     this.dbPromise = null;
     this.userId = null;
     this._initializedDbName = null;
+    this._listeners = new Set();
+    this._switchLock = Promise.resolve();
+  }
+
+  subscribe(callback) {
+    this._listeners.add(callback);
+    return () => this._listeners.delete(callback);
+  }
+
+  _notify(event = {}) {
+    this._listeners.forEach(cb => {
+      try {
+        cb({ userId: this.userId, dbName: this._initializedDbName, ...event });
+      } catch (err) {
+        console.error('Error in DatabaseService listener:', err);
+      }
+    });
   }
 
   getDbName(userId = this.userId) {
@@ -29,40 +46,48 @@ class DatabaseService {
   }
 
   async setCurrentUser(userId) {
-    const targetUserId = userId || null;
-    const targetDbName = this.getDbName(targetUserId);
+    // Chain onto switch lock to prevent race conditions during rapid user transitions
+    this._switchLock = this._switchLock.then(async () => {
+      const targetUserId = userId || null;
+      const targetDbName = this.getDbName(targetUserId);
 
-    // If already initialized with this exact database, maintain connection
-    if (this.dbPromise && this._initializedDbName === targetDbName) {
-      this.userId = targetUserId;
-      return this.dbPromise;
-    }
-
-    // Close any previous open connection cleanly
-    if (this.dbPromise) {
-      try {
-        const db = await this.dbPromise;
-        db.close();
-      } catch (err) {
-        console.warn('Error closing database during user switch:', err);
+      // If already initialized with this exact database, maintain connection
+      if (this.dbPromise && this._initializedDbName === targetDbName) {
+        this.userId = targetUserId;
+        this._notify({ type: 'user_retained', userId: targetUserId });
+        return this.dbPromise;
       }
-      this.dbPromise = null;
-      this._initializedDbName = null;
-    }
 
-    this.userId = targetUserId;
-    if (targetUserId) {
-      try {
-        window.localStorage?.setItem('7days_active_user_id', targetUserId);
-      } catch (_) {}
-    } else {
-      try {
-        window.localStorage?.removeItem('7days_active_user_id');
-      } catch (_) {}
-    }
+      // Close any previous open connection cleanly
+      if (this.dbPromise) {
+        try {
+          const db = await this.dbPromise;
+          db.close();
+        } catch (err) {
+          console.warn('Error closing database during user switch:', err);
+        }
+        this.dbPromise = null;
+        this._initializedDbName = null;
+      }
 
-    // Initialize the scoped database partition
-    return await this.init();
+      this.userId = targetUserId;
+      if (targetUserId) {
+        try {
+          window.localStorage?.setItem('7days_active_user_id', targetUserId);
+        } catch (_) {}
+      } else {
+        try {
+          window.localStorage?.removeItem('7days_active_user_id');
+        } catch (_) {}
+      }
+
+      // Initialize the scoped database partition
+      const db = await this.init();
+      this._notify({ type: 'user_switched', userId: targetUserId, dbName: targetDbName });
+      return db;
+    });
+
+    return await this._switchLock;
   }
 
   async init() {

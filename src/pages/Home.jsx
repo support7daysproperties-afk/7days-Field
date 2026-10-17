@@ -20,6 +20,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import ConnectivityService from '../services/offline/ConnectivityService';
+import DatabaseService from '../services/offline/DatabaseService';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -31,10 +32,33 @@ export default function Home() {
 
   useEffect(() => {
     loadInspections();
-    const unsub = ConnectivityService.subscribe(({ online }) => {
-      setIsOnline(online);
+
+    // 1. Reactive DB updates (user switch, saved inspection, sync progress)
+    const unsubDb = DatabaseService.subscribe(() => {
+      loadInspections();
     });
-    return unsub;
+
+    // 2. Robust online/offline status handling
+    const unsubNet = ConnectivityService.subscribe((status) => {
+      const isOnlineBool = typeof status === 'boolean' ? status : Boolean(status?.online ?? navigator.onLine);
+      setIsOnline(isOnlineBool);
+    });
+
+    // 3. Window focus / visibility refresh (e.g. after returning from inspection)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadInspections();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', loadInspections);
+
+    return () => {
+      unsubDb();
+      unsubNet();
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', loadInspections);
+    };
   }, [user?.id]);
 
   const loadInspections = async () => {

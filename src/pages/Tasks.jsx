@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle, ClipboardList } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
+import DatabaseService from '../services/offline/DatabaseService';
 
 export default function Tasks() {
   const navigate = useNavigate();
@@ -13,6 +14,24 @@ export default function Tasks() {
 
   useEffect(() => {
     loadInspections();
+
+    const unsubDb = DatabaseService.subscribe(() => {
+      loadInspections();
+    });
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadInspections();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', loadInspections);
+
+    return () => {
+      unsubDb();
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', loadInspections);
+    };
   }, [user?.id]);
 
   const loadInspections = async () => {
