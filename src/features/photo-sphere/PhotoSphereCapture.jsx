@@ -9,12 +9,13 @@ import {
   getCameraBasisFromDeviceOrientation,
   projectTargetDot3D,
   lerpAngleDeg,
+  angularDistance,
   projectWorldToScreen,
   BOX_FOV_X,
   BOX_FOV_Y,
 } from './PhotoSphereTargets';
 
-const RETICLE_CIRCUMFERENCE = 138.23;
+const RETICLE_CIRCUMFERENCE = 150.8;
 
 const CONFIG = {
   ALIGNMENT_THRESHOLD_DEG: 4.8,
@@ -246,6 +247,86 @@ export default function PhotoSphereCapture({
     return target;
   }
 
+  // 3D Spatial Grid with subtle Google Camera "+" cross markers on floor & ceiling
+  function createSpatialCrossGrid() {
+    const group = new THREE.Group();
+    const material = new THREE.LineBasicMaterial({
+      color: 0xaaaaaa,
+      transparent: true,
+      opacity: 0.32,
+    });
+
+    const positions = [];
+    const crossSize = 0.16;
+    const spacing = 1.6;
+    const count = 10;
+
+    // Floor cross grid at Y = -4.5
+    const floorY = -4.5;
+    for (let ix = -count; ix <= count; ix++) {
+      for (let iz = -count; iz <= count; iz++) {
+        const cx = ix * spacing;
+        const cz = iz * spacing;
+        positions.push(cx - crossSize, floorY, cz, cx + crossSize, floorY, cz);
+        positions.push(cx, floorY, cz - crossSize, cx, floorY, cz + crossSize);
+      }
+    }
+
+    // Ceiling cross grid at Y = +4.5
+    const ceilY = 4.5;
+    for (let ix = -count; ix <= count; ix++) {
+      for (let iz = -count; iz <= count; iz++) {
+        const cx = ix * spacing;
+        const cz = iz * spacing;
+        positions.push(cx - crossSize, ceilY, cz, cx + crossSize, ceilY, cz);
+        positions.push(cx, ceilY, cz - crossSize, cx, ceilY, cz + crossSize);
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const lines = new THREE.LineSegments(geometry, material);
+    group.add(lines);
+    return group;
+  }
+
+  // Add captured photo frame as a true 3D textured mesh on the sphere in Three.js
+  function addCapturedTileTo3DScene(tileCanvas, targetYaw, targetPitch) {
+    const eng = engineRef.current;
+    if (!eng.tilesGroup) return null;
+
+    const dist = 10;
+    const yawRad = THREE.MathUtils.degToRad(targetYaw);
+    const pitchRad = THREE.MathUtils.degToRad(targetPitch);
+
+    const x = dist * Math.cos(pitchRad) * Math.sin(yawRad);
+    const y = dist * Math.sin(pitchRad);
+    const z = -dist * Math.cos(pitchRad) * Math.cos(yawRad);
+
+    // Patch size matching 42° horizontal FOV and 3:4 aspect ratio
+    const patchW = 2 * dist * Math.tan(THREE.MathUtils.degToRad(21));
+    const patchH = patchW * (4 / 3);
+
+    const geometry = new THREE.PlaneGeometry(patchW, patchH);
+    const texture = new THREE.CanvasTexture(tileCanvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    const material = new THREE.MeshBasicMaterial({
+      map: texture,
+      side: THREE.DoubleSide,
+      depthTest: true,
+      transparent: false,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.lookAt(0, 0, 0);
+
+    eng.tilesGroup.add(mesh);
+    return { mesh, texture, geometry };
+  }
+
   // Initialize Lattice from PHOTO_SPHERE_TARGETS (All 33 Dots + Anchor Frame)
   function initTargetLattice() {
     const eng = engineRef.current;
@@ -254,6 +335,7 @@ export default function PhotoSphereCapture({
     eng.anchorYaw = null;
     eng.capturedCount = 0;
     if (eng.targetGroup) eng.targetGroup.clear();
+    if (eng.tilesGroup) eng.tilesGroup.clear();
 
     PHOTO_SPHERE_TARGETS.forEach((t) => {
       const yawRad = THREE.MathUtils.degToRad(t.yaw);
@@ -265,26 +347,10 @@ export default function PhotoSphereCapture({
     updateFrontierAndGapDots();
   }
 
-  // Update Frontier Unlocking & Auto-Retire Covered Dots
+  // Update 4-Neighbor Frontier (Left, Right, Up, Down)
   function updateFrontierAndGapDots() {
     const eng = engineRef.current;
-    if (!eng.coverageGrid) return;
-
-    let totalWeight = 0;
-    let coveredWeight = 0;
-
-    for (let gy = 0; gy < CONFIG.COVERAGE_LAT_STEPS; gy++) {
-      const lat = (0.5 - (gy + 0.5) / CONFIG.COVERAGE_LAT_STEPS) * Math.PI;
-      const w = Math.cos(lat);
-      for (let gx = 0; gx < CONFIG.COVERAGE_LON_STEPS; gx++) {
-        totalWeight += w;
-        if (eng.coverageGrid[gy * CONFIG.COVERAGE_LON_STEPS + gx] === 1) {
-          coveredWeight += w;
-        }
-      }
-    }
-    eng.coveragePercent = Math.min(100, Math.round((coveredWeight / totalWeight) * 100));
-    setCoveragePercent(eng.coveragePercent);
+    if (!eng.targets || eng.targets.length === 0) return;
 
     if (eng.capturedCount === 0) {
       eng.targets.forEach((t, idx) => {
@@ -296,29 +362,36 @@ export default function PhotoSphereCapture({
       return;
     }
 
+    const capturedTargets = eng.targets.filter((t) => t.captured);
+
     eng.targets.forEach((t) => {
       if (t.captured) {
-        if (t.mesh) t.mesh.visible = false;
-        return;
-      }
-
-      const centerCov = getLocalCoverageRatio(t.yawRad, t.pitchRad, 10);
-      if (centerCov >= 0.96) {
-        t.captured = true;
         t.visible = false;
         if (t.mesh) t.mesh.visible = false;
         return;
       }
 
-      t.visible = true;
-      if (t.mesh) t.mesh.visible = true;
+      // Check if t is an immediate orthogonal 4-neighbor (Left, Right, Up, Down) of any captured tile
+      let isImmediateNeighbor = false;
+      for (const cap of capturedTargets) {
+        const ang = angularDistance(t.yaw, t.pitch, cap.yaw, cap.pitch);
+        if (ang >= 25 && ang <= 48) {
+          isImmediateNeighbor = true;
+          break;
+        }
+      }
+
+      t.visible = isImmediateNeighbor;
+      if (t.mesh) t.mesh.visible = isImmediateNeighbor;
     });
 
-    const activeVisible = eng.targets.filter((t) => !t.captured && t.visible);
-    if (activeVisible.length === 0 && eng.coveragePercent < 99) {
-      const gap = findLargestUncapturedGap();
-      if (gap) {
-        spawnTargetDot(eng.targets.length, gap.yawRad, gap.pitchRad, true, true);
+    // Fallback: If all immediate 4-neighbors are captured, show next uncaptured dot
+    const visibleCount = eng.targets.filter((t) => !t.captured && t.visible).length;
+    if (visibleCount === 0) {
+      const remaining = eng.targets.filter((t) => !t.captured);
+      if (remaining.length > 0) {
+        remaining[0].visible = true;
+        if (remaining[0].mesh) remaining[0].mesh.visible = true;
       }
     }
 
@@ -551,23 +624,27 @@ export default function PhotoSphereCapture({
     const tileCtx = tileCanvas.getContext('2d');
     tileCtx.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-    // Save snapped tile in capturedTiles (Fix 3: snap to target.yaw, target.pitch)
+    // 2. Add as a true 3D textured mesh on the sphere in Three.js
+    const tile3DEntry = addCapturedTileTo3DScene(tileCanvas, target.yaw, target.pitch);
+
+    // Save snapped tile in capturedTiles
     eng.capturedTiles.push({
       targetId: target.id,
       dotNumber: target.dotNumber !== undefined ? target.dotNumber : target.id,
       yaw: target.yaw,
       pitch: target.pitch,
       canvas: tileCanvas,
+      tileEntry: tile3DEntry,
       width: cropW,
       height: cropH,
     });
 
-    // 2. Paint frame into 3D sphere texture using exact target pose & zero roll
+    // 3. Paint frame into 3D sphere texture using exact target pose & zero roll
     const targetYawRad = (target.yaw * Math.PI) / 180;
     const targetPitchRad = (target.pitch * Math.PI) / 180;
     projectLiveCameraFrameOntoSphere(tileCanvas, targetYawRad, targetPitchRad);
 
-    // 3. Save uncropped tile frame to IndexedDB
+    // 4. Save uncropped tile frame to IndexedDB
     try {
       tileCanvas.toBlob(async (blob) => {
         if (blob) {
@@ -593,34 +670,21 @@ export default function PhotoSphereCapture({
 
     updateFrontierAndGapDots();
     resetHoldProgress();
+    setCanUndo(true);
+    setCanFinish(true);
 
     setTimeout(() => {
       eng.isCapturing = false;
-    }, 160);
+    }, 180);
   }, []);
 
-  // Render Unified Live 2D Stage with 2-Layer Stacking:
-  // Layer 1 (webglCanvasRef, z-index: 1): Background panorama tiles
-  // Layer 3 (dotsCanvasRef, z-index: 30): Target dots overlay ON TOP of camera video!
+  // Render 3D WebGL Perspective Stage and Target Dots Overlay
   function renderLiveStage() {
     const eng = engineRef.current;
-    const bgCanvas = webglCanvasRef.current;
     const dotsCanvas = dotsCanvasRef.current;
-    if (!bgCanvas) return;
-    const bgCtx = bgCanvas.getContext('2d');
-    if (!bgCtx) return;
 
-    if (bgCanvas.width !== window.innerWidth || bgCanvas.height !== window.innerHeight) {
-      bgCanvas.width = window.innerWidth;
-      bgCanvas.height = window.innerHeight;
-    }
-    if (dotsCanvas && (dotsCanvas.width !== window.innerWidth || dotsCanvas.height !== window.innerHeight)) {
-      dotsCanvas.width = window.innerWidth;
-      dotsCanvas.height = window.innerHeight;
-    }
-
-    const W = bgCanvas.width;
-    const H = bgCanvas.height;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
     const centerX = W / 2;
     const centerY = H / 2;
 
@@ -630,91 +694,84 @@ export default function PhotoSphereCapture({
     eng.currentBoxWidth = boxWidth;
     eng.currentBoxHeight = boxHeight;
 
-    // ── LAYER 1: Background Panorama Canvas (z-index: 1) ──
-    bgCtx.fillStyle = '#0d0d0d';
-    bgCtx.fillRect(0, 0, W, H);
+    // Set Three.js camera FOV so boxHeight exactly matches 56° vertical FOV
+    const focalPx = (boxWidth / 2) / Math.tan((21 * Math.PI) / 180);
+    const screenVFOV = 2 * Math.atan((H / 2) / focalPx) * (180 / Math.PI);
 
-    // Two-Phase Capture Start:
-    // Phase 1 (0% Captured — Anchor Shot t_0): anchorYaw continuously follows currentCameraYaw!
+    // Two-Phase Capture Start: anchorYaw tracks camYaw during shot 0
     if (eng.capturedCount === 0 || eng.anchorYaw === null) {
       eng.anchorYaw = eng.camYaw;
     }
 
     const anchorYaw = eng.anchorYaw !== null ? eng.anchorYaw : eng.camYaw;
-    const curYaw = eng.camYaw;
-    const curPitch = eng.camPitch;
+    const relYaw = eng.camYaw - anchorYaw;
 
-    // 2. Render all captured photo tiles on background canvas
-    if (eng.capturedTiles && eng.capturedTiles.length > 0) {
-      for (const tile of eng.capturedTiles) {
-        const proj = projectTargetDot3D(
-          tile.yaw,
-          tile.pitch,
-          anchorYaw,
-          curYaw,
-          curPitch,
-          W,
-          H,
-          boxWidth
-        );
-        if (!proj) continue;
+    // ── LAYER 1: 3D WebGL Perspective Scene (Three.js) ──
+    if (eng.camera && eng.renderer && eng.scene) {
+      eng.camera.fov = screenVFOV;
+      eng.camera.aspect = W / H;
+      eng.camera.updateProjectionMatrix();
 
-        const x = Math.round(proj.screenX - boxWidth / 2);
-        const y = Math.round(proj.screenY - boxHeight / 2);
+      // Horizon-locked 3D Camera Rotation (zero roll!)
+      eng.camera.rotation.order = 'YXZ';
+      eng.camera.rotation.y = -THREE.MathUtils.degToRad(relYaw);
+      eng.camera.rotation.x = THREE.MathUtils.degToRad(eng.camPitch);
+      eng.camera.rotation.z = 0;
 
-        bgCtx.save();
-        bgCtx.drawImage(tile.canvas, x, y, boxWidth, boxHeight);
-        bgCtx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-        bgCtx.lineWidth = 1.5;
-        bgCtx.strokeRect(x, y, boxWidth, boxHeight);
-        bgCtx.restore();
-      }
+      eng.renderer.setSize(W, H, false);
+      eng.renderer.render(eng.scene, eng.camera);
     }
 
     // ── LAYER 3: Target Dots Overlay Canvas (z-index: 30) ──
     if (dotsCanvas) {
+      if (dotsCanvas.width !== W || dotsCanvas.height !== H) {
+        dotsCanvas.width = W;
+        dotsCanvas.height = H;
+      }
       const dotsCtx = dotsCanvas.getContext('2d');
-      if (dotsCtx) {
+      if (dotsCtx && eng.camera) {
         dotsCtx.clearRect(0, 0, W, H);
 
         for (const target of eng.targets) {
-          if (target.captured) continue;
-          if (!target.visible) continue;
+          if (target.captured || !target.visible) continue;
 
-          // For first dot t_0 when capturedCount === 0: target.baseYaw = 0, target.basePitch = 0
-          const tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
-          const tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
+          let tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
+          let tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
 
-          const proj = projectTargetDot3D(
-            tYaw,
-            tPitch,
-            anchorYaw,
-            curYaw,
-            curPitch,
-            W,
-            H,
-            boxWidth
+          const dist = 10;
+          const yawRad = THREE.MathUtils.degToRad(tYaw);
+          const pitchRad = THREE.MathUtils.degToRad(tPitch);
+          const dotPos = new THREE.Vector3(
+            dist * Math.cos(pitchRad) * Math.sin(yawRad),
+            dist * Math.sin(pitchRad),
+            -dist * Math.cos(pitchRad) * Math.cos(yawRad)
           );
-          if (!proj) continue;
 
-          const distPx = Math.hypot(proj.screenX - centerX, proj.screenY - centerY);
-          const isAligned = distPx <= 24;
+          const proj = dotPos.clone().project(eng.camera);
+          if (proj.z > 1.0) continue; // Behind camera
 
-          // Target dot rendering with visual snap when aligned inside center circle
+          const screenX = (proj.x * 0.5 + 0.5) * W;
+          const screenY = (-(proj.y * 0.5) + 0.5) * H;
+
+          const distPx = Math.hypot(screenX - centerX, screenY - centerY);
+          const isAligned = distPx <= 26;
+
+          // Render Google Camera style dot
           dotsCtx.save();
           dotsCtx.beginPath();
-          const drawX = isAligned ? centerX : proj.screenX;
-          const drawY = isAligned ? centerY : proj.screenY;
-          const r = isAligned ? 15 : (target.isGapDot ? 16 : 15);
+          const drawX = isAligned ? centerX : screenX;
+          const drawY = isAligned ? centerY : screenY;
+          const r = isAligned ? 16 : 14;
 
           dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
-          dotsCtx.fillStyle = isAligned ? '#4285F4' : (target.isGapDot ? '#66b2ff' : '#aaaaaa');
+          dotsCtx.fillStyle = isAligned ? '#4285F4' : 'rgba(215, 215, 215, 0.78)';
           dotsCtx.fill();
+
           dotsCtx.lineWidth = 2.5;
           dotsCtx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
           dotsCtx.stroke();
 
-          dotsCtx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+          dotsCtx.shadowColor = 'rgba(0, 0, 0, 0.75)';
           dotsCtx.shadowBlur = 8;
           dotsCtx.restore();
         }
@@ -722,46 +779,44 @@ export default function PhotoSphereCapture({
     }
   }
 
-  // Strict Hold-Steady Lock & Dot Alignment (Fix 4)
+  // Strict Hold-Steady Lock & Dot Alignment
   function evaluateDotAlignment(timestamp) {
     const eng = engineRef.current;
-    const canvas = webglCanvasRef.current;
-    if (!canvas) return;
+    if (!eng.camera) return;
 
-    const viewportW = canvas.width || window.innerWidth;
-    const viewportH = canvas.height || window.innerHeight;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
     const centerX = viewportW / 2;
     const centerY = viewportH / 2;
-    const boxWidth = eng.currentBoxWidth || 240;
 
     let closest = null;
     let minScreenDist = Infinity;
-    let closestProj = null;
-    const anchorYaw = (eng.capturedCount === 0 || eng.anchorYaw === null) ? eng.camYaw : eng.anchorYaw;
 
     for (const t of eng.targets) {
       if (t.captured || !t.visible) continue;
 
-      const tYaw = t.baseYaw !== undefined ? t.baseYaw : t.yaw;
-      const tPitch = t.basePitch !== undefined ? t.basePitch : t.pitch;
+      let tYaw = t.baseYaw !== undefined ? t.baseYaw : t.yaw;
+      let tPitch = t.basePitch !== undefined ? t.basePitch : t.pitch;
 
-      const proj = projectTargetDot3D(
-        tYaw,
-        tPitch,
-        anchorYaw,
-        eng.camYaw,
-        eng.camPitch,
-        viewportW,
-        viewportH,
-        boxWidth
+      const dist = 10;
+      const yawRad = THREE.MathUtils.degToRad(tYaw);
+      const pitchRad = THREE.MathUtils.degToRad(tPitch);
+      const dotPos = new THREE.Vector3(
+        dist * Math.cos(pitchRad) * Math.sin(yawRad),
+        dist * Math.sin(pitchRad),
+        -dist * Math.cos(pitchRad) * Math.cos(yawRad)
       );
-      if (!proj) continue;
 
-      const dist = Math.hypot(proj.screenX - centerX, proj.screenY - centerY);
-      if (dist < minScreenDist) {
-        minScreenDist = dist;
+      const proj = dotPos.clone().project(eng.camera);
+      if (proj.z > 1.0) continue;
+
+      const screenX = (proj.x * 0.5 + 0.5) * viewportW;
+      const screenY = (-(proj.y * 0.5) + 0.5) * viewportH;
+
+      const distPx = Math.hypot(screenX - centerX, screenY - centerY);
+      if (distPx < minScreenDist) {
+        minScreenDist = distPx;
         closest = t;
-        closestProj = proj;
       }
     }
 
@@ -769,9 +824,9 @@ export default function PhotoSphereCapture({
     const ringProgress = ringProgressRef.current;
     const banner = instructionBannerRef.current;
 
-    // Strict Hold-Steady Lock: dot inside center circle (distPx <= 24)
-    const isInsideReticle = closest && minScreenDist <= 24;
-    const isMovingTooFast = (eng.angularVelocity || 0) > 25;
+    // Strict Hold-Steady Lock: dot inside center circle (distPx <= 26)
+    const isInsideReticle = closest && minScreenDist <= 26;
+    const isMovingTooFast = (eng.angularVelocity || 0) > 28;
 
     if (isInsideReticle) {
       if (isMovingTooFast) {
@@ -805,17 +860,17 @@ export default function PhotoSphereCapture({
     } else {
       if (centerBlueDot) {
         centerBlueDot.style.opacity = '0';
-        centerBlueDot.style.transform = 'translate(-50%, -50%) scale(0.4)';
+        centerBlueDot.style.transform = 'translate(-50%, -50%) scale(0.35)';
       }
       resetHoldProgress();
 
       if (banner) {
-        if (eng.coveragePercent >= 99) {
-          banner.textContent = '360° Complete! Tap the checkmark ✓';
+        if (eng.capturedCount >= 34) {
+          banner.textContent = 'Photo Sphere complete!\nTap the checkmark ✓';
         } else if (eng.capturedCount === 0) {
-          banner.textContent = 'Hold phone upright to start (Pitch ≈ 0°)';
+          banner.textContent = 'To start, keep\ndot inside circle';
         } else {
-          banner.textContent = 'Aim camera at the next dot to capture';
+          banner.textContent = 'Aim camera at the\nnext dot to capture';
         }
       }
     }
@@ -945,54 +1000,74 @@ export default function PhotoSphereCapture({
 
 
   // Undo Last Capture
-  const handleUndo = () => {
+  const handleUndo = useCallback(() => {
     const eng = engineRef.current;
-    const last = eng.historyStack.pop();
-    if (!last) return;
+    if (eng.capturedTiles.length === 0) return;
 
-    eng.masterPanoCtx.putImageData(last.prevPanoImage, 0, 0);
-    eng.coverageGrid.set(last.prevCoverage);
-    if (last.prevAccumR && eng.panoAccumR) {
-      eng.panoAccumR.set(last.prevAccumR);
-      eng.panoAccumG.set(last.prevAccumG);
-      eng.panoAccumB.set(last.prevAccumB);
-      eng.panoAccumW.set(last.prevAccumW);
+    // Pop the last captured tile
+    const lastTile = eng.capturedTiles.pop();
+    if (lastTile && lastTile.tileEntry) {
+      if (eng.tilesGroup && lastTile.tileEntry.mesh) {
+        eng.tilesGroup.remove(lastTile.tileEntry.mesh);
+      }
+      if (lastTile.tileEntry.texture) lastTile.tileEntry.texture.dispose();
+      if (lastTile.tileEntry.geometry) lastTile.tileEntry.geometry.dispose();
     }
-    if (eng.sphereTexture) eng.sphereTexture.needsUpdate = true;
 
-    eng.targets.forEach((t) => {
-      t.captured = getLocalCoverageRatio(t.yawRad, t.pitchRad, 10) >= 0.96;
-    });
+    // Re-enable target
+    const target = eng.targets.find(
+      (t) => t.id === lastTile.targetId || t.dotNumber === lastTile.dotNumber
+    );
+    if (target) {
+      target.captured = false;
+      target.visible = true;
+      if (target.mesh) target.mesh.visible = true;
+    }
+
+    eng.capturedCount = Math.max(0, eng.capturedCount - 1);
+    if (eng.capturedCount === 0) {
+      eng.anchorYaw = null;
+    }
+
+    const last = eng.historyStack.pop();
+    if (last) {
+      if (eng.masterPanoCtx && last.prevPanoImage) {
+        eng.masterPanoCtx.putImageData(last.prevPanoImage, 0, 0);
+      }
+      if (eng.coverageGrid && last.prevCoverage) {
+        eng.coverageGrid.set(last.prevCoverage);
+      }
+      if (last.prevAccumR && eng.panoAccumR) {
+        eng.panoAccumR.set(last.prevAccumR);
+        eng.panoAccumG.set(last.prevAccumG);
+        eng.panoAccumB.set(last.prevAccumB);
+        eng.panoAccumW.set(last.prevAccumW);
+      }
+    }
+
     updateFrontierAndGapDots();
-  };
+    resetHoldProgress();
+    setCanUndo(eng.capturedTiles.length > 0);
+    setCanFinish(eng.capturedTiles.length > 0);
+  }, []);
 
   // Reset Session
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     const eng = engineRef.current;
-    eng.initialAlphaOffset = null;
-    eng.initialBetaOffset = null;
-    eng.initialGammaOffset = null;
-    eng.lastOrientTime = null;
-    eng.angularVelocity = 0;
-    eng.yaw = 0;
-    eng.pitch = 0;
-    updateCameraFromYawPitch();
-
-    eng.coverageGrid = new Uint8Array(CONFIG.COVERAGE_LON_STEPS * CONFIG.COVERAGE_LAT_STEPS);
-    eng.coveragePercent = 0;
+    if (eng.tilesGroup) eng.tilesGroup.clear();
+    eng.capturedTiles = [];
+    eng.capturedCount = 0;
+    eng.anchorYaw = null;
     eng.historyStack = [];
-    eng.masterPanoCtx.fillStyle = '#121212';
-    eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
-    if (eng.panoAccumR) {
-      eng.panoAccumR.fill(0);
-      eng.panoAccumG.fill(0);
-      eng.panoAccumB.fill(0);
-      eng.panoAccumW.fill(0);
+    if (eng.masterPanoCtx) {
+      eng.masterPanoCtx.fillStyle = '#121212';
+      eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
     }
-    if (eng.sphereTexture) eng.sphereTexture.needsUpdate = true;
-
     initTargetLattice();
-  };
+    resetHoldProgress();
+    setCanUndo(false);
+    setCanFinish(false);
+  }, []);
 
   // Generate Tiny Planet Projection
   const generateTinyPlanet = () => {
@@ -1170,11 +1245,39 @@ export default function PhotoSphereCapture({
     eng.masterPanoCtx.fillStyle = '#121212';
     eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
 
-    // Setup 2D Live Stage Canvas & Target Dots Overlay Canvas
+    // Initialize Three.js WebGL Scene on webglCanvasRef
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0d0d0d);
+    eng.scene = scene;
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 0);
+    eng.camera = camera;
+
+    let renderer = null;
     if (webglCanvasRef.current) {
-      webglCanvasRef.current.width = window.innerWidth;
-      webglCanvasRef.current.height = window.innerHeight;
+      renderer = new THREE.WebGLRenderer({
+        canvas: webglCanvasRef.current,
+        antialias: true,
+        alpha: false,
+        powerPreference: 'high-performance',
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      eng.renderer = renderer;
     }
+
+    // Tiles group for captured 3D meshes
+    const tilesGroup = new THREE.Group();
+    scene.add(tilesGroup);
+    eng.tilesGroup = tilesGroup;
+
+    // 3D Spatial cross grid on floor & ceiling
+    const spatialGrid = createSpatialCrossGrid();
+    scene.add(spatialGrid);
+    eng.spatialGrid = spatialGrid;
+
+    // Setup Target Dots Overlay Canvas
     if (dotsCanvasRef.current) {
       dotsCanvasRef.current.width = window.innerWidth;
       dotsCanvasRef.current.height = window.innerHeight;
@@ -1182,15 +1285,16 @@ export default function PhotoSphereCapture({
 
     initTargetLattice();
 
-    // Resize Handler for both background canvas and dots overlay
+    // Resize Handler for WebGL renderer and dots overlay
     const handleResize = () => {
-      if (webglCanvasRef.current) {
-        webglCanvasRef.current.width = window.innerWidth;
-        webglCanvasRef.current.height = window.innerHeight;
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+      if (eng.renderer) {
+        eng.renderer.setSize(W, H, false);
       }
       if (dotsCanvasRef.current) {
-        dotsCanvasRef.current.width = window.innerWidth;
-        dotsCanvasRef.current.height = window.innerHeight;
+        dotsCanvasRef.current.width = W;
+        dotsCanvasRef.current.height = H;
       }
     };
     window.addEventListener('resize', handleResize);
@@ -1299,6 +1403,21 @@ export default function PhotoSphereCapture({
       if (eng.currentStream) {
         eng.currentStream.getTracks().forEach((t) => t.stop());
       }
+      if (eng.tilesGroup) {
+        eng.tilesGroup.traverse((obj) => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+        });
+      }
+      if (eng.crossGrid) {
+        eng.crossGrid.traverse((obj) => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+      }
       if (eng.renderer) {
         eng.renderer.dispose();
       }
@@ -1317,9 +1436,9 @@ export default function PhotoSphereCapture({
         inset: 0,
         width: '100vw',
         height: '100dvh',
-        backgroundColor: '#0d0d0d',
+        backgroundColor: '#000000',
         color: '#ffffff',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        fontFamily: '"Google Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         overflow: 'hidden',
         touchAction: 'none',
         zIndex: 85,
@@ -1331,7 +1450,7 @@ export default function PhotoSphereCapture({
         justifyContent: 'center',
       }}
     >
-      {/* 3D WebGL Canvas */}
+      {/* Layer 1: 3D WebGL Canvas (Hardware Three.js Scene: 3D Cross Grid & Captured Photo Meshes) */}
       <canvas
         ref={webglCanvasRef}
         style={{
@@ -1344,98 +1463,15 @@ export default function PhotoSphereCapture({
         }}
       />
 
-      {/* Top HUD */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 'max(14px, env(safe-area-inset-top, 14px))',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 10,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          width: 'calc(100% - 24px)',
-          maxWidth: '480px',
-          justifyContent: 'space-between',
-        }}
-      >
-        <div
-          style={{
-            background: 'rgba(16, 16, 16, 0.82)',
-            backdropFilter: 'blur(10px)',
-            padding: '7px 14px',
-            borderRadius: '999px',
-            fontSize: '0.8rem',
-            display: 'flex',
-            gap: '8px',
-            alignItems: 'center',
-            border: '1px solid rgba(255, 255, 255, 0.18)',
-          }}
-        >
-          <span ref={coverageBadgeRef} style={{ color: '#4285F4', fontWeight: 'bold' }}>
-            0% Captured
-          </span>
-          <span style={{ color: 'rgba(255, 255, 255, 0.3)' }}>•</span>
-          <span ref={targetsBadgeRef}>Center Dot Ready</span>
-        </div>
-
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={handleFlipCamera}
-            style={{
-              background: 'rgba(28, 28, 28, 0.85)',
-              color: '#ffffff',
-              border: '1px solid rgba(255, 255, 255, 0.25)',
-              padding: '7px 14px',
-              borderRadius: '999px',
-              fontSize: '0.78rem',
-              fontWeight: 500,
-              cursor: 'pointer',
-              backdropFilter: 'blur(8px)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              touchAction: 'manipulation',
-            }}
-            title="Switch Front/Rear Camera"
-          >
-            <RefreshCw size={14} /> Flip Camera
-          </button>
-
-          <button
-            onClick={onClose}
-            style={{
-              background: 'rgba(28, 28, 28, 0.85)',
-              color: '#ffffff',
-              border: '1px solid rgba(255, 255, 255, 0.25)',
-              padding: '7px',
-              borderRadius: '50%',
-              cursor: 'pointer',
-              backdropFilter: 'blur(8px)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '34px',
-              height: '34px',
-              touchAction: 'manipulation',
-            }}
-            title="Exit Photo Sphere"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </div>
-
       {/* iOS Gyroscope Permission Prompt Banner */}
       {needsGyroPermission && (
         <div
           style={{
             position: 'absolute',
-            top: 'max(70px, calc(env(safe-area-inset-top, 0px) + 64px))',
+            top: 'max(20px, calc(env(safe-area-inset-top, 0px) + 16px))',
             left: '50%',
             transform: 'translateX(-50%)',
-            zIndex: 25,
+            zIndex: 35,
             width: 'calc(100% - 32px)',
             maxWidth: '380px',
             background: 'rgba(26, 115, 232, 0.95)',
@@ -1473,31 +1509,31 @@ export default function PhotoSphereCapture({
         </div>
       )}
 
-      {/* Instruction Banner */}
+      {/* Center Instruction Text directly above viewfinder box */}
       <div
         ref={instructionBannerRef}
         style={{
           position: 'absolute',
-          top: needsGyroPermission
-            ? 'max(136px, calc(env(safe-area-inset-top, 0px) + 128px))'
-            : 'max(68px, calc(env(safe-area-inset-top, 0px) + 58px))',
+          top: 'calc(50% - ' + ((engineRef.current.currentBoxHeight || 320) / 2 + 56) + 'px)',
           left: '50%',
           transform: 'translateX(-50%)',
-          zIndex: 10,
+          zIndex: 25,
           textAlign: 'center',
-          fontSize: '0.98rem',
-          fontWeight: 500,
+          fontSize: '1.05rem',
+          fontWeight: 400,
           color: 'rgba(255, 255, 255, 0.95)',
-          textShadow: '0 2px 8px rgba(0, 0, 0, 0.9)',
+          textShadow: '0 2px 10px rgba(0, 0, 0, 0.95)',
           pointerEvents: 'none',
-          width: '88%',
-          transition: 'top 0.2s ease',
+          width: '90%',
+          maxWidth: '360px',
+          whiteSpace: 'pre-line',
+          lineHeight: 1.35,
         }}
       >
-        To start, keep center dot inside circle
+        To start, keep{'\n'}dot inside circle
       </div>
 
-      {/* Layer 2: The centered white-bordered camera viewfinder box (z-index: 10) */}
+      {/* Layer 2: Center White-Bordered Camera Viewfinder Box (z-index: 10) */}
       <div
         className="camera-viewfinder-box"
         style={{
@@ -1507,9 +1543,9 @@ export default function PhotoSphereCapture({
           transform: 'translate(-50%, -50%)',
           width: 'clamp(220px, 42vw, 280px)',
           aspectRatio: '3 / 4',
-          border: '2px solid rgba(255, 255, 255, 0.85)',
-          boxShadow: '0 0 24px rgba(0, 0, 0, 0.6)',
-          borderRadius: '4px',
+          border: '2px solid rgba(255, 255, 255, 0.95)',
+          boxShadow: '0 0 24px rgba(0, 0, 0, 0.75)',
+          borderRadius: '2px',
           overflow: 'hidden',
           zIndex: 10,
           pointerEvents: 'none',
@@ -1524,7 +1560,7 @@ export default function PhotoSphereCapture({
           style={{
             width: '100%',
             height: '100%',
-            objectFit: 'contain', // CRITICAL: Shows full uncropped sensor, zero artificial zoom!
+            objectFit: 'cover',
             display: 'block',
             pointerEvents: 'none',
           }}
@@ -1552,10 +1588,10 @@ export default function PhotoSphereCapture({
           position: 'absolute',
           top: '50%',
           left: '50%',
-          width: '54px',
-          height: '54px',
+          width: '58px',
+          height: '58px',
           transform: 'translate(-50%, -50%)',
-          border: '2.5px solid rgba(255, 255, 255, 0.9)',
+          border: '2.5px solid rgba(255, 255, 255, 0.85)',
           borderRadius: '50%',
           pointerEvents: 'none',
           zIndex: 35,
@@ -1566,16 +1602,16 @@ export default function PhotoSphereCapture({
         }}
       >
         <svg
-          width="54"
-          height="54"
-          viewBox="0 0 54 54"
+          width="58"
+          height="58"
+          viewBox="0 0 58 58"
           style={{ position: 'absolute', transform: 'rotate(-90deg)', zIndex: 2 }}
         >
           <circle
             ref={ringProgressRef}
-            cx="27"
-            cy="27"
-            r="22"
+            cx="29"
+            cy="29"
+            r="24"
             fill="none"
             stroke="#4285F4"
             strokeWidth="4"
@@ -1590,13 +1626,13 @@ export default function PhotoSphereCapture({
           id="center-blue-dot"
           style={{
             position: 'absolute',
-            width: '30px',
-            height: '30px',
+            width: '32px',
+            height: '32px',
             borderRadius: '50%',
             background: '#4285F4',
             opacity: 0,
-            transform: 'scale(0.4)',
-            transition: 'opacity 0.14s ease, transform 0.14s ease',
+            transform: 'scale(0.35)',
+            transition: 'opacity 0.12s ease, transform 0.12s ease',
             zIndex: 1,
           }}
         />
@@ -1616,17 +1652,21 @@ export default function PhotoSphereCapture({
         }}
       />
 
-      {/* Bottom Controls */}
+      {/* Floating Bottom Bar: Undo (Left), Checkmark Finish (Center), Cancel (Right) */}
       <div
+        className="photosphere-bottom-bar"
         style={{
           position: 'absolute',
-          bottom: 'max(30px, calc(env(safe-area-inset-bottom, 0px) + 20px))',
+          bottom: 'max(24px, env(safe-area-inset-bottom, 24px))',
           left: '50%',
           transform: 'translateX(-50%)',
-          zIndex: 10,
+          zIndex: 40,
           display: 'flex',
           alignItems: 'center',
-          gap: '32px',
+          justifyContent: 'center',
+          gap: '36px',
+          width: '100%',
+          maxWidth: '380px',
         }}
       >
         {/* Undo Button */}
@@ -1637,24 +1677,24 @@ export default function PhotoSphereCapture({
             width: '52px',
             height: '52px',
             borderRadius: '50%',
-            border: '1.8px solid rgba(255, 255, 255, 0.78)',
-            background: 'rgba(20, 20, 20, 0.65)',
+            border: '1.5px solid rgba(255, 255, 255, 0.45)',
+            background: 'rgba(25, 25, 25, 0.8)',
+            backdropFilter: 'blur(10px)',
             color: '#ffffff',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            cursor: canUndo ? 'pointer' : 'not-allowed',
-            opacity: canUndo ? 1 : 0.32,
-            transition: 'all 0.2s ease',
-            backdropFilter: 'blur(6px)',
+            cursor: canUndo ? 'pointer' : 'default',
+            opacity: canUndo ? 1 : 0.35,
+            transition: 'opacity 0.2s ease, transform 0.1s ease',
             touchAction: 'manipulation',
           }}
-          title="Undo Last Capture"
+          title="Undo Last Photo"
         >
           <Undo2 size={22} />
         </button>
 
-        {/* Finish & Stitch Button */}
+        {/* Finish & Stitch Button (Checkmark) */}
         <button
           onClick={handleOpenResults}
           disabled={!canFinish}
@@ -1662,43 +1702,42 @@ export default function PhotoSphereCapture({
             width: '68px',
             height: '68px',
             borderRadius: '50%',
-            border: '2.2px solid rgba(255, 255, 255, 0.95)',
-            background: canFinish ? '#1a73e8' : 'rgba(255, 255, 255, 0.15)',
-            boxShadow: canFinish ? '0 0 22px rgba(26, 115, 232, 0.85)' : 'none',
+            border: '3px solid #ffffff',
+            background: canFinish ? '#4285F4' : 'rgba(38, 38, 38, 0.85)',
+            boxShadow: canFinish ? '0 0 24px rgba(66, 133, 244, 0.75)' : 'none',
             color: '#ffffff',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            cursor: canFinish ? 'pointer' : 'not-allowed',
-            opacity: canFinish ? 1 : 0.4,
-            transition: 'all 0.2s ease',
-            backdropFilter: 'blur(6px)',
+            cursor: canFinish ? 'pointer' : 'default',
+            opacity: canFinish ? 1 : 0.45,
+            transition: 'background-color 0.2s ease, transform 0.1s ease, box-shadow 0.2s ease',
             touchAction: 'manipulation',
           }}
           title="Finish & Stitch 360° Photo Sphere"
         >
-          <Check size={32} strokeWidth={2.8} />
+          <Check size={32} strokeWidth={3} />
         </button>
 
-        {/* Reset Button */}
+        {/* Cancel / Exit Button */}
         <button
-          onClick={handleReset}
+          onClick={onClose}
           style={{
             width: '52px',
             height: '52px',
             borderRadius: '50%',
-            border: '1.8px solid rgba(255, 255, 255, 0.78)',
-            background: 'rgba(20, 20, 20, 0.65)',
+            border: '1.5px solid rgba(255, 255, 255, 0.45)',
+            background: 'rgba(25, 25, 25, 0.8)',
+            backdropFilter: 'blur(10px)',
             color: '#ffffff',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
-            transition: 'all 0.2s ease',
-            backdropFilter: 'blur(6px)',
+            transition: 'transform 0.1s ease',
             touchAction: 'manipulation',
           }}
-          title="Reset All Captures"
+          title="Exit Photo Sphere"
         >
           <X size={22} />
         </button>
