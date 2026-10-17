@@ -133,7 +133,7 @@ class GoogleDriveService {
           localStorage.removeItem('7days_drive_token');
         }
       } catch (_e) {}
-      this.setStatus(DRIVE_STATUS.DISCONNECTED);
+      this.setStatus(DRIVE_STATUS.DISCONNECTED, '', null);
     }
   }
 

@@ -20,7 +20,20 @@ export default function InspectionSession() {
   const { id } = useParams();
   const { user } = useAuth();
   
-  const [activeStepId, setActiveStepId] = useState('overview');
+  const [activeStepId, setActiveStepIdState] = useState(() => {
+    try {
+      return sessionStorage.getItem(`active_step_${id}`) || 'overview';
+    } catch (_) {
+      return 'overview';
+    }
+  });
+
+  const setActiveStepId = (step) => {
+    setActiveStepIdState(step);
+    try {
+      sessionStorage.setItem(`active_step_${id}`, step);
+    } catch (_) {}
+  };
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [showPhotoCamera, setShowPhotoCamera] = useState(false);
@@ -333,12 +346,23 @@ export default function InspectionSession() {
       try {
         const existing = await InspectionRepository.getInspection(id);
         await InspectionRepository.saveInspection({
+          ...existing,
           id,
-          property_id: id,
-          status: 'IN_PROGRESS',
+          property_id: existing?.property_id || id,
+          status: existing?.status === 'COMPLETED' ? 'COMPLETED' : 'IN_PROGRESS',
           sync_status: existing?.sync_status || 'LOCAL_ONLY',
           created_at: existing?.created_at,
-          metadata: { checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature }
+          updated_at: new Date().toISOString(),
+          metadata: {
+            ...(existing?.metadata || {}),
+            checklist,
+            customChecklistItems,
+            checklistReviewed,
+            remarks,
+            ownerInfo,
+            consent,
+            signature,
+          }
         });
       } catch (err) {
         console.error("Failed to save inspection state", err);

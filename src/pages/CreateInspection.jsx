@@ -8,20 +8,37 @@ import { locationService } from '../services/platform/LocationService';
 export default function CreateInspection() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const draftKey = `7days_inspection_draft_${user?.id || 'default'}`;
   
-  const [formData, setFormData] = useState({
-    title: '',
-    location_name: '',
-    inspection_type: 'Property Verification',
-    property_type: 'Residential Plot',
-    purpose: '',
-    reference_number: ''
+  const [formData, setFormData] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`7days_inspection_draft_${user?.id || 'default'}`);
+      if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return {
+      title: '',
+      location_name: '',
+      inspection_type: 'Property Verification',
+      property_type: 'Residential Plot',
+      purpose: '',
+      reference_number: ''
+    };
   });
   
   const [location, setLocation] = useState(null);
   const [isLocating, setIsLocating] = useState(false);
   const [locationError, setLocationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Auto-save draft changes to localStorage so inputs are never forgotten
+  useEffect(() => {
+    try {
+      const hasContent = Object.values(formData).some(v => v && v !== 'Property Verification' && v !== 'Residential Plot');
+      if (hasContent) {
+        localStorage.setItem(draftKey, JSON.stringify(formData));
+      }
+    } catch (_) {}
+  }, [formData, draftKey]);
   
   const inspectionTypes = [
     'Property Verification',
@@ -146,6 +163,9 @@ export default function CreateInspection() {
       };
       
       await InspectionRepository.saveInspection(newInspection);
+      try {
+        localStorage.removeItem(draftKey);
+      } catch (_) {}
       navigate(`/inspection/${id}`);
     } catch (err) {
       console.error("Failed to create inspection:", err);

@@ -13,6 +13,17 @@ export default function Profile() {
   const name = user?.supervisorProfile?.name || 'Field Supervisor';
   const email = user?.email || 'N/A';
   const phone = user?.supervisorProfile?.phone || 'Not provided';
+  const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      navigate('/login', { replace: true });
+    } catch (err) {
+      console.warn('Sign out error:', err);
+      navigate('/login', { replace: true });
+    }
+  };
 
   const handleResetCache = async () => {
     setIsResetting(true);
@@ -43,9 +54,14 @@ export default function Profile() {
           display: 'flex', 
           alignItems: 'center', 
           justifyContent: 'center', 
-          marginBottom: '12px' 
+          marginBottom: '12px',
+          overflow: 'hidden'
         }}>
-          <User size={34} style={{ color: 'var(--primary-color)' }} />
+          {avatarUrl ? (
+            <img src={avatarUrl} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : (
+            <User size={34} style={{ color: 'var(--primary-color)' }} />
+          )}
         </div>
         <h2 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 4px 0', color: 'var(--text-primary)' }}>{name}</h2>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: 'var(--success-color)', fontSize: '12px', fontWeight: 600 }}>
@@ -149,7 +165,7 @@ export default function Profile() {
 
       <button 
         className="btn btn-secondary w-full" 
-        onClick={signOut}
+        onClick={handleSignOut}
         style={{
           color: 'var(--danger-color)',
           borderColor: 'rgba(239, 68, 68, 0.3)',

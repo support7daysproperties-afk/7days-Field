@@ -143,24 +143,53 @@ export function AuthProvider({ children }) {
       // Check if a different user was previously active on this device
       const prevUserId = localStorage.getItem('7days_active_user_id');
       if (prevUserId && prevUserId !== sessionUser.id) {
-        // Clear previous user's in-memory token & drive connection
+        // Clear previous user's in-memory token, cached token, & drive connection
         GoogleDriveService.setTokenData({ accessToken: null });
-        GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
+        try {
+          localStorage.removeItem('7days_drive_token');
+        } catch (_) {}
+        GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED, '', '');
       }
 
       // Activate user-scoped database partition
       await DatabaseService.setCurrentUser(sessionUser.id);
 
-      const { data, error } = await supabase
+      // 1. First check: match by auth_user_id
+      let supervisorRecord = null;
+      const { data: idMatch, error: idError } = await supabase
         .from('field_supervisors')
         .select('*')
         .eq('auth_user_id', sessionUser.id)
         .maybeSingle();
 
-      if (error) {
-        console.error('Error checking supervisor access:', error);
-        throw error;
+      if (idMatch) {
+        supervisorRecord = idMatch;
+      } else if (sessionUser.email) {
+        // 2. Second check: match by supervisor email (case-insensitive)
+        const { data: emailMatch, error: emailError } = await supabase
+          .from('field_supervisors')
+          .select('*')
+          .ilike('email', sessionUser.email)
+          .maybeSingle();
+
+        if (emailMatch) {
+          supervisorRecord = emailMatch;
+          // Auto-link auth_user_id to the field_supervisors record for instant future logins
+          try {
+            await supabase
+              .from('field_supervisors')
+              .update({
+                auth_user_id: sessionUser.id,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', emailMatch.id);
+          } catch (linkErr) {
+            console.warn('Could not auto-link auth_user_id:', linkErr);
+          }
+        }
       }
+
+      const data = supervisorRecord;
 
       if (!data) {
         // Check if we have previously verified this supervisor profile locally
@@ -173,6 +202,10 @@ export function AuthProvider({ children }) {
             currentUserRef.current = fullUser;
             setUser(fullUser);
             setAuthenticated(true);
+            try {
+              localStorage.setItem('7days_cached_user', JSON.stringify(fullUser));
+              localStorage.setItem('7days_active_user_id', sessionUser.id);
+            } catch (_) {}
             await restoreDriveConnection(fullUser, providerToken);
             setLoading(false);
             return;
@@ -183,7 +216,7 @@ export function AuthProvider({ children }) {
 
         // Not registered as a field supervisor
         await supabase.auth.signOut();
-        setAuthError('Access not authorized. This Google account is not registered as a 7Days Field Supervisor. Please contact the administrator.');
+        setAuthError(`Access not authorized. The Google account (${sessionUser.email || 'unknown'}) is not registered as a 7Days Field Supervisor. Please contact the administrator.`);
         currentUserRef.current = null;
         setUser(null);
         setAuthenticated(false);
@@ -194,14 +227,18 @@ export function AuthProvider({ children }) {
 
       // Authorized supervisor
       setAuthError('');
-      // Cache profile locally for instant offline launches
+      // Cache profile and user locally for instant offline launches
       try {
         localStorage.setItem(`supervisor_profile_${sessionUser.id}`, JSON.stringify(data));
+        localStorage.setItem('7days_active_user_id', sessionUser.id);
       } catch (e) {
         console.warn('Could not cache supervisor profile:', e);
       }
 
       const fullUser = { ...sessionUser, supervisorProfile: data };
+      try {
+        localStorage.setItem('7days_cached_user', JSON.stringify(fullUser));
+      } catch (_) {}
       currentUserRef.current = fullUser;
       setUser(fullUser);
       setAuthenticated(true);
@@ -245,6 +282,20 @@ export function AuthProvider({ children }) {
   const isInitializingRef = useRef(false);
 
   useEffect(() => {
+    // Check cached offline session immediately for zero-wait UI
+    try {
+      const activeId = localStorage.getItem('7days_active_user_id');
+      const cachedUserStr = localStorage.getItem('7days_cached_user');
+      if (activeId && cachedUserStr) {
+        const cachedUser = JSON.parse(cachedUserStr);
+        if (cachedUser && cachedUser.id === activeId) {
+          currentUserRef.current = cachedUser;
+          setUser(cachedUser);
+          setAuthenticated(true);
+        }
+      }
+    } catch (_) {}
+
     // Initial session check
     if (!isInitializingRef.current) {
       isInitializingRef.current = true;
@@ -350,22 +401,28 @@ export function AuthProvider({ children }) {
    * so on next login their connection can be restored seamlessly.
    */
   const signOut = async () => {
-    const activeUserId = currentUserRef.current?.id;
-    localStorage.removeItem('pending_drive_onboarding');
-    localStorage.removeItem('drive_onboarding_done');
-    if (activeUserId) {
-      localStorage.removeItem(`supervisor_profile_${activeUserId}`);
-      localStorage.removeItem(`drive_onboarding_done_${activeUserId}`);
-      localStorage.removeItem(`pending_drive_onboarding_${activeUserId}`);
+    try {
+      const activeUserId = currentUserRef.current?.id;
+      localStorage.removeItem('pending_drive_onboarding');
+      localStorage.removeItem('drive_onboarding_done');
+      localStorage.removeItem('7days_drive_token');
+      localStorage.removeItem('7days_active_user_id');
+      localStorage.removeItem('7days_cached_user');
+      if (activeUserId) {
+        localStorage.removeItem(`supervisor_profile_${activeUserId}`);
+        localStorage.removeItem(`drive_onboarding_done_${activeUserId}`);
+        localStorage.removeItem(`pending_drive_onboarding_${activeUserId}`);
+      }
+      GoogleDriveService.setTokenData({ accessToken: null });
+      GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED, '', '');
+      currentUserRef.current = null;
+      setUser(null);
+      setAuthenticated(false);
+      await DatabaseService.setCurrentUser(null);
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Sign out cleanup notice:', err);
     }
-    localStorage.removeItem('7days_active_user_id');
-    GoogleDriveService.setTokenData({ accessToken: null });
-    GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
-    currentUserRef.current = null;
-    setUser(null);
-    setAuthenticated(false);
-    await DatabaseService.setCurrentUser(null);
-    await supabase.auth.signOut();
   };
 
   // Backwards compatibility helper: driveAuthorized boolean
