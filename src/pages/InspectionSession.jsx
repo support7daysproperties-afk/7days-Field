@@ -1265,7 +1265,7 @@ export default function InspectionSession() {
                     marginBottom: '8px'
                   }}
                 >
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}>
                     <input 
                       type="text" 
                       className="form-input" 
@@ -1282,14 +1282,39 @@ export default function InspectionSession() {
                         }
                       }}
                       autoFocus
-                      style={{ flex: 1, padding: '7px 10px', fontSize: '13px', margin: 0 }}
+                      style={{ 
+                        flex: 1, 
+                        minWidth: 0, 
+                        width: '100%', 
+                        padding: '8px 12px', 
+                        fontSize: '13px', 
+                        margin: 0,
+                        backgroundColor: 'var(--surface-color, #0f172a)',
+                        color: 'var(--text-primary, #ffffff)',
+                        border: '1px solid var(--border-color, #334155)',
+                        borderRadius: '6px',
+                        outline: 'none',
+                        boxSizing: 'border-box'
+                      }}
                     />
                     <button 
                       type="button" 
                       className="btn btn-primary"
                       onClick={() => handleQuickAddCategoryItem(group.title)}
                       disabled={!categoryItemInput.trim()}
-                      style={{ padding: '7px 12px', fontSize: '12px', fontWeight: 600, height: 'auto', whiteSpace: 'nowrap' }}
+                      style={{ 
+                        width: 'auto',
+                        flex: '0 0 auto',
+                        padding: '8px 16px', 
+                        fontSize: '12px', 
+                        fontWeight: 600, 
+                        height: 'auto', 
+                        minHeight: 'unset', 
+                        whiteSpace: 'nowrap',
+                        borderRadius: '6px',
+                        opacity: !categoryItemInput.trim() ? 0.5 : 1,
+                        cursor: !categoryItemInput.trim() ? 'not-allowed' : 'pointer'
+                      }}
                     >
                       Add
                     </button>
@@ -1300,7 +1325,18 @@ export default function InspectionSession() {
                         setCategoryItemInput('');
                         setCategoryItemError('');
                       }}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
+                      style={{ 
+                        background: 'none', 
+                        border: 'none', 
+                        color: 'var(--text-secondary)', 
+                        cursor: 'pointer', 
+                        padding: '6px', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        flex: '0 0 auto',
+                        borderRadius: '4px'
+                      }}
                       aria-label="Cancel"
                     >
                       <X size={16} />

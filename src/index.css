@@ -223,10 +223,16 @@ h4 { font-size: 13px; font-weight: 600; }
 }
 
 .btn-sm {
+  width: auto;
   min-height: 34px;
   padding: 6px 12px;
   font-size: 12px;
   border-radius: var(--radius-sm);
+}
+
+.btn:disabled, button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Badges */
