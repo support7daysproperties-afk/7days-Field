@@ -43,6 +43,7 @@ import {
 import { computeCollisionFreeLabels } from '../services/BoundaryLabelPlacementService';
 import { loadGoogleMaps, getGoogleMapsApiKey } from '../services/GoogleMapsLoader';
 import { useAuth } from '../context/AuthContext';
+import useBackHandler from '../hooks/useBackHandler';
 
 // ── Visual constants ───────────────────────────────────────────────────────────
 const C_BLUE    = '#3b82f6';
@@ -499,6 +500,54 @@ export default function PropertyBoundary({
     setMode('completed');
     renderLayers(drawCoordsRef.current, 'completed');
   }, [renderLayers]);
+
+  // Back handlers for PropertyBoundary:
+  // 1. Clear confirmation dialog (priority 110)
+  useBackHandler(
+    'boundary_clear_confirm',
+    () => {
+      setShowClearConfirm(false);
+      return true;
+    },
+    110,
+    showClearConfirm
+  );
+
+  // 2. Saved Full-Screen Overlay (priority 100) -> returns to interactive map
+  useBackHandler(
+    'boundary_saved_overlay',
+    () => {
+      setMode('completed');
+      return true;
+    },
+    100,
+    mode === 'saved'
+  );
+
+  // 3. Edit mode (priority 95) -> finish editing safely
+  useBackHandler(
+    'boundary_edit_mode',
+    () => {
+      finishEditing();
+      return true;
+    },
+    95,
+    mode === 'editing'
+  );
+
+  // 4. Boundary screen dismissal (priority 90) -> calls onCancel if provided
+  useBackHandler(
+    'boundary_screen_back',
+    () => {
+      if (onCancel) {
+        onCancel();
+        return true;
+      }
+      return false;
+    },
+    90,
+    Boolean(onCancel)
+  );
 
   // ── Delete vertex ─────────────────────────────────────────────────────────────
   const deleteVertex = useCallback((idx) => {

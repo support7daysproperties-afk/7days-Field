@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Compass, Play, Square, ShieldAlert, ArrowLeft, RefreshCw, Activity, Smartphone } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import useBackHandler from '../hooks/useBackHandler';
 
 /**
  * SensorMonitor.jsx
@@ -11,6 +12,17 @@ import { useNavigate } from 'react-router-dom';
  */
 export default function SensorMonitor() {
   const navigate = useNavigate();
+
+  // Back returns to dashboard
+  useBackHandler(
+    'sensor_monitor_back',
+    () => {
+      navigate('/', { replace: false });
+      return true;
+    },
+    10,
+    true
+  );
 
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState('unknown'); // 'unknown' | 'granted' | 'denied' | 'prompt'

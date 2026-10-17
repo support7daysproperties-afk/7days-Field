@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Video, X, RotateCcw, MapPin, Play, Square, CheckCircle, AlertTriangle } from 'lucide-react';
 import { EvidenceService } from '../services/EvidenceService';
+import useBackHandler from '../hooks/useBackHandler';
 
 const EXPECTED_LAT = 11.41;
 const EXPECTED_LON = 76.69;
@@ -245,6 +246,28 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
     setLocationData({ loading: false, lat: null, lon: null, accuracy: null, status: null, distanceKm: null, error: null, timestamp: null });
     startCamera();
   };
+
+  // Back from Video Preview returns to live camera without discarding anything else
+  useBackHandler(
+    'video_preview_back',
+    () => {
+      handleRetake();
+      return true;
+    },
+    95,
+    Boolean(recordedVideoUrl)
+  );
+
+  // Back while recording safely finishes/stops recording rather than quitting
+  useBackHandler(
+    'video_recording_back',
+    () => {
+      stopRecording();
+      return true;
+    },
+    95,
+    isRecording
+  );
 
   const handleSave = async () => {
     if (!videoBlobRef.current) return;

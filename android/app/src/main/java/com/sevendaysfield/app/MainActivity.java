@@ -25,6 +25,18 @@ public class MainActivity extends BridgeActivity {
 
         requestAppPermissions();
         configureWebViewPermissions();
+        setupBackNavigation();
+    }
+
+    private void setupBackNavigation() {
+        getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (getBridge() != null && getBridge().getWebView() != null) {
+                    getBridge().getWebView().evaluateJavascript("window.dispatchEvent(new CustomEvent('hardwareBackButton'))", null);
+                }
+            }
+        });
     }
 
     private void requestAppPermissions() {

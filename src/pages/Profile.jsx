@@ -3,12 +3,35 @@ import { User, LogOut, Smartphone, HardDrive, CheckCircle2, XCircle, ChevronRigh
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import DatabaseService from '../services/offline/DatabaseService';
+import useBackHandler from '../hooks/useBackHandler';
 
 export default function Profile() {
   const navigate = useNavigate();
   const { user, signOut, driveAuthorized, driveStatus, driveEmail } = useAuth();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+
+  // Close reset cache confirmation modal on back press
+  useBackHandler(
+    'profile_reset_confirm',
+    () => {
+      setShowResetConfirm(false);
+      return true;
+    },
+    110,
+    showResetConfirm
+  );
+
+  // On profile tab, back returns to dashboard
+  useBackHandler(
+    'profile_tab_back',
+    () => {
+      navigate('/', { replace: false });
+      return true;
+    },
+    10,
+    !showResetConfirm
+  );
   
   const name = user?.supervisorProfile?.name || 'Field Supervisor';
   const email = user?.email || 'N/A';

@@ -1,14 +1,21 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { navigationService } from '../services/NavigationService';
 
 export default function TaskDetails() {
   const navigate = useNavigate();
   const { id } = useParams();
 
+  useBackHandler('task_details_back', () => {
+    navigationService.goBack('/tasks');
+    return true;
+  }, 10);
+
   return (
     <div className="task-details-page pb-xl" style={{ backgroundColor: 'var(--bg-color)', minHeight: '100vh', padding: '16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 14px)' }}>
       <header className="flex items-center gap-md mb-md">
-        <button onClick={() => navigate(-1)} className="text-primary" style={{ background: 'none', border: 'none', padding: 0 }}>
+        <button onClick={() => navigationService.goBack('/tasks')} className="text-primary" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
           <ArrowLeft size={24} />
         </button>
       </header>

@@ -11,6 +11,7 @@ import GoogleDriveAccess from './pages/GoogleDriveAccess';
 import Login from './pages/Login';
 import SensorMonitor from './pages/SensorMonitor';
 import { useAuth } from './context/AuthContext';
+import GlobalBackController from './components/GlobalBackController';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
 // A simple protected route wrapper
@@ -38,6 +39,7 @@ function ProtectedRoute() {
 function App() {
   return (
     <Router>
+      <GlobalBackController />
       <div className="app-container">
         <Routes>
           {/* Public Diagnostic Route */}

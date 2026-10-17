@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { HardDrive, CheckCircle2, AlertTriangle, Loader2, RefreshCw, LogOut, Mail } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { DRIVE_STATUS } from '../services/GoogleDriveService';
+import useBackHandler from '../hooks/useBackHandler';
 
 export default function GoogleDriveAccess() {
   const navigate = useNavigate();
@@ -35,6 +36,17 @@ export default function GoogleDriveAccess() {
       navigate('/', { replace: true });
     }
   };
+
+  // Back returns to dashboard or intended route
+  useBackHandler(
+    'drive_access_back',
+    () => {
+      handleContinue();
+      return true;
+    },
+    10,
+    true
+  );
 
   const handleConnect = async (forcePrompt = false) => {
     setLoading(true);

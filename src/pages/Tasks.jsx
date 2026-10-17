@@ -4,6 +4,7 @@ import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle, Clipboard
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import DatabaseService from '../services/offline/DatabaseService';
+import useBackHandler from '../hooks/useBackHandler';
 
 export default function Tasks() {
   const navigate = useNavigate();
@@ -11,6 +12,17 @@ export default function Tasks() {
   const [inspections, setInspections] = useState([]);
   const [filter, setFilter] = useState('All'); // All, Active, Drafts, Completed, Pending Sync
   const [isLoading, setIsLoading] = useState(true);
+
+  // On tasks tab, back returns to dashboard
+  useBackHandler(
+    'tasks_tab_back',
+    () => {
+      navigate('/', { replace: false });
+      return true;
+    },
+    10,
+    true
+  );
 
   useEffect(() => {
     loadInspections();

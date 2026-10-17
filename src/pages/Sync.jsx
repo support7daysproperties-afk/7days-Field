@@ -13,6 +13,7 @@ import ConnectivityService from '../services/offline/ConnectivityService';
 import SyncEngine from '../services/offline/SyncEngine';
 import DatabaseService from '../services/offline/DatabaseService';
 import { useAuth } from '../context/AuthContext';
+import useBackHandler from '../hooks/useBackHandler';
 
 // ── Status config ─────────────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -231,6 +232,17 @@ export default function Sync() {
   const [jobMap, setJobMap] = useState({});
   const [isOnline, setIsOnline] = useState(ConnectivityService.online);
   const [isSyncing, setIsSyncing] = useState(SyncEngine.isSyncing);
+
+  // On sync tab, back returns to dashboard
+  useBackHandler(
+    'sync_tab_back',
+    () => {
+      navigate('/', { replace: false });
+      return true;
+    },
+    10,
+    true
+  );
 
   const loadData = useCallback(async () => {
     const allInspections = await InspectionRepository.getAllInspections();

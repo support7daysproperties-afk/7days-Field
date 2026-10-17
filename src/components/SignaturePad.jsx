@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react';
 import { Maximize2, Minimize2, RotateCcw, Check } from 'lucide-react';
+import useBackHandler from '../hooks/useBackHandler';
 
 export default function SignaturePad({ onSave, onClear, initialSignature = null }) {
   const canvasRef = useRef(null);
@@ -9,6 +10,17 @@ export default function SignaturePad({ onSave, onClear, initialSignature = null 
   const [isFullScreen, setIsFullScreen] = useState(false);
   const savedDataUrlRef = useRef(initialSignature);
   const lastPointRef = useRef(null);
+
+  // When signature pad is in fullscreen modal, Back button exits fullscreen safely without losing drawn lines
+  useBackHandler(
+    'signature_fullscreen_dismiss',
+    () => {
+      setIsFullScreen(false);
+      return true;
+    },
+    100,
+    isFullScreen
+  );
 
   // Initialize canvas with proper scale and ink style
   useEffect(() => {

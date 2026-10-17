@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { navigationService } from '../services/NavigationService';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import { locationService } from '../services/platform/LocationService';
 
@@ -29,6 +31,11 @@ export default function CreateInspection() {
   const [isLocating, setIsLocating] = useState(false);
   const [locationError, setLocationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useBackHandler('create_inspection_back', () => {
+    navigationService.goBack('/tasks');
+    return true;
+  }, 10);
 
   // Auto-save draft changes to localStorage so inputs are never forgotten
   useEffect(() => {
@@ -179,7 +186,7 @@ export default function CreateInspection() {
     <div className="pb-xl" style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', minHeight: '100vh', padding: '16px', paddingTop: 'calc(var(--safe-area-top, 36px) + 14px)', paddingBottom: '110px' }}>
       <header className="flex items-center gap-md mb-lg">
         <button 
-          onClick={() => navigate(-1)} 
+          onClick={() => navigationService.goBack('/tasks')} 
           style={{ 
             background: 'var(--surface-color)', 
             border: '1px solid var(--border-color)', 

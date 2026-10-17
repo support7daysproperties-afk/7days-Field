@@ -12,8 +12,9 @@ import { EvidenceService } from '../services/EvidenceService';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import BoundaryRepository from '../services/offline/BoundaryRepository';
 import MediaRepository from '../services/offline/MediaRepository';
-import SyncEngine from '../services/offline/SyncEngine';
 import { useAuth } from '../context/AuthContext';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { navigationService } from '../services/NavigationService';
 
 export default function InspectionSession() {
   const navigate = useNavigate();
@@ -57,6 +58,79 @@ export default function InspectionSession() {
 
   const longPressTimerRef = useRef(null);
   const isLongPressTriggeredRef = useRef(false);
+
+  // Centralized Mobile & Browser Back Action Handlers
+  // 1. Delete Confirmations (Priority 110)
+  useBackHandler('insp_del_confirm', () => {
+    setShowDeleteConfirm(false);
+    return true;
+  }, 110, showDeleteConfirm);
+
+  useBackHandler('insp_sel_del_confirm', () => {
+    setShowSelectionDeleteConfirm(false);
+    return true;
+  }, 110, showSelectionDeleteConfirm);
+
+  useBackHandler('insp_vid_sel_del_confirm', () => {
+    setShowVideoSelectionDeleteConfirm(false);
+    return true;
+  }, 110, showVideoSelectionDeleteConfirm);
+
+  useBackHandler('insp_custom_cat_modal', () => {
+    setShowAddCustomCategoryModal(false);
+    return true;
+  }, 110, showAddCustomCategoryModal);
+
+  // 2. Full-Screen Viewers (Priority 100)
+  useBackHandler('insp_media_viewer', () => {
+    setSelectedMediaIndex(null);
+    return true;
+  }, 100, selectedMediaIndex !== null);
+
+  useBackHandler('insp_viewer_mode', () => {
+    setViewerMode(null);
+    return true;
+  }, 100, viewerMode !== null);
+
+  // 3. Camera Modals & Tools (Priority 90)
+  useBackHandler('insp_photo_camera', () => {
+    setShowPhotoCamera(false);
+    return true;
+  }, 90, showPhotoCamera);
+
+  useBackHandler('insp_photo_sphere', () => {
+    setShowPhotoSphere(false);
+    return true;
+  }, 90, showPhotoSphere);
+
+  useBackHandler('insp_video_camera', () => {
+    setShowVideoCamera(false);
+    return true;
+  }, 90, showVideoCamera);
+
+  useBackHandler('insp_boundary_map', () => {
+    setShowBoundaryMap(false);
+    return true;
+  }, 90, showBoundaryMap);
+
+  // 4. Batch Selection Modes (Priority 80)
+  useBackHandler('insp_selection_mode', () => {
+    setIsSelectionMode(false);
+    setIsVideoSelectionMode(false);
+    return true;
+  }, 80, isSelectionMode || isVideoSelectionMode);
+
+  // 5. Active Inspection Step -> Return to Overview (Priority 50)
+  useBackHandler('insp_active_step', () => {
+    setActiveStepId('overview');
+    return true;
+  }, 50, activeStepId !== 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
+
+  // 6. Inspection Overview -> Return to Inspections List / Tasks (Priority 20)
+  useBackHandler('insp_overview', () => {
+    navigate('/tasks');
+    return true;
+  }, 20, activeStepId === 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
 
   const togglePhotoSelection = (photoId) => {
     setSelectedPhotoIds(prev => {
