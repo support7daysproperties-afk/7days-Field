@@ -57,11 +57,27 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
       let mediaStream;
       try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: currentFacingMode } },
+          video: {
+            facingMode: { ideal: currentFacingMode },
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 }
+          },
           audio: true
         });
-      } catch (fallbackErr) {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch (audioErr) {
+        console.warn('Audio stream failed, falling back to video-only:', audioErr);
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: currentFacingMode },
+              width: { ideal: 1920, max: 1920 },
+              height: { ideal: 1080, max: 1080 }
+            },
+            audio: false
+          });
+        } catch (fallbackErr) {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
       }
       
       setStream(mediaStream);

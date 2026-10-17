@@ -29,6 +29,7 @@ export default function FieldCamera({
 
   const [isProcessing, setIsProcessing] = useState(false);
   const watchIdRef = useRef(null);
+  const cachedAddressRef = useRef(null);
 
   const startCamera = useCallback(async (currentFacingMode = facingMode) => {
     setCameraError(null);
@@ -46,8 +47,8 @@ export default function FieldCamera({
         mediaStream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
             facingMode: { ideal: currentFacingMode },
-            width: { ideal: 4096 },
-            height: { ideal: 2160 }
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 }
           } 
         });
       } catch (fallbackErr) {
@@ -96,13 +97,31 @@ export default function FieldCamera({
           loading: false, lat: latitude, lon: longitude, accuracy: accuracy, 
           timestamp: position.timestamp || Date.now(), error: null
         });
+
+        // Pre-fetch reverse geocoded address in background so photo capture is instant (0ms delay)
+        if (!cachedAddressRef.current || Math.abs((cachedAddressRef.current._lat || 0) - latitude) > 0.001) {
+          fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`)
+            .then(res => res.json())
+            .then(data => {
+              if (data && data.display_name) {
+                const parts = data.display_name.split(', ');
+                cachedAddressRef.current = {
+                  _lat: latitude,
+                  _lon: longitude,
+                  full: data.display_name,
+                  short: parts.slice(Math.max(parts.length - 4, 0)).join(', ')
+                };
+              }
+            })
+            .catch(() => {});
+        }
       },
       (error) => {
         let errorMsg = 'GPS unavailable';
         if (error.code === 1) errorMsg = 'Location Permission Denied';
         setLiveLocation(prev => ({ ...prev, loading: false, error: errorMsg }));
       },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
     );
   };
 
@@ -161,23 +180,10 @@ export default function FieldCamera({
         let geotaggedBlob = null;
 
         if (evidenceType === 'Location Verification') {
-          let addressDetails = {
-            short: 'Location unavailable',
-            full: 'Unknown'
+          let addressDetails = cachedAddressRef.current || {
+            short: liveLocation.lat ? `${liveLocation.lat.toFixed(5)}°, ${liveLocation.lon.toFixed(5)}°` : 'GPS Verified',
+            full: liveLocation.lat ? `Lat: ${liveLocation.lat.toFixed(6)}, Lon: ${liveLocation.lon.toFixed(6)} (±${Math.round(liveLocation.accuracy || 0)}m)` : 'Location unavailable'
           };
-          if (liveLocation.lat) {
-            try {
-              const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${liveLocation.lat}&lon=${liveLocation.lon}&format=json`);
-              const data = await res.json();
-              if (data && data.display_name) {
-                addressDetails.full = data.display_name;
-                const parts = data.display_name.split(', ');
-                addressDetails.short = parts.slice(Math.max(parts.length - 4, 0)).join(', ');
-              }
-            } catch (e) {
-              console.warn("Reverse geocoding failed", e);
-            }
-          }
           geotaggedBlob = await generateGeotaggedImageBlob(originalDataUrl, { ...liveLocation, address: addressDetails });
         }
 
