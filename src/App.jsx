@@ -49,12 +49,12 @@ function App() {
             <Route path="/" element={<MainLayout />}>
               <Route index element={<Home />} />
               <Route path="tasks" element={<Tasks />} />
-              <Route path="tasks/:id" element={<TaskDetails />} />
-              <Route path="create-inspection" element={<CreateInspection />} />
               <Route path="sync" element={<Sync />} />
               <Route path="profile" element={<Profile />} />
             </Route>
             
+            <Route path="/create-inspection" element={<CreateInspection />} />
+            <Route path="/tasks/:id" element={<TaskDetails />} />
             <Route path="/google-drive-access" element={<GoogleDriveAccess />} />
             <Route path="/inspection/:id/*" element={<InspectionSession />} />
           </Route>

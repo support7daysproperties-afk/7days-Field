@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark, CheckSquare, Square } from 'lucide-react';
+import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark, CheckSquare, Square, RotateCcw, Plus, PlusCircle } from 'lucide-react';
 import FieldCamera from '../components/FieldCamera';
 import VideoCamera from '../components/VideoCamera';
 import PhotoSphereCapture from '../features/photo-sphere/PhotoSphereCapture';
@@ -31,10 +31,19 @@ export default function InspectionSession() {
   const [evidenceList, setEvidenceList] = useState([]);
   const [expandedFolder, setExpandedFolder] = useState('photos');
   const [selectedPhotoIds, setSelectedPhotoIds] = useState(new Set());
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [showSelectionDeleteConfirm, setShowSelectionDeleteConfirm] = useState(false);
+  const [selectedVideoIds, setSelectedVideoIds] = useState(new Set());
+  const [isVideoSelectionMode, setIsVideoSelectionMode] = useState(false);
+  const [showVideoSelectionDeleteConfirm, setShowVideoSelectionDeleteConfirm] = useState(false);
+  const [undoState, setUndoState] = useState(null); // { items: [...], count: number, mediaType: 'photo' | 'video', timeoutId: ... }
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [touchStart, setTouchStart] = useState(null);
   const [touchEnd, setTouchEnd] = useState(null);
+
+  const longPressTimerRef = useRef(null);
+  const isLongPressTriggeredRef = useRef(false);
 
   const togglePhotoSelection = (photoId) => {
     setSelectedPhotoIds(prev => {
@@ -48,16 +57,199 @@ export default function InspectionSession() {
     });
   };
 
-  const handleDeleteUnselectedPhotos = async () => {
+  const handlePhotoTouchStart = (photoId) => {
+    isLongPressTriggeredRef.current = false;
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressTriggeredRef.current = true;
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try { navigator.vibrate(50); } catch (e) {}
+      }
+      setIsSelectionMode(true);
+      setSelectedPhotoIds(prev => {
+        const next = new Set(prev);
+        next.add(photoId);
+        return next;
+      });
+    }, 500);
+  };
+
+  const handlePhotoTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handlePhotoClick = (photo) => {
+    if (isLongPressTriggeredRef.current) {
+      isLongPressTriggeredRef.current = false;
+      return;
+    }
+    if (isSelectionMode) {
+      togglePhotoSelection(photo.id);
+    } else {
+      setSelectedMediaIndex(evidenceList.findIndex(e => e.id === photo.id));
+    }
+  };
+
+  const handleConfirmDeleteUnselected = async () => {
     const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
     const toDelete = photos.filter(p => !selectedPhotoIds.has(p.id));
-    if (toDelete.length === 0) return;
-    
-    if (window.confirm(`Keep ${selectedPhotoIds.size} selected photo(s) and remove ${toDelete.length} unselected photo(s)?`)) {
+    if (toDelete.length === 0) {
+      setShowSelectionDeleteConfirm(false);
+      return;
+    }
+
+    try {
+      // 1. Fetch full raw records from MediaRepository for backup
+      const backupRecords = [];
+      for (const item of toDelete) {
+        const raw = await MediaRepository.getMedia(item.id);
+        if (raw) backupRecords.push(raw);
+      }
+
+      // 2. Delete unselected photos from MediaRepository
       for (const item of toDelete) {
         await MediaRepository.deleteMedia(item.id);
       }
+
+      // 3. Close confirmation popup, reset selection mode
+      setShowSelectionDeleteConfirm(false);
+      setIsSelectionMode(false);
+      setSelectedPhotoIds(new Set());
       await loadEvidence();
+
+      // 4. Set undo state with 15-second auto-dismiss timer
+      if (undoState?.timeoutId) {
+        clearTimeout(undoState.timeoutId);
+      }
+      const timeoutId = setTimeout(() => {
+        setUndoState(null);
+      }, 15000);
+
+      setUndoState({
+        items: backupRecords,
+        count: backupRecords.length,
+        mediaType: 'photo',
+        timeoutId
+      });
+    } catch (err) {
+      console.error("Failed to delete unselected photos:", err);
+    }
+  };
+
+  const toggleVideoSelection = (videoId) => {
+    setSelectedVideoIds(prev => {
+      const next = new Set(prev);
+      if (next.has(videoId)) {
+        next.delete(videoId);
+      } else {
+        next.add(videoId);
+      }
+      return next;
+    });
+  };
+
+  const handleVideoTouchStart = (videoId) => {
+    isLongPressTriggeredRef.current = false;
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressTriggeredRef.current = true;
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try { navigator.vibrate(50); } catch (e) {}
+      }
+      setIsVideoSelectionMode(true);
+      setSelectedVideoIds(prev => {
+        const next = new Set(prev);
+        next.add(videoId);
+        return next;
+      });
+    }, 500);
+  };
+
+  const handleVideoTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleVideoClick = (video) => {
+    if (isLongPressTriggeredRef.current) {
+      isLongPressTriggeredRef.current = false;
+      return;
+    }
+    if (isVideoSelectionMode) {
+      toggleVideoSelection(video.id);
+    } else {
+      setSelectedMediaIndex(evidenceList.findIndex(e => e.id === video.id));
+    }
+  };
+
+  const handleConfirmDeleteUnselectedVideos = async () => {
+    const videos = evidenceList.filter(e => e.mediaType === 'video');
+    const toDelete = videos.filter(v => !selectedVideoIds.has(v.id));
+    if (toDelete.length === 0) {
+      setShowVideoSelectionDeleteConfirm(false);
+      setIsVideoSelectionMode(false);
+      return;
+    }
+
+    try {
+      // 1. Fetch full raw records from MediaRepository for backup
+      const backupRecords = [];
+      for (const item of toDelete) {
+        const raw = await MediaRepository.getMedia(item.id);
+        if (raw) backupRecords.push(raw);
+      }
+
+      // 2. Delete unselected videos from MediaRepository
+      for (const item of toDelete) {
+        await MediaRepository.deleteMedia(item.id);
+      }
+
+      // 3. Close confirmation popup, reset selection mode
+      setShowVideoSelectionDeleteConfirm(false);
+      setIsVideoSelectionMode(false);
+      setSelectedVideoIds(new Set());
+      await loadEvidence();
+
+      // 4. Set undo state with 15-second auto-dismiss timer
+      if (undoState?.timeoutId) {
+        clearTimeout(undoState.timeoutId);
+      }
+      const timeoutId = setTimeout(() => {
+        setUndoState(null);
+      }, 15000);
+
+      setUndoState({
+        items: backupRecords,
+        count: backupRecords.length,
+        mediaType: 'video',
+        timeoutId
+      });
+    } catch (err) {
+      console.error("Failed to delete unselected videos:", err);
+    }
+  };
+
+  const handleUndoDelete = async () => {
+    if (!undoState || !undoState.items || undoState.items.length === 0) return;
+    if (undoState.timeoutId) clearTimeout(undoState.timeoutId);
+
+    try {
+      for (const record of undoState.items) {
+        await MediaRepository.saveMedia(record);
+      }
+      setUndoState(null);
+      await loadEvidence();
+    } catch (err) {
+      console.error("Failed to restore photos:", err);
     }
   };
 
@@ -68,6 +260,16 @@ export default function InspectionSession() {
     'Exterior inspected': false, 'Interior inspected': false, 'Boundary inspected': false,
     'Documents reviewed': false, 'Owner information confirmed': false
   });
+  const [customChecklistItems, setCustomChecklistItems] = useState([]); // [{ id, name, category }]
+  const [addingCategory, setAddingCategory] = useState(null); // category name currently adding to
+  const [categoryItemInput, setCategoryItemInput] = useState('');
+  const [categoryItemError, setCategoryItemError] = useState('');
+  const [showAddCustomCategoryModal, setShowAddCustomCategoryModal] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryItemName, setNewCategoryItemName] = useState('');
+  const [customCategoryError, setCustomCategoryError] = useState('');
+  const [checklistReviewed, setChecklistReviewed] = useState(false);
+
   const [remarks, setRemarks] = useState('');
   const [ownerInfo, setOwnerInfo] = useState({ name: '', phone: '', relationship: 'Owner', remarks: '' });
   const [consent, setConsent] = useState(false);
@@ -84,6 +286,28 @@ export default function InspectionSession() {
           setInspectionRecord(record);
           if (record.metadata) {
             if (record.metadata.checklist) setChecklist(record.metadata.checklist);
+            if (record.metadata.checklistReviewed !== undefined) {
+              setChecklistReviewed(record.metadata.checklistReviewed);
+            } else if (record.metadata.checklist && Object.values(record.metadata.checklist).some(Boolean)) {
+              setChecklistReviewed(true);
+            }
+            if (record.metadata.customChecklistItems) {
+              setCustomChecklistItems(record.metadata.customChecklistItems);
+            } else if (record.metadata.checklist) {
+              const defaultSet = new Set([
+                'Road accessible', 'Vehicle access available', 'Entrance identified',
+                'Exterior inspected', 'Interior inspected', 'Boundary inspected',
+                'Documents reviewed', 'Owner information confirmed'
+              ]);
+              const extraKeys = Object.keys(record.metadata.checklist).filter(k => !defaultSet.has(k));
+              if (extraKeys.length > 0) {
+                setCustomChecklistItems(extraKeys.map(k => ({
+                  id: `custom_${k}`,
+                  name: k,
+                  category: 'Additional Checks'
+                })));
+              }
+            }
             if (record.metadata.remarks) setRemarks(record.metadata.remarks);
             if (record.metadata.ownerInfo) setOwnerInfo(record.metadata.ownerInfo);
             if (record.metadata.consent !== undefined) setConsent(record.metadata.consent);
@@ -114,7 +338,7 @@ export default function InspectionSession() {
           status: 'IN_PROGRESS',
           sync_status: existing?.sync_status || 'LOCAL_ONLY',
           created_at: existing?.created_at,
-          metadata: { checklist, remarks, ownerInfo, consent, signature }
+          metadata: { checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature }
         });
       } catch (err) {
         console.error("Failed to save inspection state", err);
@@ -122,13 +346,119 @@ export default function InspectionSession() {
     };
     
     saveState();
-  }, [id, checklist, remarks, ownerInfo, consent, signature, isLoading]);
+  }, [id, checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature, isLoading]);
 
-  const checklistGroups = [
-    { title: 'Property Access', items: ['Road accessible', 'Vehicle access available', 'Entrance identified'] },
-    { title: 'Property Condition', items: ['Exterior inspected', 'Interior inspected', 'Boundary inspected'] },
-    { title: 'Documentation', items: ['Documents reviewed', 'Owner information confirmed'] }
-  ];
+  const checklistGroups = useMemo(() => {
+    const baseGroups = [
+      { title: 'Property Access', items: ['Road accessible', 'Vehicle access available', 'Entrance identified'] },
+      { title: 'Property Condition', items: ['Exterior inspected', 'Interior inspected', 'Boundary inspected'] },
+      { title: 'Documentation', items: ['Documents reviewed', 'Owner information confirmed'] }
+    ];
+
+    const customByCategory = {};
+    customChecklistItems.forEach(ci => {
+      const cat = ci.category || 'Additional Checks';
+      if (!customByCategory[cat]) customByCategory[cat] = [];
+      customByCategory[cat].push(ci.name);
+    });
+
+    const result = baseGroups.map(g => ({
+      ...g,
+      items: [...g.items, ...(customByCategory[g.title] || [])]
+    }));
+
+    Object.keys(customByCategory).forEach(cat => {
+      if (!baseGroups.some(g => g.title === cat)) {
+        result.push({
+          title: cat,
+          items: customByCategory[cat]
+        });
+      }
+    });
+
+    return result;
+  }, [customChecklistItems]);
+
+  const handleQuickAddCategoryItem = (categoryTitle) => {
+    const trimmed = categoryItemInput.trim();
+    if (!trimmed) {
+      setCategoryItemError('Please enter a check description.');
+      return;
+    }
+    if (checklist[trimmed] !== undefined) {
+      setCategoryItemError('A check with this description already exists.');
+      return;
+    }
+
+    const newItem = {
+      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: trimmed,
+      category: categoryTitle
+    };
+
+    setCustomChecklistItems(prev => [...prev, newItem]);
+    setChecklist(prev => ({
+      ...prev,
+      [trimmed]: false
+    }));
+    setCategoryItemInput('');
+    setAddingCategory(null);
+    setCategoryItemError('');
+  };
+
+  const handleCreateCustomCategory = () => {
+    const trimmedCat = newCategoryName.trim();
+    const trimmedItem = newCategoryItemName.trim();
+    if (!trimmedCat) {
+      setCustomCategoryError('Please enter a category name.');
+      return;
+    }
+    if (!trimmedItem) {
+      setCustomCategoryError('Please enter a check description.');
+      return;
+    }
+    if (checklist[trimmedItem] !== undefined) {
+      setCustomCategoryError('A check with this description already exists.');
+      return;
+    }
+
+    const newItem = {
+      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: trimmedItem,
+      category: trimmedCat
+    };
+
+    setCustomChecklistItems(prev => [...prev, newItem]);
+    setChecklist(prev => ({
+      ...prev,
+      [trimmedItem]: false
+    }));
+    setNewCategoryName('');
+    setNewCategoryItemName('');
+    setShowAddCustomCategoryModal(false);
+    setCustomCategoryError('');
+  };
+
+  const handleDeleteCategory = (categoryTitle) => {
+    const itemsToDelete = customChecklistItems.filter(ci => ci.category === categoryTitle).map(ci => ci.name);
+    setCustomChecklistItems(prev => prev.filter(ci => ci.category !== categoryTitle));
+    setChecklist(prev => {
+      const next = { ...prev };
+      itemsToDelete.forEach(name => {
+        delete next[name];
+      });
+      return next;
+    });
+  };
+
+  const handleDeleteCustomCheckItem = (itemNameToDelete) => {
+    setCustomChecklistItems(prev => prev.filter(ci => ci.name !== itemNameToDelete));
+    setChecklist(prev => {
+      const next = { ...prev };
+      delete next[itemNameToDelete];
+      return next;
+    });
+  };
 
   const checklistCompleted = Object.values(checklist).filter(Boolean).length;
   const checklistTotal = Object.keys(checklist).length;
@@ -137,7 +467,7 @@ export default function InspectionSession() {
     { id: 'location', name: 'Location Verification', completed: !!evidenceSummary.location },
     { id: 'boundary', name: 'Property Boundary', completed: !!boundary },
     { id: 'evidence', name: 'Evidence (Photos/Videos)', completed: evidenceSummary.total > 0 },
-    { id: 'checklist', name: 'Field Checklist', completed: checklistCompleted === checklistTotal },
+    { id: 'checklist', name: 'Field Checklist', completed: checklistReviewed || checklistCompleted > 0 },
     { id: 'remarks', name: 'Field Observations', completed: remarks.length > 0 },
     { id: 'owner', name: 'Owner Information', completed: ownerInfo.name.length > 0 },
     { id: 'consent', name: 'Owner Consent', completed: consent && !!signature }
@@ -151,14 +481,6 @@ export default function InspectionSession() {
     setEvidenceList(list);
     const summary = await EvidenceService.getEvidenceSummary(id);
     setEvidenceSummary(summary);
-    
-    // Auto-select all photos by default so supervisor can uncheck any they don't want
-    const photoIds = list.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification').map(p => p.id);
-    setSelectedPhotoIds(prev => {
-      const next = new Set(prev);
-      photoIds.forEach(pid => next.add(pid));
-      return next;
-    });
   };
 
   useEffect(() => { loadEvidence(); }, [id]);
@@ -495,39 +817,76 @@ export default function InspectionSession() {
             <div className="animate-fade-in mb-sm p-sm bg-bg-color rounded-lg border border-color">
               <div className="flex justify-between items-center mb-sm">
                 <div>
-                  <h4 className="text-sm font-semibold m-0">Photos ({photos.length})</h4>
+                  <h4 className="text-sm font-semibold m-0">
+                    {isSelectionMode ? `${selectedPhotoIds.size} of ${photos.length} Selected` : `Photos (${photos.length})`}
+                  </h4>
                   <p className="text-xs text-secondary m-0" style={{ marginTop: '2px' }}>
-                    Tap checkbox to select photos to finalize.
+                    {isSelectionMode ? 'Tap photos to select or deselect.' : 'Tap to view full screen • Long-press to select.'}
                   </p>
                 </div>
                 {photos.length > 0 && (
                   <div className="flex items-center gap-xs">
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        const photoIds = photos.map(p => p.id);
-                        const allSelected = photoIds.every(id => selectedPhotoIds.has(id));
-                        setSelectedPhotoIds(prev => {
-                          const next = new Set(prev);
-                          if (allSelected) {
-                            photoIds.forEach(id => next.delete(id));
-                          } else {
-                            photoIds.forEach(id => next.add(id));
-                          }
-                          return next;
-                        });
-                      }}
-                      style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}
-                    >
-                      {photos.every(p => selectedPhotoIds.has(p.id)) ? 'Deselect All' : 'Select All'}
-                    </button>
-                    {selectedPhotoIds.size > 0 && (
+                    {isSelectionMode ? (
+                      <>
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            const photoIds = photos.map(p => p.id);
+                            const allSelected = photoIds.every(id => selectedPhotoIds.has(id));
+                            setSelectedPhotoIds(prev => {
+                              const next = new Set(prev);
+                              if (allSelected) {
+                                photoIds.forEach(id => next.delete(id));
+                              } else {
+                                photoIds.forEach(id => next.add(id));
+                              }
+                              return next;
+                            });
+                          }}
+                          style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        >
+                          {photos.every(p => selectedPhotoIds.has(p.id)) ? 'Deselect All' : 'Select All'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSelectionMode(false);
+                            setSelectedPhotoIds(new Set());
+                          }}
+                          style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        >
+                          Cancel
+                        </button>
+                        {selectedPhotoIds.size > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowSelectionDeleteConfirm(true)}
+                            style={{ 
+                              background: 'var(--primary-color)', 
+                              border: 'none', 
+                              borderRadius: '6px', 
+                              padding: '5px 12px', 
+                              fontSize: '11px', 
+                              color: 'white', 
+                              cursor: 'pointer', 
+                              fontWeight: 700,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              boxShadow: '0 2px 6px rgba(37, 99, 235, 0.35)'
+                            }}
+                          >
+                            <Check size={13} strokeWidth={3} /> Save & Confirm ({photos.filter(p => selectedPhotoIds.has(p.id)).length})
+                          </button>
+                        )}
+                      </>
+                    ) : (
                       <button
                         type="button"
-                        onClick={handleDeleteUnselectedPhotos}
-                        style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--danger-color)', cursor: 'pointer', fontWeight: 600 }}
+                        onClick={() => setIsSelectionMode(true)}
+                        style={{ background: 'rgba(37, 99, 235, 0.12)', border: '1px solid rgba(59, 130, 246, 0.3)', borderRadius: '6px', padding: '4px 10px', fontSize: '11px', color: '#60a5fa', cursor: 'pointer', fontWeight: 600 }}
                       >
-                        Keep Selected ({photos.filter(p => selectedPhotoIds.has(p.id)).length})
+                        Select
                       </button>
                     )}
                   </div>
@@ -541,6 +900,13 @@ export default function InspectionSession() {
                     return (
                       <div 
                         key={p.id} 
+                        onTouchStart={() => handlePhotoTouchStart(p.id)}
+                        onTouchEnd={handlePhotoTouchEnd}
+                        onTouchCancel={handlePhotoTouchEnd}
+                        onMouseDown={() => handlePhotoTouchStart(p.id)}
+                        onMouseUp={handlePhotoTouchEnd}
+                        onMouseLeave={handlePhotoTouchEnd}
+                        onClick={() => handlePhotoClick(p)}
                         style={{ 
                           aspectRatio: '1', 
                           backgroundColor: '#000', 
@@ -548,44 +914,56 @@ export default function InspectionSession() {
                           overflow: 'hidden', 
                           position: 'relative', 
                           cursor: 'pointer',
-                          border: isSelected ? '2px solid var(--primary-color)' : '1px solid var(--border-color)'
+                          userSelect: 'none',
+                          WebkitUserSelect: 'none',
+                          border: isSelectionMode && isSelected 
+                            ? '2.5px solid var(--primary-color)' 
+                            : '1px solid var(--border-color)',
+                          boxShadow: isSelectionMode && isSelected 
+                            ? '0 0 0 1px var(--primary-color)' 
+                            : 'none',
+                          transform: isSelectionMode && isSelected ? 'scale(0.97)' : 'scale(1)',
+                          transition: 'all 0.15s ease'
                         }}
                       >
                         <img 
                           src={p.originalImage} 
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                          style={{ 
+                            width: '100%', 
+                            height: '100%', 
+                            objectFit: 'cover',
+                            pointerEvents: 'none',
+                            opacity: isSelectionMode && !isSelected ? 0.75 : 1
+                          }} 
                           alt="evidence" 
-                          onClick={() => setSelectedMediaIndex(evidenceList.findIndex(e => e.id === p.id))}
                         />
                         
-                        {/* Checkbox trigger */}
-                        <div 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            togglePhotoSelection(p.id);
-                          }}
-                          style={{ 
-                            position: 'absolute', 
-                            top: 4, 
-                            left: 4, 
-                            backgroundColor: isSelected ? 'var(--primary-color)' : 'rgba(0,0,0,0.6)', 
-                            borderRadius: '4px',
-                            padding: '3px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer'
-                          }}
-                          title={isSelected ? 'Selected' : 'Select'}
-                        >
-                          {isSelected ? (
-                            <CheckSquare size={16} color="white" />
-                          ) : (
-                            <Square size={16} color="white" />
-                          )}
-                        </div>
+                        {/* Checkbox badge in selection mode */}
+                        {isSelectionMode && (
+                          <div 
+                            style={{ 
+                              position: 'absolute', 
+                              top: 6, 
+                              left: 6, 
+                              backgroundColor: isSelected ? 'var(--primary-color)' : 'rgba(0,0,0,0.6)', 
+                              border: isSelected ? 'none' : '1.5px solid rgba(255,255,255,0.7)',
+                              borderRadius: '4px',
+                              width: '20px',
+                              height: '20px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              boxShadow: '0 1px 4px rgba(0,0,0,0.5)',
+                              pointerEvents: 'none'
+                            }}
+                          >
+                            {isSelected ? (
+                              <Check size={14} color="white" strokeWidth={3} />
+                            ) : null}
+                          </div>
+                        )}
 
-                        <div style={{ position: 'absolute', bottom: 4, right: 4, pointerEvents: 'none' }}>
+                        <div style={{ position: 'absolute', bottom: 4, right: 4, pointerEvents: 'none', opacity: isSelectionMode ? 0.5 : 1 }}>
                           <ImageIcon size={14} color="white" />
                         </div>
                       </div>
@@ -598,15 +976,165 @@ export default function InspectionSession() {
 
           {expandedFolder === 'videos' && (
             <div className="animate-fade-in mb-sm p-sm bg-bg-color rounded-lg border border-color">
-              <h4 className="text-sm mb-sm flex justify-between font-semibold">Videos <span className="text-secondary">{videos.length}</span></h4>
+              <div className="flex justify-between items-center mb-sm">
+                <div>
+                  <h4 className="text-sm font-semibold m-0">
+                    {isVideoSelectionMode ? `${selectedVideoIds.size} of ${videos.length} Selected` : `Videos (${videos.length})`}
+                  </h4>
+                  <p className="text-xs text-secondary m-0" style={{ marginTop: '2px' }}>
+                    {isVideoSelectionMode ? 'Tap videos to select or deselect.' : 'Tap to play • Long-press to select.'}
+                  </p>
+                </div>
+                {videos.length > 0 && (
+                  <div className="flex items-center gap-xs">
+                    {isVideoSelectionMode ? (
+                      <>
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            const videoIds = videos.map(v => v.id);
+                            const allSelected = videoIds.every(id => selectedVideoIds.has(id));
+                            setSelectedVideoIds(prev => {
+                              const next = new Set(prev);
+                              if (allSelected) {
+                                videoIds.forEach(id => next.delete(id));
+                              } else {
+                                videoIds.forEach(id => next.add(id));
+                              }
+                              return next;
+                            });
+                          }}
+                          style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        >
+                          {videos.every(v => selectedVideoIds.has(v.id)) ? 'Deselect All' : 'Select All'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsVideoSelectionMode(false);
+                            setSelectedVideoIds(new Set());
+                          }}
+                          style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        >
+                          Cancel
+                        </button>
+                        {selectedVideoIds.size > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowVideoSelectionDeleteConfirm(true)}
+                            style={{ 
+                              background: 'var(--primary-color)', 
+                              border: 'none', 
+                              borderRadius: '6px', 
+                              padding: '5px 12px', 
+                              fontSize: '11px', 
+                              color: 'white', 
+                              cursor: 'pointer', 
+                              fontWeight: 700,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              boxShadow: '0 2px 6px rgba(37, 99, 235, 0.35)'
+                            }}
+                          >
+                            <Check size={13} strokeWidth={3} /> Save & Confirm ({videos.filter(v => selectedVideoIds.has(v.id)).length})
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setIsVideoSelectionMode(true)}
+                        style={{ background: 'rgba(37, 99, 235, 0.12)', border: '1px solid rgba(59, 130, 246, 0.3)', borderRadius: '6px', padding: '4px 10px', fontSize: '11px', color: '#60a5fa', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Select
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {videos.length === 0 ? <p className="text-center text-xs text-secondary py-sm">No videos captured</p> : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                  {videos.map((v, idx) => (
-                    <div key={v.id} onClick={() => setSelectedMediaIndex(evidenceList.findIndex(e => e.id === v.id))} style={{ aspectRatio: '1', backgroundColor: '#333', borderRadius: '8px', overflow: 'hidden', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-                      <Play size={24} color="white" />
-                      <div style={{ position: 'absolute', bottom: 4, right: 4, color: 'white', fontSize: '10px' }}>{v.duration}s</div>
-                    </div>
-                  ))}
+                  {videos.map((v) => {
+                    const isSelected = selectedVideoIds.has(v.id);
+                    return (
+                      <div 
+                        key={v.id} 
+                        onTouchStart={() => handleVideoTouchStart(v.id)}
+                        onTouchEnd={handleVideoTouchEnd}
+                        onTouchCancel={handleVideoTouchEnd}
+                        onMouseDown={() => handleVideoTouchStart(v.id)}
+                        onMouseUp={handleVideoTouchEnd}
+                        onMouseLeave={handleVideoTouchEnd}
+                        onClick={() => handleVideoClick(v)}
+                        style={{ 
+                          aspectRatio: '1', 
+                          backgroundColor: '#1e293b', 
+                          borderRadius: '8px', 
+                          overflow: 'hidden', 
+                          position: 'relative', 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'center', 
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          WebkitUserSelect: 'none',
+                          border: isVideoSelectionMode && isSelected 
+                            ? '2.5px solid var(--primary-color)' 
+                            : '1px solid var(--border-color)',
+                          boxShadow: isVideoSelectionMode && isSelected 
+                            ? '0 0 0 1px var(--primary-color)' 
+                            : 'none',
+                          transform: isVideoSelectionMode && isSelected ? 'scale(0.97)' : 'scale(1)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {/* Play Icon */}
+                        <div style={{
+                          width: '36px',
+                          height: '36px',
+                          borderRadius: '50%',
+                          backgroundColor: 'rgba(0,0,0,0.6)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          opacity: isVideoSelectionMode && !isSelected ? 0.6 : 1
+                        }}>
+                          <Play size={18} color="white" style={{ marginLeft: '2px' }} />
+                        </div>
+                        
+                        {/* Checkbox badge in selection mode */}
+                        {isVideoSelectionMode && (
+                          <div 
+                            style={{ 
+                              position: 'absolute', 
+                              top: 6, 
+                              left: 6, 
+                              backgroundColor: isSelected ? 'var(--primary-color)' : 'rgba(0,0,0,0.6)', 
+                              border: isSelected ? 'none' : '1.5px solid rgba(255,255,255,0.7)',
+                              borderRadius: '4px',
+                              width: '20px',
+                              height: '20px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              boxShadow: '0 1px 4px rgba(0,0,0,0.5)',
+                              pointerEvents: 'none'
+                            }}
+                          >
+                            {isSelected ? (
+                              <Check size={14} color="white" strokeWidth={3} />
+                            ) : null}
+                          </div>
+                        )}
+
+                        <div style={{ position: 'absolute', bottom: 4, right: 6, color: '#f8fafc', fontSize: '10px', fontWeight: 600, backgroundColor: 'rgba(0,0,0,0.6)', padding: '1px 5px', borderRadius: '4px', pointerEvents: 'none' }}>
+                          {v.duration ? `${v.duration}s` : 'Video'}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -615,7 +1143,41 @@ export default function InspectionSession() {
           {evidenceSummary.total === 0 && <p className="text-center text-secondary py-xs text-sm">No evidence captured yet.</p>}
         </div>
 
-        <button className="btn btn-primary mt-md" onClick={() => setActiveStepId('overview')}>Next</button>
+        {isSelectionMode && selectedPhotoIds.size > 0 ? (
+          <button 
+            className="btn btn-primary mt-md" 
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+            onClick={() => {
+              const unselected = photos.filter(p => !selectedPhotoIds.has(p.id));
+              if (unselected.length > 0) {
+                setShowSelectionDeleteConfirm(true);
+              } else {
+                setIsSelectionMode(false);
+                setActiveStepId('overview');
+              }
+            }}
+          >
+            <Check size={18} strokeWidth={2.5} /> Save & Confirm ({photos.filter(p => selectedPhotoIds.has(p.id)).length})
+          </button>
+        ) : isVideoSelectionMode && selectedVideoIds.size > 0 ? (
+          <button 
+            className="btn btn-primary mt-md" 
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+            onClick={() => {
+              const unselected = videos.filter(v => !selectedVideoIds.has(v.id));
+              if (unselected.length > 0) {
+                setShowVideoSelectionDeleteConfirm(true);
+              } else {
+                setIsVideoSelectionMode(false);
+                setActiveStepId('overview');
+              }
+            }}
+          >
+            <Check size={18} strokeWidth={2.5} /> Save & Confirm ({videos.filter(v => selectedVideoIds.has(v.id)).length})
+          </button>
+        ) : (
+          <button className="btn btn-primary mt-md" onClick={() => setActiveStepId('overview')}>Next</button>
+        )}
       </>
     );
   };
@@ -623,30 +1185,334 @@ export default function InspectionSession() {
   const renderChecklistContent = () => (
     <div className="card">
       <div className="flex justify-between items-center mb-md">
-        <h3>Inspection Checklist</h3>
+        <h3 className="m-0">Inspection Checklist</h3>
         <span className="badge badge-primary">{checklistCompleted} / {checklistTotal}</span>
       </div>
       
       <div className="progress-bar mb-md">
-        <div className="progress-fill" style={{ width: `${(checklistCompleted/checklistTotal)*100}%` }}></div>
+        <div className="progress-fill" style={{ width: `${checklistTotal > 0 ? (checklistCompleted/checklistTotal)*100 : 0}%` }}></div>
       </div>
 
       <div className="flex flex-col gap-md">
-        {checklistGroups.map(group => (
-          <div key={group.title}>
-            <h4 className="text-sm text-secondary mb-sm uppercase font-semibold">{group.title}</h4>
-            <div className="flex flex-col gap-xs">
-              {group.items.map(item => (
-                <div key={item} className="checkbox-container" onClick={() => setChecklist(prev => ({...prev, [item]: !prev[item]}))}>
-                  <input type="checkbox" checked={checklist[item]} readOnly style={{ pointerEvents: 'none' }} />
-                  <span className="text-sm">{item}</span>
+        {checklistGroups.map(group => {
+          const isCustomGroup = !['Property Access', 'Property Condition', 'Documentation'].includes(group.title);
+          const isAddingHere = addingCategory === group.title;
+
+          return (
+            <div key={group.title}>
+              <div className="flex justify-between items-center mb-sm">
+                <h4 className="text-sm text-secondary uppercase font-semibold m-0">{group.title}</h4>
+                <div className="flex items-center gap-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isAddingHere) {
+                        setAddingCategory(null);
+                        setCategoryItemInput('');
+                        setCategoryItemError('');
+                      } else {
+                        setAddingCategory(group.title);
+                        setCategoryItemInput('');
+                        setCategoryItemError('');
+                      }
+                    }}
+                    className="text-xs font-semibold flex items-center gap-xs"
+                    style={{
+                      background: isAddingHere ? 'var(--primary-color)' : 'rgba(37, 99, 235, 0.12)',
+                      border: '1px solid rgba(59, 130, 246, 0.3)',
+                      color: isAddingHere ? '#ffffff' : '#60a5fa',
+                      cursor: 'pointer',
+                      padding: '3px 8px',
+                      borderRadius: '6px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <Plus size={12} strokeWidth={2.5} /> Add
+                  </button>
+                  {isCustomGroup && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCategory(group.title)}
+                      title={`Delete category "${group.title}"`}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#ef4444',
+                        cursor: 'pointer',
+                        padding: '3px 4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        opacity: 0.8
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                      onMouseLeave={(e) => e.currentTarget.style.opacity = '0.8'}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
                 </div>
-              ))}
+              </div>
+
+              {/* Inline input for this specific category */}
+              {isAddingHere && (
+                <div 
+                  className="animate-fade-in"
+                  style={{
+                    backgroundColor: 'var(--surface-light)',
+                    border: '1px solid rgba(59, 130, 246, 0.35)',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    marginBottom: '8px'
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      placeholder={`Add check to ${group.title}...`}
+                      value={categoryItemInput}
+                      onChange={(e) => {
+                        setCategoryItemInput(e.target.value);
+                        if (categoryItemError) setCategoryItemError('');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleQuickAddCategoryItem(group.title);
+                        }
+                      }}
+                      autoFocus
+                      style={{ flex: 1, padding: '7px 10px', fontSize: '13px', margin: 0 }}
+                    />
+                    <button 
+                      type="button" 
+                      className="btn btn-primary"
+                      onClick={() => handleQuickAddCategoryItem(group.title)}
+                      disabled={!categoryItemInput.trim()}
+                      style={{ padding: '7px 12px', fontSize: '12px', fontWeight: 600, height: 'auto', whiteSpace: 'nowrap' }}
+                    >
+                      Add
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={() => {
+                        setAddingCategory(null);
+                        setCategoryItemInput('');
+                        setCategoryItemError('');
+                      }}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
+                      aria-label="Cancel"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                  {categoryItemError && (
+                    <span className="text-danger text-xs" style={{ display: 'block', marginTop: '4px' }}>
+                      {categoryItemError}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-col gap-xs">
+                {group.items.map(item => {
+                  const isCustom = customChecklistItems.some(ci => ci.name === item);
+                  return (
+                    <div 
+                      key={item} 
+                      className="checkbox-container" 
+                      onClick={() => setChecklist(prev => ({...prev, [item]: !prev[item]}))}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '12px' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
+                        <input type="checkbox" checked={!!checklist[item]} readOnly style={{ pointerEvents: 'none' }} />
+                        <span className="text-sm" style={{ wordBreak: 'break-word' }}>{item}</span>
+                        {isCustom && (
+                          <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', fontWeight: 600, border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                            Custom
+                          </span>
+                        )}
+                      </div>
+                      {isCustom && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteCustomCheckItem(item);
+                          }}
+                          title="Delete custom check"
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#ef4444',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: '4px',
+                            opacity: 0.8
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                          onMouseLeave={(e) => e.currentTarget.style.opacity = '0.8'}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <button className="btn btn-primary mt-lg" onClick={() => setActiveStepId('remarks')}>Continue to Remarks</button>
+
+      {/* Bottom section for creating a new custom category */}
+      {showAddCustomCategoryModal && (
+        <div 
+          className="animate-fade-in"
+          style={{
+            backgroundColor: 'var(--surface-light)',
+            border: '1.5px solid rgba(59, 130, 246, 0.4)',
+            borderRadius: '12px',
+            padding: '16px',
+            marginTop: '16px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+          }}
+        >
+          <div className="flex justify-between items-center mb-sm">
+            <h4 className="text-sm font-bold flex items-center gap-xs" style={{ margin: 0, color: '#60a5fa' }}>
+              <PlusCircle size={16} /> Create Custom Category & Check
+            </h4>
+            <button 
+              type="button"
+              onClick={() => {
+                setShowAddCustomCategoryModal(false);
+                setNewCategoryName('');
+                setNewCategoryItemName('');
+                setCustomCategoryError('');
+              }}
+              style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: 500 }}>
+              Category Name
+            </label>
+            <input 
+              type="text" 
+              className="form-input" 
+              placeholder="e.g. Electricity, Water Supply, Security..."
+              value={newCategoryName}
+              onChange={(e) => {
+                setNewCategoryName(e.target.value);
+                if (customCategoryError) setCustomCategoryError('');
+              }}
+              autoFocus
+              style={{ fontSize: '13px', width: '100%', boxSizing: 'border-box' }}
+            />
+          </div>
+
+          <div style={{ marginBottom: '14px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: 500 }}>
+              Initial Check Item Description
+            </label>
+            <input 
+              type="text" 
+              className="form-input" 
+              placeholder="e.g. 24/7 Current, Meter reading verified..."
+              value={newCategoryItemName}
+              onChange={(e) => {
+                setNewCategoryItemName(e.target.value);
+                if (customCategoryError) setCustomCategoryError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleCreateCustomCategory();
+                }
+              }}
+              style={{ fontSize: '13px', width: '100%', boxSizing: 'border-box' }}
+            />
+            {customCategoryError && (
+              <span className="text-danger text-xs" style={{ display: 'block', marginTop: '4px' }}>
+                {customCategoryError}
+              </span>
+            )}
+          </div>
+
+          <div className="flex gap-sm">
+            <button 
+              type="button"
+              className="btn btn-secondary flex-1"
+              onClick={() => {
+                setShowAddCustomCategoryModal(false);
+                setNewCategoryName('');
+                setNewCategoryItemName('');
+                setCustomCategoryError('');
+              }}
+              style={{ padding: '8px 12px', fontSize: '13px' }}
+            >
+              Cancel
+            </button>
+            <button 
+              type="button"
+              className="btn btn-primary flex-1"
+              onClick={handleCreateCustomCategory}
+              disabled={!newCategoryName.trim() || !newCategoryItemName.trim()}
+              style={{ padding: '8px 12px', fontSize: '13px', fontWeight: 700 }}
+            >
+              Create Category
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!showAddCustomCategoryModal && (
+        <button 
+          type="button"
+          onClick={() => {
+            setShowAddCustomCategoryModal(true);
+            setNewCategoryName('');
+            setNewCategoryItemName('');
+            setCustomCategoryError('');
+          }}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            padding: '12px',
+            marginTop: '16px',
+            backgroundColor: 'rgba(37, 99, 235, 0.05)',
+            border: '1.5px dashed rgba(59, 130, 246, 0.4)',
+            borderRadius: '10px',
+            color: '#60a5fa',
+            fontSize: '13px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          <Plus size={16} strokeWidth={2.5} /> Add Custom Category
+        </button>
+      )}
+
+      <button 
+        className="btn btn-primary mt-lg" 
+        onClick={() => {
+          setChecklistReviewed(true);
+          setActiveStepId('remarks');
+        }}
+      >
+        Continue to Remarks
+      </button>
     </div>
   );
 
@@ -677,7 +1543,7 @@ export default function InspectionSession() {
         gps_accuracy: locationEvidence?.accuracy || null,
         gps_timestamp: locationEvidence?.location_captured_at || null,
         location_verified: !!locationEvidence,
-        metadata: { checklist, remarks, ownerInfo, consent, signature }
+        metadata: { checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature }
       });
 
       // Enqueue for synchronization (starts automatically if online)
@@ -777,7 +1643,32 @@ export default function InspectionSession() {
 
   return (
     <div className="inspection-session bg-bg-color" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {showPhotoCamera && <FieldCamera taskId={id} evidenceType={activeStepId === 'location' ? 'Location Verification' : 'Exterior'} onSave={handleMediaSave} onCancel={() => setShowPhotoCamera(false)} />}
+      {showPhotoCamera && (
+        <FieldCamera 
+          taskId={id} 
+          evidenceType={activeStepId === 'location' ? 'Location Verification' : 'Exterior'} 
+          initialThumbnail={
+            (() => {
+              const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
+              const last = photos[photos.length - 1];
+              return last?.originalImage || last?.geotaggedImage || null;
+            })()
+          }
+          initialCount={
+            evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification').length
+          }
+          onPhotoCaptured={async () => {
+            await loadEvidence();
+          }}
+          onOpenGallery={() => {
+            setShowPhotoCamera(false);
+            setActiveStepId('evidence');
+            setExpandedFolder('photos');
+            loadEvidence();
+          }}
+          onCancel={() => setShowPhotoCamera(false)} 
+        />
+      )}
       {showPhotoSphere && (
         <PhotoSphereCapture
           taskId={id}
@@ -799,7 +1690,19 @@ export default function InspectionSession() {
           onClose={() => setShowPhotoSphere(false)}
         />
       )}
-      {showVideoCamera && <VideoCamera taskId={id} evidenceType="Exterior Video" onSave={handleMediaSave} onCancel={() => setShowVideoCamera(false)} />}
+      {showVideoCamera && (
+        <VideoCamera 
+          taskId={id} 
+          evidenceType="Exterior Video" 
+          onSave={async () => {
+            setShowVideoCamera(false);
+            setActiveStepId('evidence');
+            setExpandedFolder('videos');
+            await loadEvidence();
+          }} 
+          onCancel={() => setShowVideoCamera(false)} 
+        />
+      )}
       {showBoundaryMap && (
         <PropertyBoundary
           inspectionId={id}
@@ -846,7 +1749,7 @@ export default function InspectionSession() {
           <div className="card">
             <h3 className="mb-md">Remarks & Observations</h3>
             <textarea className="form-textarea mb-md" rows={5} placeholder="Add any issues or observations..." value={remarks} onChange={(e) => setRemarks(e.target.value)}></textarea>
-            <button className="btn btn-primary" onClick={() => setActiveStepId('owner')}>Continue to Owner Info</button>
+            <button className="btn btn-primary" onClick={() => setActiveStepId('overview')}>Next</button>
           </div>
         )}
 
@@ -983,6 +1886,64 @@ export default function InspectionSession() {
           >
             <Trash2 size={24} color="white" />
           </button>
+
+          {/* Select / Deselect Button in Full Screen Preview (Photos & Videos) */}
+          {((evidenceList[selectedMediaIndex].mediaType === 'photo' && evidenceList[selectedMediaIndex].evidenceType !== 'Location Verification') || evidenceList[selectedMediaIndex].mediaType === 'video') && (() => {
+            const isVid = evidenceList[selectedMediaIndex].mediaType === 'video';
+            const isSelected = isVid 
+              ? selectedVideoIds.has(evidenceList[selectedMediaIndex].id)
+              : selectedPhotoIds.has(evidenceList[selectedMediaIndex].id);
+            const labelType = isVid ? 'Video' : 'Photo';
+
+            return (
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isVid) {
+                    toggleVideoSelection(evidenceList[selectedMediaIndex].id);
+                    setIsVideoSelectionMode(true);
+                  } else {
+                    togglePhotoSelection(evidenceList[selectedMediaIndex].id);
+                    setIsSelectionMode(true);
+                  }
+                }} 
+                style={{ 
+                  position: 'absolute', 
+                  top: '16px', 
+                  right: '114px', 
+                  backgroundColor: isSelected ? 'var(--primary-color)' : 'rgba(255,255,255,0.2)', 
+                  border: isSelected ? '1px solid #60a5fa' : '1px solid rgba(255,255,255,0.3)', 
+                  borderRadius: '20px', 
+                  padding: '7px 14px', 
+                  cursor: 'pointer', 
+                  zIndex: 10000,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  color: 'white',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+                  backdropFilter: 'blur(8px)',
+                  WebkitBackdropFilter: 'blur(8px)'
+                }}
+                title={isSelected ? `Deselect ${labelType}` : `Select ${labelType}`}
+                aria-label={isSelected ? `Deselect ${labelType}` : `Select ${labelType}`}
+              >
+                {isSelected ? (
+                  <>
+                    <CheckSquare size={16} color="white" />
+                    <span>Selected</span>
+                  </>
+                ) : (
+                  <>
+                    <Square size={16} color="white" />
+                    <span>Select</span>
+                  </>
+                )}
+              </button>
+            );
+          })()}
 
           {showDeleteConfirm && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 p-md animate-fade-in" style={{ zIndex: 10001 }}>
@@ -1126,6 +2087,288 @@ export default function InspectionSession() {
       )}
       {viewerMode?.mode === 'motion' && (
         <MotionSensorViewer panoramaUrl={viewerMode.url} onClose={() => setViewerMode(null)} />
+      )}
+
+      {/* Confirmation Popup before Deleting Unselected Photos */}
+      {/* Confirmation Popup before Deleting Unselected Photos */}
+      {showSelectionDeleteConfirm && (() => {
+        const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
+        const selectedPhotos = photos.filter(p => selectedPhotoIds.has(p.id));
+        const unselectedPhotos = photos.filter(p => !selectedPhotoIds.has(p.id));
+
+        return (
+          <div 
+            className="fixed inset-0 z-50 flex items-center justify-center p-md animate-fade-in" 
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+          >
+            <div 
+              className="card w-full max-w-sm border border-color" 
+              style={{ backgroundColor: 'var(--surface-color)', borderRadius: '16px', padding: '22px', maxWidth: '440px', width: '100%', boxShadow: '0 20px 40px rgba(0,0,0,0.7)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+            >
+              <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundColor: 'rgba(37, 99, 235, 0.15)', border: '1px solid rgba(59, 130, 246, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto' }}>
+                  <CheckSquare size={28} style={{ color: '#3b82f6' }} />
+                </div>
+                <h3 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--text-primary)' }}>
+                  Save & Confirm Selection
+                </h3>
+                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                  Please confirm your photo selection. Your consent is required to erase the unselected photos.
+                </p>
+              </div>
+
+              {/* Photos to Save */}
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Photos to Keep & Save ({selectedPhotos.length}):
+                  </span>
+                  <span style={{ fontSize: '11px', color: 'var(--success-color)', fontWeight: 600 }}>Kept</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', maxHeight: '100px', overflowY: 'auto', padding: '6px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                  {selectedPhotos.map(photo => (
+                    <div 
+                      key={photo.id}
+                      style={{ aspectRatio: '1', borderRadius: '6px', overflow: 'hidden', position: 'relative', border: '2px solid #3b82f6' }}
+                    >
+                      <img src={photo.originalImage} alt="Selected to save" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <div style={{ position: 'absolute', top: 2, right: 2, backgroundColor: '#2563eb', borderRadius: '50%', width: '15px', height: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Check size={9} color="white" strokeWidth={3} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Photos to Erase */}
+              {unselectedPhotos.length > 0 && (
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Unselected Photos to Erase ({unselectedPhotos.length}):
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 600 }}>Will be erased</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', maxHeight: '100px', overflowY: 'auto', padding: '6px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                    {unselectedPhotos.map(photo => (
+                      <div 
+                        key={photo.id}
+                        style={{ aspectRatio: '1', borderRadius: '6px', overflow: 'hidden', position: 'relative', border: '1px solid rgba(239, 68, 68, 0.5)', opacity: 0.7 }}
+                      >
+                        <img src={photo.originalImage} alt="Unselected" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        <div style={{ position: 'absolute', top: 2, right: 2, backgroundColor: '#ef4444', borderRadius: '50%', width: '15px', height: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <X size={9} color="white" strokeWidth={3} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* User Consent notice box */}
+              <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', fontSize: '12px', color: '#fca5a5', lineHeight: 1.4 }}>
+                <strong>User Consent:</strong> By clicking below, you consent to erase the <strong>{unselectedPhotos.length} unselected photo(s)</strong>. Only the <strong>{selectedPhotos.length} selected photo(s)</strong> will be saved.
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button 
+                  type="button"
+                  className="btn text-white font-bold"
+                  style={{ backgroundColor: '#ef4444', border: 'none', padding: '12px', borderRadius: '10px', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                  onClick={handleConfirmDeleteUnselected}
+                >
+                  <Trash2 size={16} /> Save & Confirm (Erase {unselectedPhotos.length} Unselected)
+                </button>
+                <button 
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ backgroundColor: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '10px', borderRadius: '10px', fontSize: '14px', cursor: 'pointer' }}
+                  onClick={() => setShowSelectionDeleteConfirm(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Confirmation Popup before Deleting Unselected Videos */}
+      {showVideoSelectionDeleteConfirm && (() => {
+        const videos = evidenceList.filter(e => e.mediaType === 'video');
+        const selectedVideos = videos.filter(v => selectedVideoIds.has(v.id));
+        const unselectedVideos = videos.filter(v => !selectedVideoIds.has(v.id));
+
+        return (
+          <div 
+            className="fixed inset-0 z-50 flex items-center justify-center p-md animate-fade-in" 
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+          >
+            <div 
+              className="card w-full max-w-sm border border-color" 
+              style={{ backgroundColor: 'var(--surface-color)', borderRadius: '16px', padding: '22px', maxWidth: '440px', width: '100%', boxShadow: '0 20px 40px rgba(0,0,0,0.7)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+            >
+              <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundColor: 'rgba(37, 99, 235, 0.15)', border: '1px solid rgba(59, 130, 246, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto' }}>
+                  <CheckSquare size={28} style={{ color: '#3b82f6' }} />
+                </div>
+                <h3 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 6px 0', color: 'var(--text-primary)' }}>
+                  Save & Confirm Selection
+                </h3>
+                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                  Please confirm your video selection. Your consent is required to erase the unselected videos.
+                </p>
+              </div>
+
+              {/* Videos to Save */}
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Videos to Keep & Save ({selectedVideos.length}):
+                  </span>
+                  <span style={{ fontSize: '11px', color: 'var(--success-color)', fontWeight: 600 }}>Kept</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', maxHeight: '100px', overflowY: 'auto', padding: '6px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                  {selectedVideos.map(video => (
+                    <div 
+                      key={video.id}
+                      style={{ aspectRatio: '1', borderRadius: '6px', overflow: 'hidden', position: 'relative', border: '2px solid #3b82f6', backgroundColor: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <Play size={16} color="white" />
+                      <div style={{ position: 'absolute', top: 2, right: 2, backgroundColor: '#2563eb', borderRadius: '50%', width: '15px', height: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Check size={9} color="white" strokeWidth={3} />
+                      </div>
+                      <div style={{ position: 'absolute', bottom: 2, left: 2, right: 2, textAlign: 'center', fontSize: '9px', color: '#94a3b8', backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: '2px' }}>
+                        {video.duration ? `${video.duration}s` : 'Video'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Videos to Erase */}
+              {unselectedVideos.length > 0 && (
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Unselected Videos to Erase ({unselectedVideos.length}):
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 600 }}>Will be erased</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', maxHeight: '100px', overflowY: 'auto', padding: '6px', backgroundColor: 'var(--bg-color)', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                    {unselectedVideos.map(video => (
+                      <div 
+                        key={video.id}
+                        style={{ aspectRatio: '1', borderRadius: '6px', overflow: 'hidden', position: 'relative', border: '1px solid rgba(239, 68, 68, 0.5)', backgroundColor: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.7 }}
+                      >
+                        <Play size={16} color="white" />
+                        <div style={{ position: 'absolute', top: 2, right: 2, backgroundColor: '#ef4444', borderRadius: '50%', width: '15px', height: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <X size={9} color="white" strokeWidth={3} />
+                        </div>
+                        <div style={{ position: 'absolute', bottom: 2, left: 2, right: 2, textAlign: 'center', fontSize: '9px', color: '#94a3b8', backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: '2px' }}>
+                          {video.duration ? `${video.duration}s` : 'Video'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* User Consent notice box */}
+              <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', fontSize: '12px', color: '#fca5a5', lineHeight: 1.4 }}>
+                <strong>User Consent:</strong> By clicking below, you consent to erase the <strong>{unselectedVideos.length} unselected video(s)</strong>. Only the <strong>{selectedVideos.length} selected video(s)</strong> will be saved.
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button 
+                  type="button"
+                  className="btn text-white font-bold"
+                  style={{ backgroundColor: '#ef4444', border: 'none', padding: '12px', borderRadius: '10px', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                  onClick={handleConfirmDeleteUnselectedVideos}
+                >
+                  <Trash2 size={16} /> Save & Confirm (Erase {unselectedVideos.length} Unselected)
+                </button>
+                <button 
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ backgroundColor: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-primary)', padding: '10px', borderRadius: '10px', fontSize: '14px', cursor: 'pointer' }}
+                  onClick={() => setShowVideoSelectionDeleteConfirm(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Undo Floating Notification */}
+      {undoState && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          left: '16px',
+          right: '16px',
+          maxWidth: '448px',
+          margin: '0 auto',
+          backgroundColor: 'rgba(20, 24, 33, 0.96)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          border: '1px solid rgba(59, 130, 246, 0.4)',
+          borderRadius: '12px',
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          zIndex: 10000,
+          boxShadow: '0 8px 30px rgba(0,0,0,0.7)',
+          animation: 'fade-in 0.2s ease-out'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#60a5fa' }} />
+            <span style={{ fontSize: '13px', color: '#f8fafc', fontWeight: 500 }}>
+              Deleted {undoState.count} unselected {undoState.mediaType === 'video' ? 'video' : 'photo'}{undoState.count > 1 ? 's' : ''}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={handleUndoDelete}
+              style={{
+                backgroundColor: 'rgba(59, 130, 246, 0.18)',
+                border: '1px solid #3b82f6',
+                borderRadius: '8px',
+                color: '#60a5fa',
+                padding: '6px 12px',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px'
+              }}
+            >
+              <RotateCcw size={14} /> Undo
+            </button>
+            <button
+              onClick={() => {
+                if (undoState?.timeoutId) clearTimeout(undoState.timeoutId);
+                setUndoState(null);
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#94a3b8',
+                padding: '4px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center'
+              }}
+              aria-label="Dismiss"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

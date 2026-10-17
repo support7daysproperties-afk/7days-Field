@@ -79,15 +79,17 @@ export default function TaskDetails() {
         bottom: 0, 
         left: 0, 
         right: 0, 
+        width: '100%',
+        maxWidth: '480px',
+        margin: '0 auto',
         padding: '16px', 
         paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))', 
-        backgroundColor: 'rgba(20, 24, 33, 0.95)', 
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
+        backgroundColor: 'rgba(20, 24, 33, 0.96)', 
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
         borderTop: '1px solid var(--border-color)', 
-        zIndex: 10,
-        maxWidth: '480px',
-        margin: '0 auto'
+        zIndex: 100,
+        boxSizing: 'border-box'
       }}>
         <button 
           className="btn btn-primary w-full"

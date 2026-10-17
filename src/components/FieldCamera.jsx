@@ -2,7 +2,16 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Camera, X, RotateCcw, MapPin, Navigation, CheckCircle, AlertTriangle } from 'lucide-react';
 import { EvidenceService } from '../services/EvidenceService';
 
-export default function FieldCamera({ evidenceType = 'Location Verification', taskId, onSave, onCancel }) {
+export default function FieldCamera({ 
+  evidenceType = 'Location Verification', 
+  taskId, 
+  initialThumbnail = null,
+  initialCount = 0,
+  onPhotoCaptured,
+  onOpenGallery,
+  onSave, 
+  onCancel 
+}) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   
@@ -115,8 +124,8 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
     startCamera(newMode);
   };
 
-  const [capturedCount, setCapturedCount] = useState(0);
-  const [lastThumbnail, setLastThumbnail] = useState(null);
+  const [capturedCount, setCapturedCount] = useState(initialCount);
+  const [lastThumbnail, setLastThumbnail] = useState(initialThumbnail);
   const [flashAnimation, setFlashAnimation] = useState(false);
 
   const handleCapture = async () => {
@@ -192,7 +201,7 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         setLastThumbnail(originalDataUrl);
         setCapturedCount(prev => prev + 1);
         setIsProcessing(false);
-        if (onSave) onSave();
+        if (onPhotoCaptured) onPhotoCaptured();
       }, 'image/jpeg', 0.9);
     } catch (err) {
       console.error('Capture error:', err);
@@ -345,9 +354,22 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
     });
   };
 
+  const handleOpenGallery = () => {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    if (onOpenGallery) {
+      onOpenGallery();
+    } else if (onCancel) {
+      onCancel();
+    }
+  };
+
   const handleFinish = () => {
     if (stream) stream.getTracks().forEach(track => track.stop());
-    onCancel();
+    if (onOpenGallery) {
+      onOpenGallery();
+    } else if (onCancel) {
+      onCancel();
+    }
   };
 
   return (
@@ -447,14 +469,53 @@ export default function FieldCamera({ evidenceType = 'Location Verification', ta
         )}
         
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: '320px', padding: '0 12px' }}>
-          {/* Last thumbnail preview */}
-          <div style={{ width: '48px', height: '48px', borderRadius: '8px', overflow: 'hidden', border: '2px solid rgba(255,255,255,0.4)', backgroundColor: '#222', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {/* Photos folder trigger / Last thumbnail preview */}
+          <button 
+            type="button"
+            onClick={handleOpenGallery}
+            style={{ 
+              width: '48px', 
+              height: '48px', 
+              borderRadius: '8px', 
+              overflow: 'hidden', 
+              border: '2px solid rgba(255,255,255,0.6)', 
+              backgroundColor: '#1e293b', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              position: 'relative',
+              padding: 0,
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+              transition: 'transform 0.15s ease'
+            }}
+            title="Open Photos Gallery"
+            aria-label="Open Photos Gallery"
+          >
             {lastThumbnail ? (
-              <img src={lastThumbnail} alt="Latest" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <img src={lastThumbnail} alt="Latest Captured" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             ) : (
-              <Camera size={20} color="#888" />
+              <Camera size={22} color="#cbd5e1" />
             )}
-          </div>
+            {capturedCount > 0 && (
+              <span style={{
+                position: 'absolute',
+                top: '2px',
+                right: '2px',
+                backgroundColor: 'var(--primary-color)',
+                color: 'white',
+                fontSize: '10px',
+                fontWeight: 700,
+                borderRadius: '10px',
+                padding: '1px 5px',
+                minWidth: '14px',
+                textAlign: 'center',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.6)'
+              }}>
+                {capturedCount}
+              </span>
+            )}
+          </button>
 
           {/* Shutter button */}
           <button 
