@@ -2135,7 +2135,15 @@ export default function InspectionSession() {
           </div>
 
           {evidenceList[selectedMediaIndex].mediaType === 'video' ? (
-            <video key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].originalImage} controls autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            <video 
+              key={evidenceList[selectedMediaIndex].id} 
+              src={evidenceList[selectedMediaIndex].originalImage} 
+              controls 
+              autoPlay 
+              playsInline 
+              preload="auto"
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }} 
+            />
           ) : evidenceList[selectedMediaIndex].mediaType === 'photo_sphere' ? (
             <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
               <img key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage} alt="Photo Sphere" style={{ width: '100%', maxHeight: '75vh', objectFit: 'contain' }} />

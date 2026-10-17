@@ -137,83 +137,73 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
     if (!stream) return;
     chunksRef.current = [];
     
-    let recordStream = stream;
-    
-    if (isDigitalZoom && canvasRef.current && videoRef.current) {
-      // Pipe video to canvas for digital zoom recording
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (video.videoWidth) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+    // Select the best supported mime type for Android Chromium
+    let options = {};
+    const candidateTypes = [
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4;codecs=avc1,mp4a.40.2',
+      'video/mp4'
+    ];
+    for (const type of candidateTypes) {
+      if (typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported(type)) {
+        options = { mimeType: type };
+        break;
       }
-      
-      const renderFrame = () => {
-        if (!isRecording) return; // will be set immediately after
-        if (video.videoWidth && canvas.width) {
-          const ctx = canvas.getContext('2d');
-          const currentZoom = zoomRef.current;
-          const sw = video.videoWidth / currentZoom;
-          const sh = video.videoHeight / currentZoom;
-          const sx = (video.videoWidth - sw) / 2;
-          const sy = (video.videoHeight - sh) / 2;
-          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-        }
-        requestRef.current = requestAnimationFrame(renderFrame);
-      };
-      
-      requestRef.current = requestAnimationFrame(renderFrame);
-      
-      // Combine canvas video stream with original audio stream
-      const canvasStream = canvas.captureStream(30);
-      const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length > 0) {
-        canvasStream.addTrack(audioTracks[0]);
-      }
-      recordStream = canvasStream;
     }
 
-    const options = {};
-    if (typeof MediaRecorder.isTypeSupported === 'function') {
-      if (MediaRecorder.isTypeSupported('video/mp4')) options.mimeType = 'video/mp4';
-      else if (MediaRecorder.isTypeSupported('video/webm')) options.mimeType = 'video/webm';
+    try {
+      // Record directly from the camera hardware MediaStream
+      const mediaRecorder = new MediaRecorder(stream, options);
+      
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
+      };
+      
+      mediaRecorder.onstop = () => {
+        // Clean up stream tracks after recorder has completely finished writing
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          setStream(null);
+        }
+        
+        const actualType = mediaRecorder.mimeType || options.mimeType || 'video/webm';
+        const blob = new Blob(chunksRef.current, { type: actualType });
+        videoBlobRef.current = blob;
+        const url = URL.createObjectURL(blob);
+        setRecordedVideoUrl(url);
+        if (evidenceType === 'Location Verification') {
+          obtainLocation(url);
+        }
+      };
+      
+      mediaRecorderRef.current = mediaRecorder;
+      // Timeslice of 500ms ensures periodic data packets and robust container headers
+      mediaRecorder.start(500);
+      setIsRecording(true);
+      setRecordingTime(0);
+      
+      const interval = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+      setTimerInterval(interval);
+    } catch (err) {
+      console.error('Failed to start MediaRecorder:', err);
+      setError('Failed to start video recording: ' + err.message);
     }
-    const mediaRecorder = new MediaRecorder(recordStream, options);
-    
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-    };
-    
-    mediaRecorder.onstop = () => {
-      const actualType = mediaRecorder.mimeType || (chunksRef.current[0] && chunksRef.current[0].type) || 'video/mp4';
-      const blob = new Blob(chunksRef.current, { type: actualType });
-      videoBlobRef.current = blob;
-      const url = URL.createObjectURL(blob);
-      setRecordedVideoUrl(url);
-      if (evidenceType === 'Location Verification') {
-        obtainLocation(url); // Get location when recording stops
-      }
-    };
-    
-    mediaRecorderRef.current = mediaRecorder;
-    mediaRecorder.start();
-    setIsRecording(true);
-    setRecordingTime(0);
-    
-    const interval = setInterval(() => {
-      setRecordingTime(prev => prev + 1);
-    }, 1000);
-    setTimerInterval(interval);
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
       setIsRecording(false);
-      clearInterval(timerInterval);
+      if (timerInterval) clearInterval(timerInterval);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      if (stream) stream.getTracks().forEach(track => track.stop());
-      setStream(null);
+      if (mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
     }
   };
 
@@ -257,13 +247,15 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
   };
 
   const handleSave = async () => {
+    if (!videoBlobRef.current) return;
     setSaving(true);
+    const mime = videoBlobRef.current.type || 'video/webm';
     await EvidenceService.saveEvidence({
       taskId,
       evidenceType,
       mediaType: 'video',
       original_blob: videoBlobRef.current,
-      mime_type: 'video/webm',
+      mime_type: mime,
       size: videoBlobRef.current.size,
       duration: recordingTime,
       latitude: locationData.lat,
@@ -372,7 +364,13 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
 
       <div className="flex-1 p-md" style={{ padding: '16px' }}>
         <div className="card" style={{ padding: '8px', marginBottom: '16px' }}>
-          <video src={recordedVideoUrl} controls playsInline style={{ width: '100%', borderRadius: '8px', display: 'block' }} />
+          <video 
+            src={recordedVideoUrl} 
+            controls 
+            playsInline 
+            preload="auto"
+            style={{ width: '100%', borderRadius: '8px', display: 'block', maxHeight: '55vh', backgroundColor: '#000' }} 
+          />
         </div>
 
         <div className="card">
