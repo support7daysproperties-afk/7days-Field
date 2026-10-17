@@ -127,12 +127,66 @@ export function transformVectorInverse(R, v) {
   ];
 }
 
+export const PHOTO_SPHERE_TARGETS = [
+  // Initial Anchor Frame (Captured first at 0,0 -> leaves 33 dots remaining)
+  { id: "t_0",  dotNumber: 0,  region: "horizon",       yaw: 0,    pitch: 0,   x: 0,       y: 0,       z: -1      },
+
+  // 1–9: Horizon Ring (9 remaining dots, Pitch: 0°, Step: 36°)
+  { id: "t_1",  dotNumber: 1,  region: "horizon",       yaw: 36,   pitch: 0,   x: 0.5878,  y: 0,       z: -0.809  },
+  { id: "t_2",  dotNumber: 2,  region: "horizon",       yaw: 72,   pitch: 0,   x: 0.9511,  y: 0,       z: -0.309  },
+  { id: "t_3",  dotNumber: 3,  region: "horizon",       yaw: 108,  pitch: 0,   x: 0.9511,  y: 0,       z: 0.309   },
+  { id: "t_4",  dotNumber: 4,  region: "horizon",       yaw: 144,  pitch: 0,   x: 0.5878,  y: 0,       z: 0.809   },
+  { id: "t_5",  dotNumber: 5,  region: "horizon",       yaw: 180,  pitch: 0,   x: 0,       y: 0,       z: 1       },
+  { id: "t_6",  dotNumber: 6,  region: "horizon",       yaw: -144, pitch: 0,   x: -0.5878, y: 0,       z: 0.809   },
+  { id: "t_7",  dotNumber: 7,  region: "horizon",       yaw: -108, pitch: 0,   x: -0.9511, y: 0,       z: 0.309   },
+  { id: "t_8",  dotNumber: 8,  region: "horizon",       yaw: -72,  pitch: 0,   x: -0.9511, y: 0,       z: -0.309  },
+  { id: "t_9",  dotNumber: 9,  region: "horizon",       yaw: -36,  pitch: 0,   x: -0.5878, y: 0,       z: -0.809  },
+
+  // 10–17: Below Horizon Ring (8 dots, Pitch: -35°, Step: 45°)
+  { id: "t_10", dotNumber: 10, region: "lower-horizon", yaw: 0,    pitch: -35, x: 0,       y: -0.5736, z: -0.8192 },
+  { id: "t_11", dotNumber: 11, region: "lower-horizon", yaw: 45,   pitch: -35, x: 0.5792,  y: -0.5736, z: -0.5792 },
+  { id: "t_12", dotNumber: 12, region: "lower-horizon", yaw: 90,   pitch: -35, x: 0.8192,  y: -0.5736, z: 0       },
+  { id: "t_13", dotNumber: 13, region: "lower-horizon", yaw: 135,  pitch: -35, x: 0.5792,  y: -0.5736, z: 0.5792  },
+  { id: "t_14", dotNumber: 14, region: "lower-horizon", yaw: 180,  pitch: -35, x: 0,       y: -0.5736, z: 0.8192  },
+  { id: "t_15", dotNumber: 15, region: "lower-horizon", yaw: -135, pitch: -35, x: -0.5792, y: -0.5736, z: 0.5792  },
+  { id: "t_16", dotNumber: 16, region: "lower-horizon", yaw: -90,  pitch: -35, x: -0.8192, y: -0.5736, z: 0       },
+  { id: "t_17", dotNumber: 17, region: "lower-horizon", yaw: -45,  pitch: -35, x: -0.5792, y: -0.5736, z: -0.5792 },
+
+  // 18–25: Above Horizon Ring (8 dots, Pitch: +35°, Step: 45°)
+  { id: "t_18", dotNumber: 18, region: "upper-horizon", yaw: 0,    pitch: 35,  x: 0,       y: 0.5736,  z: -0.8192 },
+  { id: "t_19", dotNumber: 19, region: "upper-horizon", yaw: 45,   pitch: 35,  x: 0.5792,  y: 0.5736,  z: -0.5792 },
+  { id: "t_20", dotNumber: 20, region: "upper-horizon", yaw: 90,   pitch: 35,  x: 0.8192,  y: 0.5736,  z: 0       },
+  { id: "t_21", dotNumber: 21, region: "upper-horizon", yaw: 135,  pitch: 35,  x: 0.5792,  y: 0.5736,  z: 0.5792  },
+  { id: "t_22", dotNumber: 22, region: "upper-horizon", yaw: 180,  pitch: 35,  x: 0,       y: 0.5736,  z: 0.8192  },
+  { id: "t_23", dotNumber: 23, region: "upper-horizon", yaw: -135, pitch: 35,  x: -0.5792, y: 0.5736,  z: 0.5792  },
+  { id: "t_24", dotNumber: 24, region: "upper-horizon", yaw: -90,  pitch: 35,  x: -0.8192, y: 0.5736,  z: 0       },
+  { id: "t_25", dotNumber: 25, region: "upper-horizon", yaw: -45,  pitch: 35,  x: -0.5792, y: 0.5736,  z: -0.5792 },
+
+  // 26–28: Lower Viewing Angles (3 dots, Pitch: -72°, Step: 120°)
+  { id: "t_26", dotNumber: 26, region: "lower",         yaw: 0,    pitch: -72, x: 0,       y: -0.9511, z: -0.309  },
+  { id: "t_27", dotNumber: 27, region: "lower",         yaw: 120,  pitch: -72, x: 0.2676,  y: -0.9511, z: 0.1545  },
+  { id: "t_28", dotNumber: 28, region: "lower",         yaw: -120, pitch: -72, x: -0.2676, y: -0.9511, z: 0.1545  },
+
+  // 29–31: Upper Viewing Angles (3 dots, Pitch: +65°, Step: 120°)
+  { id: "t_29", dotNumber: 29, region: "upper",         yaw: 0,    pitch: 65,  x: 0,       y: 0.9063,  z: -0.4226 },
+  { id: "t_30", dotNumber: 30, region: "upper",         yaw: 120,  pitch: 65,  x: 0.366,   y: 0.9063,  z: 0.2113  },
+  { id: "t_31", dotNumber: 31, region: "upper",         yaw: -120, pitch: 65,  x: -0.366,  y: 0.9063,  z: 0.2113  },
+
+  // 32: Sky / Zenith (1 dot, Pitch: +90°)
+  { id: "t_32", dotNumber: 32, region: "zenith",        yaw: 0,    pitch: 90,  x: 0,       y: 1,       z: 0       },
+
+  // 33: Ground / Nadir (1 dot, Pitch: -90°)
+  { id: "t_33", dotNumber: 33, region: "nadir",         yaw: 0,    pitch: -90, x: 0,       y: -1,      z: 0       }
+];
+
 export const LATTICE_RINGS = [
   { pitchDeg: 0, count: 10, name: 'horizon' },
-  { pitchDeg: 38, count: 8, name: 'upper' },
-  { pitchDeg: -38, count: 8, name: 'lower' },
-  { pitchDeg: 74, count: 4, name: 'zenith' },
-  { pitchDeg: -74, count: 4, name: 'nadir' },
+  { pitchDeg: -35, count: 8, name: 'lower-horizon' },
+  { pitchDeg: 35, count: 8, name: 'upper-horizon' },
+  { pitchDeg: -72, count: 3, name: 'lower' },
+  { pitchDeg: 65, count: 3, name: 'upper' },
+  { pitchDeg: 90, count: 1, name: 'zenith' },
+  { pitchDeg: -90, count: 1, name: 'nadir' },
 ];
 
 export const COVERAGE_CONFIG = {
@@ -148,51 +202,52 @@ export const COVERAGE_CONFIG = {
 };
 
 /**
- * Generate full spherical capture targets following index.html lattice:
- * - Horizon (0°): 10 shots (every 36°)
- * - Upper (+38°): 8 shots (every 45°)
- * - Lower (-38°): 8 shots (every 45°)
- * - Zenith (+74°): 4 shots (every 90°)
- * - Nadir (-74°): 4 shots (every 90°)
+ * Generate full spherical capture targets following exact 34-dot lattice
+ * (Anchor frame t_0 + 33 target dots t_1 to t_33):
+ * - Horizon (0°): 10 shots (every 36°) [Anchor t_0 + t_1..t_9]
+ * - Lower Horizon (-35°): 8 shots (every 45°) [t_10..t_17]
+ * - Upper Horizon (+35°): 8 shots (every 45°) [t_18..t_25]
+ * - Lower (-72°): 3 shots (every 120°) [t_26..t_28]
+ * - Upper (+65°): 3 shots (every 120°) [t_29..t_31]
+ * - Zenith (+90°): 1 shot [t_32]
+ * - Nadir (-90°): 1 shot [t_33]
  * Total: 34 base targets covering the entire sphere.
  */
 export function generateSphericalTargets() {
-  const targets = [];
-  let id = 0;
+  return PHOTO_SPHERE_TARGETS.map((t) => {
+    const yawDeg = t.yaw;
+    const pitchDeg = t.pitch;
+    const yawNorm = normalizeAngle(yawDeg);
+    const yawRad = (yawDeg * Math.PI) / 180;
+    const pitchRad = (pitchDeg * Math.PI) / 180;
+    const isCenterStartDot = t.dotNumber === 0;
+    const v = [t.x, t.y, t.z];
 
-  LATTICE_RINGS.forEach((ring) => {
-    for (let i = 0; i < ring.count; i++) {
-      let yawDeg = ((360 / ring.count) * i) % 360;
-      if (yawDeg > 180) yawDeg -= 360; // Normalize to [-180, 180]
-      const yawNorm = normalizeAngle(yawDeg); // [0, 360)
-      const pitchNorm = ring.pitchDeg;
-      const isCenterStartDot = id === 0;
-
-      const v = sphericalToVector(yawNorm, pitchNorm);
-
-      targets.push({
-        id: `target_${id}`,
-        idNum: id,
-        sequenceIndex: id,
-        yaw: yawNorm,
-        pitch: pitchNorm,
-        yawDeg,
-        pitchDeg: ring.pitchDeg,
-        yawRad: (yawDeg * Math.PI) / 180,
-        pitchRad: (ring.pitchDeg * Math.PI) / 180,
-        direction: v,
-        ring: ring.name,
-        status: 'pending',
-        captured: false,
-        visible: isCenterStartDot,
-        isCenterStartDot,
-        isGapDot: false,
-      });
-      id++;
-    }
+    return {
+      id: `target_${t.dotNumber}`,
+      targetId: t.id,
+      dotNumber: t.dotNumber,
+      idNum: t.dotNumber,
+      sequenceIndex: t.dotNumber,
+      yaw: yawNorm,
+      pitch: pitchDeg,
+      yawDeg,
+      pitchDeg,
+      yawRad,
+      pitchRad,
+      direction: v,
+      x: t.x,
+      y: t.y,
+      z: t.z,
+      ring: t.region,
+      region: t.region,
+      status: 'pending',
+      captured: false,
+      visible: isCenterStartDot,
+      isCenterStartDot,
+      isGapDot: false,
+    };
   });
-
-  return targets;
 }
 
 /**
@@ -529,18 +584,28 @@ export function updateFrontierAndGapDots(targets, capturedFrames = [], coverageG
       ...t,
       captured: false,
       status: 'pending',
-      visible: t.isCenterStartDot || t.id === 'target_0',
+      visible: t.isCenterStartDot || t.id === 'target_0' || t.id === 't_0' || t.targetId === 't_0',
     }));
     return { updatedTargets: updated, coveragePercent };
   }
 
-  const capturedTargetIds = new Set(capturedFrames.map((f) => f.targetId));
-  const capturedList = targets.filter(
-    (t) => capturedTargetIds.has(t.id) || t.captured || t.status === 'captured'
+  const capturedTargetIds = new Set(
+    capturedFrames.map((f) => f.targetId || f.id)
   );
+  const isTargetCaptured = (t) =>
+    capturedTargetIds.has(t.id) ||
+    (t.targetId && capturedTargetIds.has(t.targetId)) ||
+    (t.dotNumber !== undefined && (
+      capturedTargetIds.has(`target_${t.dotNumber}`) ||
+      capturedTargetIds.has(`t_${t.dotNumber}`)
+    )) ||
+    t.captured ||
+    t.status === 'captured';
+
+  const capturedList = targets.filter(isTargetCaptured);
 
   const updated = targets.map((t) => {
-    if (capturedTargetIds.has(t.id) || t.captured || t.status === 'captured') {
+    if (isTargetCaptured(t)) {
       return { ...t, captured: true, status: 'captured', visible: false };
     }
 
@@ -595,7 +660,9 @@ export function getUnlockedTargets(targets, capturedFrames = [], coverageGrid = 
 
   // When no photos have been taken yet, only target_0 is visible right in front
   if (capturedFrames.length === 0) {
-    const initialTarget = targets.find((t) => t.isCenterStartDot || t.id === 'target_0') || targets[0];
+    const initialTarget = targets.find(
+      (t) => t.isCenterStartDot || t.id === 'target_0' || t.id === 't_0' || t.targetId === 't_0'
+    ) || targets[0];
     return [{ ...initialTarget, visible: true }];
   }
 

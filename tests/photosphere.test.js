@@ -21,26 +21,33 @@ import {
 } from '../src/features/photo-sphere/PhotoSphereTargets';
 
 describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
-  it('should generate a complete 360x180 spherical coverage grid matching index.html', () => {
+  it('should generate a complete 360x180 spherical coverage grid matching 34-dot lattice', () => {
     const targets = generateSphericalTargets();
     expect(targets.length).toBe(34);
 
     const horizon = targets.filter((t) => t.ring === 'horizon');
+    const lowerHorizon = targets.filter((t) => t.ring === 'lower-horizon');
+    const upperHorizon = targets.filter((t) => t.ring === 'upper-horizon');
+    const lower = targets.filter((t) => t.ring === 'lower');
     const upper = targets.filter((t) => t.ring === 'upper');
     const zenith = targets.filter((t) => t.ring === 'zenith');
-    const lower = targets.filter((t) => t.ring === 'lower');
     const nadir = targets.filter((t) => t.ring === 'nadir');
 
     expect(horizon.length).toBe(10);
-    expect(upper.length).toBe(8);
-    expect(zenith.length).toBe(4);
-    expect(lower.length).toBe(8);
-    expect(nadir.length).toBe(4);
+    expect(lowerHorizon.length).toBe(8);
+    expect(upperHorizon.length).toBe(8);
+    expect(lower.length).toBe(3);
+    expect(upper.length).toBe(3);
+    expect(zenith.length).toBe(1);
+    expect(nadir.length).toBe(1);
 
-    expect(upper[0].pitch).toBe(38);
-    expect(lower[0].pitch).toBe(-38);
-    expect(zenith[0].pitch).toBe(74);
-    expect(nadir[0].pitch).toBe(-74);
+    expect(horizon[0].pitch).toBe(0);
+    expect(lowerHorizon[0].pitch).toBe(-35);
+    expect(upperHorizon[0].pitch).toBe(35);
+    expect(lower[0].pitch).toBe(-72);
+    expect(upper[0].pitch).toBe(65);
+    expect(zenith[0].pitch).toBe(90);
+    expect(nadir[0].pitch).toBe(-90);
   });
 
   it('should normalize angles into [0, 360)', () => {
@@ -305,9 +312,9 @@ describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
     const horizonTargets = targets.filter((t) => t.ring === 'horizon');
     expect(horizonTargets.every((t) => t.captured)).toBe(true);
 
-    // Frontier should now have unlocked adjacent upper (+38°) and lower (-38°) targets
-    const unlockedUpper = targets.filter((t) => t.ring === 'upper' && t.visible);
-    const unlockedLower = targets.filter((t) => t.ring === 'lower' && t.visible);
+    // Frontier should now have unlocked adjacent upper-horizon (+35°) and lower-horizon (-35°) targets
+    const unlockedUpper = targets.filter((t) => (t.ring === 'upper-horizon' || t.ring === 'upper') && t.visible);
+    const unlockedLower = targets.filter((t) => (t.ring === 'lower-horizon' || t.ring === 'lower') && t.visible);
     expect(unlockedUpper.length).toBeGreaterThan(0);
     expect(unlockedLower.length).toBeGreaterThan(0);
   });

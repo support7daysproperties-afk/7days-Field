@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { X, RefreshCw, Undo2, Check, Download, Globe, Orbit, Image as ImageIcon } from 'lucide-react';
 import { photoSphereStorage } from './storage/PhotoSphereStorage';
 import { injectXmpIntoJpeg } from './PhotoSphereXMP';
+import { PHOTO_SPHERE_TARGETS } from './PhotoSphereTargets';
 
 const CONFIG = {
   ALIGNMENT_THRESHOLD_DEG: 4.8,
@@ -188,7 +189,7 @@ export default function PhotoSphereCapture({
   }
 
   // Spawn Target 3D Mesh Dot
-  function spawnTargetDot(id, yawRad, pitchRad, visibleInitially, isGapDot) {
+  function spawnTargetDot(id, yawRad, pitchRad, visibleInitially, isGapDot, targetMeta = null) {
     const eng = engineRef.current;
     const dir = sphericalToCartesian(yawRad, pitchRad).normalize();
     const pos = dir.clone().multiplyScalar(CONFIG.SPHERE_RADIUS * 0.9);
@@ -207,6 +208,9 @@ export default function PhotoSphereCapture({
 
     const target = {
       id,
+      targetId: targetMeta ? targetMeta.id : `t_${id}`,
+      dotNumber: targetMeta ? targetMeta.dotNumber : id,
+      region: targetMeta ? targetMeta.region : (isGapDot ? 'gap' : 'horizon'),
       yawRad,
       pitchRad,
       direction: dir,
@@ -219,31 +223,17 @@ export default function PhotoSphereCapture({
     return target;
   }
 
-  // Initialize Lattice from the 5 Elevation Bands
+  // Initialize Lattice from PHOTO_SPHERE_TARGETS (All 33 Dots + Anchor Frame)
   function initTargetLattice() {
     const eng = engineRef.current;
     eng.targets = [];
     eng.targetGroup.clear();
 
-    const rings = [
-      { pitchDeg: 0, count: 10 },
-      { pitchDeg: 38, count: 8 },
-      { pitchDeg: -38, count: 8 },
-      { pitchDeg: 74, count: 4 },
-      { pitchDeg: -74, count: 4 },
-    ];
-
-    let id = 0;
-    rings.forEach((ring) => {
-      const pitchRad = THREE.MathUtils.degToRad(ring.pitchDeg);
-      for (let i = 0; i < ring.count; i++) {
-        let yawDeg = ((360 / ring.count) * i) % 360;
-        if (yawDeg > 180) yawDeg -= 360;
-        const yawRad = THREE.MathUtils.degToRad(yawDeg);
-
-        const isCenterStartDot = id === 0;
-        spawnTargetDot(id++, yawRad, pitchRad, isCenterStartDot, false);
-      }
+    PHOTO_SPHERE_TARGETS.forEach((t) => {
+      const yawRad = THREE.MathUtils.degToRad(t.yaw);
+      const pitchRad = THREE.MathUtils.degToRad(t.pitch);
+      const isCenterStartDot = t.dotNumber === 0;
+      spawnTargetDot(t.dotNumber, yawRad, pitchRad, isCenterStartDot, false, t);
     });
 
     updateFrontierAndGapDots();
@@ -541,7 +531,7 @@ export default function PhotoSphereCapture({
           await photoSphereStorage.saveFrame({
             id: `frame_${target.id}_${Date.now()}`,
             sessionId: eng.sessionId,
-            targetId: `target_${target.id}`,
+            targetId: target.targetId || `t_${target.id}`,
             sequenceIndex: target.id,
             yaw: (exactYaw * 180) / Math.PI,
             pitch: (exactPitch * 180) / Math.PI,
