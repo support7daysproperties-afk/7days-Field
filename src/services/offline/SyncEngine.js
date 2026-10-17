@@ -491,11 +491,24 @@ class SyncEngine {
       }
     }
 
-    // 2. Resolve server-side inspection identity (UUID)
+    // 2. Resolve or generate server-side inspection UUID identity
+    const generateUUID = () => {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    };
+
     const existingServerId = (isValidUUID(inspection.server_id) && inspection.server_id) ||
                              (isValidUUID(inspection.supabase_id) && inspection.supabase_id) ||
                              (isValidUUID(inspection.id) && inspection.id) ||
                              null;
+
+    const serverId = existingServerId || generateUUID();
 
     const propertyId = isValidUUID(inspection.property_id) ? inspection.property_id : null;
     const taskId = isValidUUID(inspection.task_id || inspection.field_task_id)
@@ -505,7 +518,7 @@ class SyncEngine {
     // 3. Build payload matching confirmed schema of public.field_inspections:
     // Columns: id, property_id, supervisor_id, task_id, status, sync_status, checklist, remarks, owner_name, owner_phone, consent_given, signature_url, updated_at
     const record = {
-      ...(existingServerId ? { id: existingServerId } : {}),
+      id: serverId,
       property_id: propertyId,
       supervisor_id: supervisorId,
       task_id: taskId,
@@ -520,30 +533,15 @@ class SyncEngine {
       updated_at: new Date().toISOString(),
     };
 
-    let data;
-    let error;
-
-    if (existingServerId) {
-      const res = await supabase
-        .from('field_inspections')
-        .upsert(record, { onConflict: 'id' })
-        .select('id')
-        .single();
-      data = res.data;
-      error = res.error;
-    } else {
-      const res = await supabase
-        .from('field_inspections')
-        .insert(record)
-        .select('id')
-        .single();
-      data = res.data;
-      error = res.error;
-    }
+    const { data, error } = await supabase
+      .from('field_inspections')
+      .upsert(record, { onConflict: 'id' })
+      .select('id')
+      .single();
 
     if (error) throw new Error(`Supabase inspection record upsert failed: ${error.message}`);
 
-    const confirmedServerId = data?.id || existingServerId;
+    const confirmedServerId = data?.id || serverId;
 
     // Persist confirmed server ID locally so subsequent retries are strictly idempotent
     if (confirmedServerId) {

@@ -192,10 +192,12 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
 
     await SyncEngine.startSync();
 
-    // Verify local inspection record has confirmed server identity saved
+    // Verify local inspection record has confirmed server identity saved as a valid UUID
     const updatedInspection = mockInspections.get(inspectionId);
-    expect(updatedInspection.server_id).toBe('c8d67a91-4e4b-4b2a-8745-f09b2b512c01');
-    expect(updatedInspection.supabase_id).toBe('c8d67a91-4e4b-4b2a-8745-f09b2b512c01');
+    expect(updatedInspection.server_id).toBeDefined();
+    expect(updatedInspection.server_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(updatedInspection.server_id).toBe(capturedUpsertPayloads[0].id);
+    expect(updatedInspection.supabase_id).toBe(updatedInspection.server_id);
   });
 
   // 3. Existing inspection retry without duplicates: uses onConflict: 'id' with server_id
