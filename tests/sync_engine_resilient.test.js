@@ -61,6 +61,12 @@ describe('SyncEngine — Fast, Reliable & Resumable Bounded Concurrency Sync Tes
         }),
         error: null
       }),
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: { id: 'supabase_ins_123' }, error: null })
+        }),
+        error: null
+      }),
       update: vi.fn().mockReturnValue({
         eq: vi.fn().mockResolvedValue({ data: null, error: null })
       })

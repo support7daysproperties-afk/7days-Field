@@ -150,9 +150,11 @@ class SyncEngine {
     await InspectionRepository.saveInspection({ ...inspection, sync_status: 'SYNCING' });
     this._notify();
 
+    let supabaseInspectionId = inspection.server_id || inspection.supabase_id || null;
+
     try {
       // ── STEP 1: Establish server identity in Supabase ──────────────────────
-      const supabaseInspectionId = await this._syncInspectionRecord(inspection);
+      supabaseInspectionId = await this._syncInspectionRecord(inspection);
 
       // ── STEP 2: Upsert media metadata in Supabase ──────────────────────────
       const allMedia = await MediaRepository.getMediaForInspection(inspection.id);
@@ -236,7 +238,7 @@ class SyncEngine {
         await this._markSynced(job, inspection, supabaseInspectionId);
       } else {
         const failureDetails = pendingItems.map(m => `${m.filename || m.id}: ${m.last_upload_error || 'pending'}`).slice(0, 2).join('; ');
-        await this._markPartiallySynced(job, inspection, `${pendingItems.length} file(s) pending (${failureDetails})`);
+        await this._markPartiallySynced(job, inspection, `${pendingItems.length} file(s) pending (${failureDetails})`, supabaseInspectionId);
       }
 
     } catch (err) {
@@ -248,6 +250,14 @@ class SyncEngine {
       } else {
         await SyncJobRepository.upsertJob({ ...job, status: 'FAILED', last_error: err.message || 'Sync failed' });
         await InspectionRepository.saveInspection({ ...inspection, sync_status: 'FAILED' });
+        if (supabaseInspectionId) {
+          try {
+            await supabase
+              .from('field_inspections')
+              .update({ sync_status: 'FAILED', updated_at: new Date().toISOString() })
+              .eq('id', supabaseInspectionId);
+          } catch (_e) {}
+        }
       }
       this._notify();
     }
@@ -458,41 +468,95 @@ class SyncEngine {
     const meta = inspection.metadata || {};
     const { data: sessionData } = await supabase.auth.getSession();
     const authUserId = sessionData?.session?.user?.id;
-    const supervisorId = inspection.supervisor_id || authUserId;
 
+    const isValidUUID = (str) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+
+    // 1. Resolve supervisor identity (UUID)
+    let supervisorId = null;
+    if (isValidUUID(inspection.supervisor_id)) {
+      supervisorId = inspection.supervisor_id;
+    } else if (authUserId) {
+      try {
+        const cached = localStorage.getItem(`supervisor_profile_${authUserId}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed?.id && isValidUUID(parsed.id)) {
+            supervisorId = parsed.id;
+          }
+        }
+      } catch (_) {}
+
+      if (!supervisorId && isValidUUID(authUserId)) {
+        supervisorId = authUserId;
+      }
+    }
+
+    // 2. Resolve server-side inspection identity (UUID)
+    const existingServerId = (isValidUUID(inspection.server_id) && inspection.server_id) ||
+                             (isValidUUID(inspection.supabase_id) && inspection.supabase_id) ||
+                             (isValidUUID(inspection.id) && inspection.id) ||
+                             null;
+
+    const propertyId = isValidUUID(inspection.property_id) ? inspection.property_id : null;
+    const taskId = isValidUUID(inspection.task_id || inspection.field_task_id)
+      ? (inspection.task_id || inspection.field_task_id)
+      : null;
+
+    // 3. Build payload matching confirmed schema of public.field_inspections:
+    // Columns: id, property_id, supervisor_id, task_id, status, sync_status, checklist, remarks, owner_name, owner_phone, consent_given, signature_url, updated_at
     const record = {
-      id: inspection.id,
-      property_id: inspection.property_id,
+      ...(existingServerId ? { id: existingServerId } : {}),
+      property_id: propertyId,
       supervisor_id: supervisorId,
-      auth_user_id: authUserId,
-      status: inspection.status || 'COMPLETED',
-      sync_status: 'SYNCING',
-      started_at: inspection.created_at,
-      completed_at: inspection.completed_at || inspection.updated_at,
-      submitted_at: inspection.submitted_at || inspection.updated_at,
+      task_id: taskId,
+      status: ['PENDING', 'IN_PROGRESS', 'COMPLETED'].includes(inspection.status) ? inspection.status : 'COMPLETED',
+      sync_status: 'UPLOADING',
       checklist: meta.checklist || null,
       remarks: meta.remarks || null,
-      owner_info: meta.ownerInfo || null,
-      owner_consent: meta.consent || false,
-      signature_data_url: meta.signature || null,
-      location_verified: inspection.location_verified || false,
-      latitude: inspection.latitude || null,
-      longitude: inspection.longitude || null,
-      gps_accuracy: inspection.gps_accuracy || null,
-      gps_timestamp: inspection.gps_timestamp || null,
-      reverse_geocoded_address: inspection.reverse_geocoded_address || null,
-      property_name: inspection.property_name || null,
+      owner_name: meta.ownerInfo?.name || null,
+      owner_phone: meta.ownerInfo?.phone || null,
+      consent_given: Boolean(meta.consent),
+      signature_url: meta.signature || null,
       updated_at: new Date().toISOString(),
     };
 
-    const { data, error } = await supabase
-      .from('field_inspections')
-      .upsert(record, { onConflict: 'id' })
-      .select('id')
-      .single();
+    let data;
+    let error;
+
+    if (existingServerId) {
+      const res = await supabase
+        .from('field_inspections')
+        .upsert(record, { onConflict: 'id' })
+        .select('id')
+        .single();
+      data = res.data;
+      error = res.error;
+    } else {
+      const res = await supabase
+        .from('field_inspections')
+        .insert(record)
+        .select('id')
+        .single();
+      data = res.data;
+      error = res.error;
+    }
 
     if (error) throw new Error(`Supabase inspection record upsert failed: ${error.message}`);
-    return data.id;
+
+    const confirmedServerId = data?.id || existingServerId;
+
+    // Persist confirmed server ID locally so subsequent retries are strictly idempotent
+    if (confirmedServerId) {
+      inspection.server_id = confirmedServerId;
+      inspection.supabase_id = confirmedServerId;
+      await InspectionRepository.saveInspection({
+        ...inspection,
+        server_id: confirmedServerId,
+        supabase_id: confirmedServerId,
+      });
+    }
+
+    return confirmedServerId;
   }
 
   async _upsertMediaRecord(media, supabaseInspectionId, inspection) {
@@ -521,11 +585,17 @@ class SyncEngine {
       retry_count: media.upload_attempts || 0,
     };
 
-    const { error } = await supabase
-      .from('field_inspection_media')
-      .upsert(record, { onConflict: 'id' });
+    try {
+      const { error } = await supabase
+        .from('field_inspection_media')
+        .upsert(record, { onConflict: 'id' });
 
-    if (error) console.warn(`[SyncEngine] Media upsert notice for ${media.id}:`, error.message);
+      if (error && error.code !== 'PGRST205') {
+        console.warn(`[SyncEngine] Media upsert notice for ${media.id}:`, error.message);
+      }
+    } catch (_err) {
+      // Non-fatal: Drive is the primary resilient evidence store
+    }
   }
 
   // ─── Drive Summary ───────────────────────────────────────────────────────────
@@ -534,6 +604,7 @@ class SyncEngine {
     const meta = inspection.metadata || {};
     const summary = {
       inspection_id: inspection.id,
+      server_id: inspection.server_id || inspection.supabase_id || null,
       property_id: inspection.property_id,
       property_name: inspection.property_name || null,
       supervisor_id: inspection.supervisor_id || null,
@@ -569,18 +640,45 @@ class SyncEngine {
   async _markSynced(job, inspection, supabaseInspectionId) {
     const now = new Date().toISOString();
 
-    await supabase
-      .from('field_inspections')
-      .update({ sync_status: 'SYNCED', updated_at: now })
-      .eq('id', supabaseInspectionId);
+    if (supabaseInspectionId) {
+      try {
+        await supabase
+          .from('field_inspections')
+          .update({ sync_status: 'UPLOADED', updated_at: now })
+          .eq('id', supabaseInspectionId);
+      } catch (err) {
+        console.warn('[SyncEngine] Notice updating remote sync_status to UPLOADED:', err.message);
+      }
+    }
 
-    await InspectionRepository.saveInspection({ ...inspection, sync_status: 'SYNCED', synced_at: now });
+    await InspectionRepository.saveInspection({
+      ...inspection,
+      server_id: supabaseInspectionId || inspection.server_id,
+      supabase_id: supabaseInspectionId || inspection.supabase_id,
+      sync_status: 'SYNCED',
+      synced_at: now
+    });
     await SyncJobRepository.upsertJob({ ...job, status: 'SYNCED', last_error: null });
     this._notify();
   }
 
-  async _markPartiallySynced(job, inspection, reason) {
-    await InspectionRepository.saveInspection({ ...inspection, sync_status: 'PARTIALLY_SYNCED' });
+  async _markPartiallySynced(job, inspection, reason, supabaseInspectionId) {
+    if (supabaseInspectionId) {
+      try {
+        await supabase
+          .from('field_inspections')
+          .update({ sync_status: 'FAILED', updated_at: new Date().toISOString() })
+          .eq('id', supabaseInspectionId);
+      } catch (err) {
+        console.warn('[SyncEngine] Notice updating remote sync_status to FAILED:', err.message);
+      }
+    }
+    await InspectionRepository.saveInspection({
+      ...inspection,
+      server_id: supabaseInspectionId || inspection.server_id,
+      supabase_id: supabaseInspectionId || inspection.supabase_id,
+      sync_status: 'PARTIALLY_SYNCED'
+    });
     await SyncJobRepository.upsertJob({ ...job, status: 'PARTIALLY_SYNCED', last_error: reason });
     this._notify();
   }
