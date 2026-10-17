@@ -64,6 +64,30 @@ export default function Login() {
         if (result.serverAuthCode) {
           localStorage.setItem('google_server_auth_code', result.serverAuthCode);
         }
+
+        if (result.email) {
+          localStorage.setItem('7days_last_auth_email', result.email);
+        }
+
+        // Seamless 1-tap: Auto-connect Drive using the same selected Google account
+        try {
+          const driveRes = await NativeGoogleAuth.getDriveAccessToken({ email: result.email });
+          if (driveRes?.accessToken) {
+            GoogleDriveService.setTokenData({
+              accessToken: driveRes.accessToken,
+              expiresInSec: driveRes.expiresIn || 3600,
+              email: result.email,
+            });
+            GoogleDriveService.setStatus('CONNECTED', '', result.email);
+            localStorage.setItem('drive_onboarding_done', 'true');
+            localStorage.removeItem('pending_drive_onboarding');
+            navigate('/', { replace: true });
+            return;
+          }
+        } catch (driveErr) {
+          console.warn('Drive auto-connect note:', driveErr);
+        }
+
         return;
       }
 

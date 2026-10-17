@@ -81,21 +81,37 @@ public class GoogleAuthPlugin extends Plugin {
     /**
      * Native Google Drive OAuth2 Access Token retrieval via Google Play Services
      */
+    /**
+     * Native Google Drive OAuth2 Access Token retrieval via Google Play Services
+     */
     @PluginMethod
     public void getDriveAccessToken(PluginCall call) {
+        String reqEmail = call.getString("email");
         new Thread(() -> {
             try {
-                GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(getContext());
-                if (account == null || account.getAccount() == null) {
-                    call.reject("No active Google account found. Please sign in first.");
+                android.accounts.Account targetAccount = null;
+                String resolvedEmail = reqEmail;
+
+                if (reqEmail != null && !reqEmail.trim().isEmpty()) {
+                    targetAccount = new android.accounts.Account(reqEmail.trim(), "com.google");
+                } else {
+                    GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(getContext());
+                    if (account != null) {
+                        targetAccount = account.getAccount();
+                        resolvedEmail = account.getEmail();
+                    }
+                }
+
+                if (targetAccount == null) {
+                    call.reject("No Google account specified or signed in. Please sign in first.");
                     return;
                 }
 
-                String token = GoogleAuthUtil.getToken(getContext(), account.getAccount(), DRIVE_SCOPE);
+                String token = GoogleAuthUtil.getToken(getContext(), targetAccount, DRIVE_SCOPE);
                 if (token != null && !token.isEmpty()) {
                     JSObject ret = new JSObject();
                     ret.put("accessToken", token);
-                    ret.put("email", account.getEmail());
+                    ret.put("email", resolvedEmail);
                     ret.put("expiresIn", 3600);
                     call.resolve(ret);
                 } else {
@@ -116,18 +132,31 @@ public class GoogleAuthPlugin extends Plugin {
         if (call == null) return;
 
         if (result.getResultCode() == Activity.RESULT_OK) {
-            // User consented via native dialog! Now retrieve the token on background thread
+            String reqEmail = call.getString("email");
             new Thread(() -> {
                 try {
-                    GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(getContext());
-                    if (account == null || account.getAccount() == null) {
+                    android.accounts.Account targetAccount = null;
+                    String resolvedEmail = reqEmail;
+
+                    if (reqEmail != null && !reqEmail.trim().isEmpty()) {
+                        targetAccount = new android.accounts.Account(reqEmail.trim(), "com.google");
+                    } else {
+                        GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(getContext());
+                        if (account != null) {
+                            targetAccount = account.getAccount();
+                            resolvedEmail = account.getEmail();
+                        }
+                    }
+
+                    if (targetAccount == null) {
                         call.reject("No Google account found after consent");
                         return;
                     }
-                    String token = GoogleAuthUtil.getToken(getContext(), account.getAccount(), DRIVE_SCOPE);
+
+                    String token = GoogleAuthUtil.getToken(getContext(), targetAccount, DRIVE_SCOPE);
                     JSObject ret = new JSObject();
                     ret.put("accessToken", token);
-                    ret.put("email", account.getEmail());
+                    ret.put("email", resolvedEmail);
                     ret.put("expiresIn", 3600);
                     call.resolve(ret);
                 } catch (Exception e) {

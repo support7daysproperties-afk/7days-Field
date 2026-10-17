@@ -219,7 +219,7 @@ class GoogleDriveService {
           if (this._accessToken) {
             await NativeGoogleAuth.clearDriveToken({ token: this._accessToken }).catch(() => {});
           }
-          const res = await NativeGoogleAuth.getDriveAccessToken();
+          const res = await NativeGoogleAuth.getDriveAccessToken({ email: this._tokenEmail });
           if (res?.accessToken) {
             resolve({
               access_token: res.accessToken,
@@ -350,7 +350,8 @@ class GoogleDriveService {
     if (Capacitor.isNativePlatform()) {
       return new Promise(async (resolve, reject) => {
         try {
-          const res = await NativeGoogleAuth.getDriveAccessToken();
+          const targetEmail = loginHint || this._tokenEmail;
+          const res = await NativeGoogleAuth.getDriveAccessToken({ email: targetEmail });
           if (res?.accessToken) {
             const expiresInSec = res.expiresIn || 3600;
             const email = res.email || loginHint || this._tokenEmail;
