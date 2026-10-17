@@ -62,287 +62,6 @@ export default function InspectionSession() {
   const longPressTimerRef = useRef(null);
   const isLongPressTriggeredRef = useRef(false);
 
-  // Centralized Mobile & Browser Back Action Handlers
-  // 1. Delete Confirmations (Priority 110)
-  useBackHandler('insp_del_confirm', () => {
-    setShowDeleteConfirm(false);
-    return true;
-  }, 110, showDeleteConfirm);
-
-  useBackHandler('insp_sel_del_confirm', () => {
-    setShowSelectionDeleteConfirm(false);
-    return true;
-  }, 110, showSelectionDeleteConfirm);
-
-  useBackHandler('insp_vid_sel_del_confirm', () => {
-    setShowVideoSelectionDeleteConfirm(false);
-    return true;
-  }, 110, showVideoSelectionDeleteConfirm);
-
-  useBackHandler('insp_custom_cat_modal', () => {
-    setShowAddCustomCategoryModal(false);
-    return true;
-  }, 110, showAddCustomCategoryModal);
-
-  // 2. Full-Screen Viewers (Priority 100)
-  useBackHandler('insp_media_viewer', () => {
-    setSelectedMediaIndex(null);
-    return true;
-  }, 100, selectedMediaIndex !== null);
-
-  useBackHandler('insp_viewer_mode', () => {
-    setViewerMode(null);
-    return true;
-  }, 100, viewerMode !== null);
-
-  // 3. Camera Modals & Tools (Priority 90)
-  useBackHandler('insp_photo_camera', () => {
-    setShowPhotoCamera(false);
-    return true;
-  }, 90, showPhotoCamera);
-
-  useBackHandler('insp_photo_sphere', () => {
-    setShowPhotoSphere(false);
-    return true;
-  }, 90, showPhotoSphere);
-
-  useBackHandler('insp_video_camera', () => {
-    setShowVideoCamera(false);
-    return true;
-  }, 90, showVideoCamera);
-
-  useBackHandler('insp_boundary_map', () => {
-    setShowBoundaryMap(false);
-    return true;
-  }, 90, showBoundaryMap);
-
-  // 4. Batch Selection Modes (Priority 80)
-  useBackHandler('insp_selection_mode', () => {
-    setIsSelectionMode(false);
-    setIsVideoSelectionMode(false);
-    return true;
-  }, 80, isSelectionMode || isVideoSelectionMode);
-
-  // 5. Active Inspection Step -> Return to Overview (Priority 50)
-  useBackHandler('insp_active_step', () => {
-    setActiveStepId('overview');
-    return true;
-  }, 50, activeStepId !== 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
-
-  // 6. Inspection Overview -> Return to Inspections List / Tasks (Priority 20)
-  useBackHandler('insp_overview', () => {
-    navigate('/tasks');
-    return true;
-  }, 20, activeStepId === 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
-
-  const togglePhotoSelection = (photoId) => {
-    setSelectedPhotoIds(prev => {
-      const next = new Set(prev);
-      if (next.has(photoId)) {
-        next.delete(photoId);
-      } else {
-        next.add(photoId);
-      }
-      return next;
-    });
-  };
-
-  const handlePhotoTouchStart = (photoId) => {
-    isLongPressTriggeredRef.current = false;
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-    }
-    longPressTimerRef.current = setTimeout(() => {
-      isLongPressTriggeredRef.current = true;
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        try { navigator.vibrate(50); } catch (e) {}
-      }
-      setIsSelectionMode(true);
-      setSelectedPhotoIds(prev => {
-        const next = new Set(prev);
-        next.add(photoId);
-        return next;
-      });
-    }, 500);
-  };
-
-  const handlePhotoTouchEnd = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  };
-
-  const handlePhotoClick = (photo) => {
-    if (isLongPressTriggeredRef.current) {
-      isLongPressTriggeredRef.current = false;
-      return;
-    }
-    if (isSelectionMode) {
-      togglePhotoSelection(photo.id);
-    } else {
-      setSelectedMediaIndex(evidenceList.findIndex(e => e.id === photo.id));
-    }
-  };
-
-  const handleConfirmDeleteUnselected = async () => {
-    const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
-    const toDelete = photos.filter(p => !selectedPhotoIds.has(p.id));
-    if (toDelete.length === 0) {
-      setShowSelectionDeleteConfirm(false);
-      return;
-    }
-
-    try {
-      // 1. Fetch full raw records from MediaRepository for backup
-      const backupRecords = [];
-      for (const item of toDelete) {
-        const raw = await MediaRepository.getMedia(item.id);
-        if (raw) backupRecords.push(raw);
-      }
-
-      // 2. Delete unselected photos from MediaRepository
-      for (const item of toDelete) {
-        await MediaRepository.deleteMedia(item.id);
-      }
-
-      // 3. Close confirmation popup, reset selection mode
-      setShowSelectionDeleteConfirm(false);
-      setIsSelectionMode(false);
-      setSelectedPhotoIds(new Set());
-      await loadEvidence();
-
-      // 4. Set undo state with 15-second auto-dismiss timer
-      if (undoState?.timeoutId) {
-        clearTimeout(undoState.timeoutId);
-      }
-      const timeoutId = setTimeout(() => {
-        setUndoState(null);
-      }, 15000);
-
-      setUndoState({
-        items: backupRecords,
-        count: backupRecords.length,
-        mediaType: 'photo',
-        timeoutId
-      });
-    } catch (err) {
-      console.error("Failed to delete unselected photos:", err);
-    }
-  };
-
-  const toggleVideoSelection = (videoId) => {
-    setSelectedVideoIds(prev => {
-      const next = new Set(prev);
-      if (next.has(videoId)) {
-        next.delete(videoId);
-      } else {
-        next.add(videoId);
-      }
-      return next;
-    });
-  };
-
-  const handleVideoTouchStart = (videoId) => {
-    isLongPressTriggeredRef.current = false;
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-    }
-    longPressTimerRef.current = setTimeout(() => {
-      isLongPressTriggeredRef.current = true;
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        try { navigator.vibrate(50); } catch (e) {}
-      }
-      setIsVideoSelectionMode(true);
-      setSelectedVideoIds(prev => {
-        const next = new Set(prev);
-        next.add(videoId);
-        return next;
-      });
-    }, 500);
-  };
-
-  const handleVideoTouchEnd = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  };
-
-  const handleVideoClick = (video) => {
-    if (isLongPressTriggeredRef.current) {
-      isLongPressTriggeredRef.current = false;
-      return;
-    }
-    if (isVideoSelectionMode) {
-      toggleVideoSelection(video.id);
-    } else {
-      setSelectedMediaIndex(evidenceList.findIndex(e => e.id === video.id));
-    }
-  };
-
-  const handleConfirmDeleteUnselectedVideos = async () => {
-    const videos = evidenceList.filter(e => e.mediaType === 'video');
-    const toDelete = videos.filter(v => !selectedVideoIds.has(v.id));
-    if (toDelete.length === 0) {
-      setShowVideoSelectionDeleteConfirm(false);
-      setIsVideoSelectionMode(false);
-      return;
-    }
-
-    try {
-      // 1. Fetch full raw records from MediaRepository for backup
-      const backupRecords = [];
-      for (const item of toDelete) {
-        const raw = await MediaRepository.getMedia(item.id);
-        if (raw) backupRecords.push(raw);
-      }
-
-      // 2. Delete unselected videos from MediaRepository
-      for (const item of toDelete) {
-        await MediaRepository.deleteMedia(item.id);
-      }
-
-      // 3. Close confirmation popup, reset selection mode
-      setShowVideoSelectionDeleteConfirm(false);
-      setIsVideoSelectionMode(false);
-      setSelectedVideoIds(new Set());
-      await loadEvidence();
-
-      // 4. Set undo state with 15-second auto-dismiss timer
-      if (undoState?.timeoutId) {
-        clearTimeout(undoState.timeoutId);
-      }
-      const timeoutId = setTimeout(() => {
-        setUndoState(null);
-      }, 15000);
-
-      setUndoState({
-        items: backupRecords,
-        count: backupRecords.length,
-        mediaType: 'video',
-        timeoutId
-      });
-    } catch (err) {
-      console.error("Failed to delete unselected videos:", err);
-    }
-  };
-
-  const handleUndoDelete = async () => {
-    if (!undoState || !undoState.items || undoState.items.length === 0) return;
-    if (undoState.timeoutId) clearTimeout(undoState.timeoutId);
-
-    try {
-      for (const record of undoState.items) {
-        await MediaRepository.saveMedia(record);
-      }
-      setUndoState(null);
-      await loadEvidence();
-    } catch (err) {
-      console.error("Failed to restore photos:", err);
-    }
-  };
-
   const [isLoading, setIsLoading] = useState(true);
 
   const [checklist, setChecklist] = useState({
@@ -365,6 +84,19 @@ export default function InspectionSession() {
   const [signature, setSignature] = useState(null);
   const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
   const [inspectionRecord, setInspectionRecord] = useState(null);
+
+  const loadEvidence = async () => {
+    try {
+      const list = await EvidenceService.getEvidenceForTask(id);
+      setEvidenceList(list || []);
+      const summary = await EvidenceService.getEvidenceSummary(id);
+      setEvidenceSummary(summary || { location: null, photos: 0, videos: 0, total: 0 });
+    } catch (err) {
+      console.error("Failed to load evidence for task:", err);
+    }
+  };
+
+  useEffect(() => { loadEvidence(); }, [id]);
 
   useEffect(() => {
     const loadState = async () => {
@@ -575,20 +307,292 @@ export default function InspectionSession() {
   const activeStepIndex = steps.findIndex(s => s.id === activeStepId);
   const currentStep = steps[activeStepIndex];
 
-  const loadEvidence = async () => {
-    const list = await EvidenceService.getEvidenceForTask(id);
-    setEvidenceList(list);
-    const summary = await EvidenceService.getEvidenceSummary(id);
-    setEvidenceSummary(summary);
-  };
-
-  useEffect(() => { loadEvidence(); }, [id]);
-
   const handleMediaSave = async () => {
     setShowPhotoCamera(false);
     setShowVideoCamera(false);
     await loadEvidence();
   };
+
+  const togglePhotoSelection = (photoId) => {
+    setSelectedPhotoIds(prev => {
+      const next = new Set(prev);
+      if (next.has(photoId)) {
+        next.delete(photoId);
+      } else {
+        next.add(photoId);
+      }
+      return next;
+    });
+  };
+
+  const handlePhotoTouchStart = (photoId) => {
+    isLongPressTriggeredRef.current = false;
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressTriggeredRef.current = true;
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try { navigator.vibrate(50); } catch (e) {}
+      }
+      setIsSelectionMode(true);
+      setSelectedPhotoIds(prev => {
+        const next = new Set(prev);
+        next.add(photoId);
+        return next;
+      });
+    }, 500);
+  };
+
+  const handlePhotoTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handlePhotoClick = (photo) => {
+    if (isLongPressTriggeredRef.current) {
+      isLongPressTriggeredRef.current = false;
+      return;
+    }
+    if (isSelectionMode) {
+      togglePhotoSelection(photo.id);
+    } else {
+      setSelectedMediaIndex(evidenceList.findIndex(e => e.id === photo.id));
+    }
+  };
+
+  const handleConfirmDeleteUnselected = async () => {
+    const photos = evidenceList.filter(e => e.mediaType === 'photo' && e.evidenceType !== 'Location Verification');
+    const toDelete = photos.filter(p => !selectedPhotoIds.has(p.id));
+    if (toDelete.length === 0) {
+      setShowSelectionDeleteConfirm(false);
+      return;
+    }
+
+    try {
+      // 1. Fetch full raw records from MediaRepository for backup
+      const backupRecords = [];
+      for (const item of toDelete) {
+        const raw = await MediaRepository.getMedia(item.id);
+        if (raw) backupRecords.push(raw);
+      }
+
+      // 2. Delete unselected photos from MediaRepository
+      for (const item of toDelete) {
+        await MediaRepository.deleteMedia(item.id);
+      }
+
+      // 3. Close confirmation popup, reset selection mode
+      setShowSelectionDeleteConfirm(false);
+      setIsSelectionMode(false);
+      setSelectedPhotoIds(new Set());
+      await loadEvidence();
+
+      // 4. Set undo state with 15-second auto-dismiss timer
+      if (undoState?.timeoutId) {
+        clearTimeout(undoState.timeoutId);
+      }
+      const timeoutId = setTimeout(() => {
+        setUndoState(null);
+      }, 15000);
+
+      setUndoState({
+        items: backupRecords,
+        count: backupRecords.length,
+        mediaType: 'photo',
+        timeoutId
+      });
+    } catch (err) {
+      console.error("Failed to delete unselected photos:", err);
+    }
+  };
+
+  const toggleVideoSelection = (videoId) => {
+    setSelectedVideoIds(prev => {
+      const next = new Set(prev);
+      if (next.has(videoId)) {
+        next.delete(videoId);
+      } else {
+        next.add(videoId);
+      }
+      return next;
+    });
+  };
+
+  const handleVideoTouchStart = (videoId) => {
+    isLongPressTriggeredRef.current = false;
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressTriggeredRef.current = true;
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try { navigator.vibrate(50); } catch (e) {}
+      }
+      setIsVideoSelectionMode(true);
+      setSelectedVideoIds(prev => {
+        const next = new Set(prev);
+        next.add(videoId);
+        return next;
+      });
+    }, 500);
+  };
+
+  const handleVideoTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleVideoClick = (video) => {
+    if (isLongPressTriggeredRef.current) {
+      isLongPressTriggeredRef.current = false;
+      return;
+    }
+    if (isVideoSelectionMode) {
+      toggleVideoSelection(video.id);
+    } else {
+      setSelectedMediaIndex(evidenceList.findIndex(e => e.id === video.id));
+    }
+  };
+
+  const handleConfirmDeleteUnselectedVideos = async () => {
+    const videos = evidenceList.filter(e => e.mediaType === 'video');
+    const toDelete = videos.filter(v => !selectedVideoIds.has(v.id));
+    if (toDelete.length === 0) {
+      setShowVideoSelectionDeleteConfirm(false);
+      setIsVideoSelectionMode(false);
+      return;
+    }
+
+    try {
+      // 1. Fetch full raw records from MediaRepository for backup
+      const backupRecords = [];
+      for (const item of toDelete) {
+        const raw = await MediaRepository.getMedia(item.id);
+        if (raw) backupRecords.push(raw);
+      }
+
+      // 2. Delete unselected videos from MediaRepository
+      for (const item of toDelete) {
+        await MediaRepository.deleteMedia(item.id);
+      }
+
+      // 3. Close confirmation popup, reset selection mode
+      setShowVideoSelectionDeleteConfirm(false);
+      setIsVideoSelectionMode(false);
+      setSelectedVideoIds(new Set());
+      await loadEvidence();
+
+      // 4. Set undo state with 15-second auto-dismiss timer
+      if (undoState?.timeoutId) {
+        clearTimeout(undoState.timeoutId);
+      }
+      const timeoutId = setTimeout(() => {
+        setUndoState(null);
+      }, 15000);
+
+      setUndoState({
+        items: backupRecords,
+        count: backupRecords.length,
+        mediaType: 'video',
+        timeoutId
+      });
+    } catch (err) {
+      console.error("Failed to delete unselected videos:", err);
+    }
+  };
+
+  const handleUndoDelete = async () => {
+    if (!undoState || !undoState.items || undoState.items.length === 0) return;
+    if (undoState.timeoutId) clearTimeout(undoState.timeoutId);
+
+    try {
+      for (const record of undoState.items) {
+        await MediaRepository.saveMedia(record);
+      }
+      setUndoState(null);
+      await loadEvidence();
+    } catch (err) {
+      console.error("Failed to restore photos:", err);
+    }
+  };
+
+  // Centralized Mobile & Browser Back Action Handlers
+  // 1. Delete Confirmations (Priority 110)
+  useBackHandler('insp_del_confirm', () => {
+    setShowDeleteConfirm(false);
+    return true;
+  }, 110, showDeleteConfirm);
+
+  useBackHandler('insp_sel_del_confirm', () => {
+    setShowSelectionDeleteConfirm(false);
+    return true;
+  }, 110, showSelectionDeleteConfirm);
+
+  useBackHandler('insp_vid_sel_del_confirm', () => {
+    setShowVideoSelectionDeleteConfirm(false);
+    return true;
+  }, 110, showVideoSelectionDeleteConfirm);
+
+  useBackHandler('insp_custom_cat_modal', () => {
+    setShowAddCustomCategoryModal(false);
+    return true;
+  }, 110, showAddCustomCategoryModal);
+
+  // 2. Full-Screen Viewers (Priority 100)
+  useBackHandler('insp_media_viewer', () => {
+    setSelectedMediaIndex(null);
+    return true;
+  }, 100, selectedMediaIndex !== null);
+
+  useBackHandler('insp_viewer_mode', () => {
+    setViewerMode(null);
+    return true;
+  }, 100, viewerMode !== null);
+
+  // 3. Camera Modals & Tools (Priority 90)
+  useBackHandler('insp_photo_camera', () => {
+    setShowPhotoCamera(false);
+    return true;
+  }, 90, showPhotoCamera);
+
+  useBackHandler('insp_photo_sphere', () => {
+    setShowPhotoSphere(false);
+    return true;
+  }, 90, showPhotoSphere);
+
+  useBackHandler('insp_video_camera', () => {
+    setShowVideoCamera(false);
+    return true;
+  }, 90, showVideoCamera);
+
+  useBackHandler('insp_boundary_map', () => {
+    setShowBoundaryMap(false);
+    return true;
+  }, 90, showBoundaryMap);
+
+  // 4. Batch Selection Modes (Priority 80)
+  useBackHandler('insp_selection_mode', () => {
+    setIsSelectionMode(false);
+    setIsVideoSelectionMode(false);
+    return true;
+  }, 80, isSelectionMode || isVideoSelectionMode);
+
+  // 5. Active Inspection Step -> Return to Overview (Priority 50)
+  useBackHandler('insp_active_step', () => {
+    setActiveStepId('overview');
+    return true;
+  }, 50, activeStepId !== 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
+
+  // 6. Inspection Overview -> Return to Inspections List / Tasks (Priority 20)
+  useBackHandler('insp_overview', () => {
+    navigate('/tasks');
+    return true;
+  }, 20, activeStepId === 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
 
   const renderOverviewContent = () => {
     const completedCount = steps.filter(s => s.completed).length;

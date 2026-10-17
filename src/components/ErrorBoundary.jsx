@@ -13,6 +13,17 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('[7Days Field] Uncaught application error:', error, errorInfo);
+    try {
+      const sanitized = {
+        message: error?.message || String(error),
+        name: error?.name || 'Error',
+        stack: error?.stack ? error.stack.split('\n').slice(0, 10).join('\n') : null,
+        componentStack: errorInfo?.componentStack ? errorInfo.componentStack.split('\n').slice(0, 10).join('\n') : null,
+        timestamp: new Date().toISOString(),
+        url: typeof window !== 'undefined' ? window.location.pathname : '',
+      };
+      localStorage.setItem('7days_last_crash', JSON.stringify(sanitized));
+    } catch (_) {}
   }
 
   handleReload = () => {
