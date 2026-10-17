@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { X, RefreshCw, Undo2, Check, Download, Globe, Orbit, Image as ImageIcon } from 'lucide-react';
 import { photoSphereStorage } from './storage/PhotoSphereStorage';
+import { injectXmpIntoJpeg } from './PhotoSphereXMP';
 import {
   PHOTO_SPHERE_TARGETS,
   getStabilizedYawPitch,
@@ -65,7 +66,7 @@ export default function PhotoSphereCapture({
     renderer: null,
     sphereMesh: null,
     sphereTexture: null,
-    targetGroup: null,
+    targetGroup: new THREE.Group(),
     masterPanoCanvas: null,
     masterPanoCtx: null,
     panoAccumR: null,
@@ -216,7 +217,7 @@ export default function PhotoSphereCapture({
     const mesh = new THREE.Mesh(dotGeo, dotMat);
     mesh.position.copy(pos);
     mesh.visible = visibleInitially;
-    eng.targetGroup.add(mesh);
+    if (eng.targetGroup) eng.targetGroup.add(mesh);
 
     const yawDeg = targetMeta ? targetMeta.yaw : THREE.MathUtils.radToDeg(yawRad);
     const pitchDeg = targetMeta ? targetMeta.pitch : THREE.MathUtils.radToDeg(pitchRad);
@@ -244,7 +245,7 @@ export default function PhotoSphereCapture({
   function initTargetLattice() {
     const eng = engineRef.current;
     eng.targets = [];
-    eng.targetGroup.clear();
+    if (eng.targetGroup) eng.targetGroup.clear();
 
     PHOTO_SPHERE_TARGETS.forEach((t) => {
       const yawRad = THREE.MathUtils.degToRad(t.yaw);
@@ -475,7 +476,7 @@ export default function PhotoSphereCapture({
     }
 
     eng.masterPanoCtx.putImageData(dstImageData, 0, 0);
-    eng.sphereTexture.needsUpdate = true;
+    if (eng.sphereTexture) eng.sphereTexture.needsUpdate = true;
 
     // Update Coverage Grid
     for (let gy = 0; gy < CONFIG.COVERAGE_LAT_STEPS; gy++) {
@@ -918,7 +919,7 @@ export default function PhotoSphereCapture({
       eng.panoAccumB.set(last.prevAccumB);
       eng.panoAccumW.set(last.prevAccumW);
     }
-    eng.sphereTexture.needsUpdate = true;
+    if (eng.sphereTexture) eng.sphereTexture.needsUpdate = true;
 
     eng.targets.forEach((t) => {
       t.captured = getLocalCoverageRatio(t.yawRad, t.pitchRad, 10) >= 0.96;

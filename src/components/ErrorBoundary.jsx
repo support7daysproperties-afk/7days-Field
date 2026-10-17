@@ -55,9 +55,31 @@ export default class ErrorBoundary extends React.Component {
           <h2 style={{ fontSize: '20px', fontWeight: 700, margin: '0 0 8px 0', color: '#ffffff' }}>
             Something went wrong
           </h2>
-          <p style={{ fontSize: '14px', color: '#94a3b8', maxWidth: '340px', lineHeight: 1.5, margin: '0 0 24px 0' }}>
+          <p style={{ fontSize: '14px', color: '#94a3b8', maxWidth: '340px', lineHeight: 1.5, margin: '0 0 16px 0' }}>
             7Days Field encountered an unexpected state. Your local data and media remain safe in storage.
           </p>
+
+          {this.state.error && (
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.25)',
+                borderRadius: '8px',
+                padding: '10px 14px',
+                margin: '0 0 20px 0',
+                maxWidth: '360px',
+                width: '100%',
+                fontSize: '12px',
+                color: '#fca5a5',
+                fontFamily: 'monospace',
+                textAlign: 'left',
+                overflowX: 'auto',
+                lineHeight: 1.4,
+              }}
+            >
+              {this.state.error.message || String(this.state.error)}
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: '12px', width: '100%', maxWidth: '320px' }}>
             <button
