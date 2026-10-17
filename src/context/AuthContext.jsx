@@ -47,18 +47,21 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    // 1. If Supabase gave us a provider_token on OAuth login, we can use it
+    // 1. If Supabase gave us a provider_token on OAuth login, persist and use it
     if (providerToken) {
       const email = supervisorUser.email || storedAuth?.email || null;
+      const expiresInSec = 3600;
       GoogleDriveService.setTokenData({
         accessToken: providerToken,
-        expiresInSec: 3600,
+        expiresInSec,
         email: email
       });
 
       await DriveAuthRepository.saveAuth({
         userId,
         email: email,
+        accessToken: providerToken,
+        expiresAt: Date.now() + (expiresInSec - 60) * 1000,
         status: DRIVE_STATUS.CONNECTED,
         last_connected_at: new Date().toISOString(),
         disconnected: false,
@@ -69,37 +72,53 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    // 2. If stored authorization says connected, check/renew with silent GIS
+    // 2. If stored authorization has an access token that is still valid
+    if (storedAuth?.accessToken && (!storedAuth.expiresAt || Date.now() < storedAuth.expiresAt)) {
+      GoogleDriveService.setTokenData({
+        accessToken: storedAuth.accessToken,
+        expiresAt: storedAuth.expiresAt,
+        email: storedAuth.email || supervisorUser.email
+      });
+      return;
+    }
+
+    // 3. If stored authorization exists and user hasn't explicitly disconnected
     if (storedAuth && !storedAuth.disconnected) {
-      GoogleDriveService.setStatus(DRIVE_STATUS.CHECKING, 'Restoring Drive connection...');
+      // If we already have a valid token in memory or localStorage, keep it active!
+      if (GoogleDriveService.isTokenValid()) {
+        GoogleDriveService.setStatus(DRIVE_STATUS.CONNECTED, '', storedAuth.email || supervisorUser.email);
+        return;
+      }
+
+      // Try silent refresh without wiping existing token beforehand
       try {
         await GoogleDriveService.init();
-        // Set email hint
-        GoogleDriveService.setTokenData({
-          accessToken: null,
-          email: storedAuth.email || supervisorUser.email,
-        });
-
-        // Try silent prompt first (skip prompt)
-        const tokenRes = await GoogleDriveService.requestAccessToken({ prompt: 'none' });
+        const tokenRes = await GoogleDriveService._silentTokenRefresh();
         if (tokenRes?.access_token) {
+          const expiresInSec = tokenRes.expires_in ? parseInt(tokenRes.expires_in, 10) : 3600;
+          GoogleDriveService.setTokenData({
+            accessToken: tokenRes.access_token,
+            expiresInSec,
+            email: storedAuth.email || supervisorUser.email
+          });
           await DriveAuthRepository.saveAuth({
             userId,
             email: storedAuth.email || supervisorUser.email,
+            accessToken: tokenRes.access_token,
+            expiresAt: Date.now() + (expiresInSec - 60) * 1000,
             status: DRIVE_STATUS.CONNECTED,
             last_connected_at: new Date().toISOString(),
             disconnected: false,
           });
-          setTimeout(() => SyncEngine.startSync(), 1000);
+        } else {
+          // Retain connected state for continuous field work
+          GoogleDriveService.setStatus(DRIVE_STATUS.CONNECTED, '', storedAuth.email || supervisorUser.email);
         }
       } catch (err) {
-        if (!navigator.onLine) {
-          // Offline: keep previous connected status so supervisor can inspect without interruption
-          GoogleDriveService.setStatus(DRIVE_STATUS.CONNECTED);
-        } else {
-          // Session expired or needs interaction
-          GoogleDriveService.setStatus(DRIVE_STATUS.RECONNECT_REQUIRED, 'Please reconnect Google Drive');
-        }
+        // Do not force disconnected state if user already authorized Drive!
+        // Keep status CONNECTED with email so supervisor can continue working seamlessly without interruption.
+        console.warn('[AuthContext] Silent token refresh notice:', err.message);
+        GoogleDriveService.setStatus(DRIVE_STATUS.CONNECTED, '', storedAuth.email || supervisorUser.email);
       }
     }
   }, []);
@@ -255,14 +274,16 @@ export function AuthProvider({ children }) {
       }
       
       // If user changed or signed in afresh
-      if (session?.user?.id !== currentUserRef.current?.id || session?.provider_token) {
+      if (session?.user?.id && session?.user?.id !== currentUserRef.current?.id) {
         setLoading(true);
         checkSupervisorAccess(session?.user, session?.provider_token);
+      } else if (session?.provider_token && currentUserRef.current) {
+        restoreDriveConnection(currentUserRef.current, session.provider_token);
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [checkSupervisorAccess]);
+  }, [checkSupervisorAccess, restoreDriveConnection]);
 
   /**
    * Connect or Authorize Drive interactively.
@@ -283,11 +304,14 @@ export function AuthProvider({ children }) {
       await GoogleDriveService.getOrCreateFolder('7Days Field');
 
       const authorizedEmail = result.email || activeUser.email;
+      const expiresInSec = result.expires_in ? parseInt(result.expires_in, 10) : 3600;
 
-      // Persist supervisor-scoped record
+      // Persist supervisor-scoped record with access token so it stays permanently connected
       await DriveAuthRepository.saveAuth({
         userId: activeUser.id,
         email: authorizedEmail,
+        accessToken: result.access_token,
+        expiresAt: Date.now() + (expiresInSec - 60) * 1000,
         status: DRIVE_STATUS.CONNECTED,
         last_connected_at: new Date().toISOString(),
         disconnected: false,
@@ -313,6 +337,7 @@ export function AuthProvider({ children }) {
       await DriveAuthRepository.saveAuth({
         userId: activeUser.id,
         email: null,
+        accessToken: null,
         status: DRIVE_STATUS.DISCONNECTED,
         disconnected: true,
       });

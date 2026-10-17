@@ -33,6 +33,22 @@ class GoogleDriveService {
     this._statusListeners = new Set();
     this._currentStatus = DRIVE_STATUS.DISCONNECTED;
     this._statusDetails = '';
+
+    // Auto-restore cached token from localStorage if valid
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const cached = localStorage.getItem('7days_drive_token');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed.accessToken && (!parsed.expiresAt || Date.now() < parsed.expiresAt)) {
+            this._accessToken = parsed.accessToken;
+            this._tokenExpiresAt = parsed.expiresAt;
+            this._tokenEmail = parsed.email || null;
+            this._currentStatus = DRIVE_STATUS.CONNECTED;
+          }
+        }
+      }
+    } catch (_e) {}
   }
 
   // ─── Status & State Machine ──────────────────────────────────────────────────
@@ -96,10 +112,27 @@ class GoogleDriveService {
       if (email) {
         this._tokenEmail = email;
       }
+
+      // Persist to localStorage for uninterrupted sessions across refreshes & syncs
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('7days_drive_token', JSON.stringify({
+            accessToken: this._accessToken,
+            expiresAt: this._tokenExpiresAt,
+            email: this._tokenEmail,
+          }));
+        }
+      } catch (_e) {}
+
       this.setStatus(DRIVE_STATUS.CONNECTED, '', this._tokenEmail);
     } else {
       this._tokenExpiresAt = null;
       this._tokenEmail = null;
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('7days_drive_token');
+        }
+      } catch (_e) {}
       this.setStatus(DRIVE_STATUS.DISCONNECTED);
     }
   }
@@ -417,10 +450,19 @@ class GoogleDriveService {
         console.warn('Revoke token error:', e);
       }
     }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('7days_drive_token');
+      }
+    } catch (_e) {}
     this._accessToken = null;
     this._tokenExpiresAt = null;
     this._tokenEmail = null;
     this.setStatus(DRIVE_STATUS.DISCONNECTED);
+  }
+
+  requestAccessToken(options = {}) {
+    return this.requestDriveAccess(options);
   }
 
   // ─── Folder management ───────────────────────────────────────────────────────
