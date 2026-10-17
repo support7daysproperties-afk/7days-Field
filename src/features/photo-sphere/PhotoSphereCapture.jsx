@@ -6,6 +6,8 @@ import { injectXmpIntoJpeg } from './PhotoSphereXMP';
 import {
   PHOTO_SPHERE_TARGETS,
   getStabilizedYawPitch,
+  getCameraBasisFromDeviceOrientation,
+  projectTargetDot3D,
   lerpAngleDeg,
   projectWorldToScreen,
   BOX_FOV_X,
@@ -35,6 +37,7 @@ export default function PhotoSphereCapture({
   const containerRef = useRef(null);
   const videoRef = useRef(null);
   const webglCanvasRef = useRef(null);
+  const dotsCanvasRef = useRef(null);
   const previewCanvasRef = useRef(null);
   const ringProgressRef = useRef(null);
   const centerBlueDotRef = useRef(null);
@@ -229,6 +232,8 @@ export default function PhotoSphereCapture({
       region: targetMeta ? targetMeta.region : (isGapDot ? 'gap' : 'horizon'),
       yaw: yawDeg,
       pitch: pitchDeg,
+      baseYaw: yawDeg,
+      basePitch: pitchDeg,
       yawRad,
       pitchRad,
       direction: dir,
@@ -245,6 +250,9 @@ export default function PhotoSphereCapture({
   function initTargetLattice() {
     const eng = engineRef.current;
     eng.targets = [];
+    eng.capturedTiles = [];
+    eng.anchorYaw = null;
+    eng.capturedCount = 0;
     if (eng.targetGroup) eng.targetGroup.clear();
 
     PHOTO_SPHERE_TARGETS.forEach((t) => {
@@ -278,21 +286,19 @@ export default function PhotoSphereCapture({
     eng.coveragePercent = Math.min(100, Math.round((coveredWeight / totalWeight) * 100));
     setCoveragePercent(eng.coveragePercent);
 
-    if (eng.historyStack.length === 0) {
+    if (eng.capturedCount === 0) {
       eng.targets.forEach((t, idx) => {
         t.captured = false;
         t.visible = idx === 0;
-        t.mesh.visible = idx === 0;
+        if (t.mesh) t.mesh.visible = idx === 0;
       });
       updateHUD();
       return;
     }
 
-    const capturedTargets = eng.targets.filter((t) => t.captured);
-
     eng.targets.forEach((t) => {
       if (t.captured) {
-        t.mesh.visible = false;
+        if (t.mesh) t.mesh.visible = false;
         return;
       }
 
@@ -300,23 +306,12 @@ export default function PhotoSphereCapture({
       if (centerCov >= 0.96) {
         t.captured = true;
         t.visible = false;
-        t.mesh.visible = false;
+        if (t.mesh) t.mesh.visible = false;
         return;
       }
 
-      let isImmediateNeighbor = false;
-      for (const cap of capturedTargets) {
-        const ang = THREE.MathUtils.radToDeg(
-          Math.acos(THREE.MathUtils.clamp(t.direction.dot(cap.direction), -1, 1))
-        );
-        if (ang <= 52) {
-          isImmediateNeighbor = true;
-          break;
-        }
-      }
-
-      t.visible = isImmediateNeighbor || t.isGapDot;
-      t.mesh.visible = t.visible;
+      t.visible = true;
+      if (t.mesh) t.mesh.visible = true;
     });
 
     const activeVisible = eng.targets.filter((t) => !t.captured && t.visible);
@@ -505,9 +500,19 @@ export default function PhotoSphereCapture({
     if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return;
 
     eng.isCapturing = true;
+
+    // Two-Phase Capture Start (Anchor Phase -> 33-Dot Grid Phase):
+    // The instant t_0 is captured: Freeze anchorYaw = currentCameraYaw and anchorPitch = 0.
+    // All remaining 33 dots (t_1 to t_33) are now locked in 3D world space relative to anchorYaw!
+    if (eng.capturedCount === 0 || target.dotNumber === 0) {
+      eng.anchorYaw = eng.camYaw;
+      eng.anchorPitch = 0;
+    }
+    eng.capturedCount++;
+
     target.captured = true;
     target.visible = false;
-    target.mesh.visible = false;
+    if (target.mesh) target.mesh.visible = false;
 
     if (navigator.vibrate) {
       try {
@@ -566,7 +571,6 @@ export default function PhotoSphereCapture({
     try {
       tileCanvas.toBlob(async (blob) => {
         if (blob) {
-          eng.capturedCount++;
           await photoSphereStorage.saveFrame({
             id: `frame_${target.id}_${Date.now()}`,
             sessionId: eng.sessionId,
@@ -595,21 +599,30 @@ export default function PhotoSphereCapture({
     }, 160);
   }, []);
 
-  // Render Unified Live 2D Stage (Fix 2 & Fix 3)
+  // Render Unified Live 2D Stage with 2-Layer Stacking:
+  // Layer 1 (webglCanvasRef, z-index: 1): Background panorama tiles
+  // Layer 3 (dotsCanvasRef, z-index: 30): Target dots overlay ON TOP of camera video!
   function renderLiveStage() {
     const eng = engineRef.current;
-    const canvas = webglCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const bgCanvas = webglCanvasRef.current;
+    const dotsCanvas = dotsCanvasRef.current;
+    if (!bgCanvas) return;
+    const bgCtx = bgCanvas.getContext('2d');
+    if (!bgCtx) return;
 
-    if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+    if (bgCanvas.width !== window.innerWidth || bgCanvas.height !== window.innerHeight) {
+      bgCanvas.width = window.innerWidth;
+      bgCanvas.height = window.innerHeight;
+    }
+    if (dotsCanvas && (dotsCanvas.width !== window.innerWidth || dotsCanvas.height !== window.innerHeight)) {
+      dotsCanvas.width = window.innerWidth;
+      dotsCanvas.height = window.innerHeight;
     }
 
-    const W = canvas.width;
-    const H = canvas.height;
+    const W = bgCanvas.width;
+    const H = bgCanvas.height;
+    const centerX = W / 2;
+    const centerY = H / 2;
 
     // Viewfinder box size: clamp(220, 42vw, 280) with 3:4 aspect ratio
     const boxWidth = Math.min(Math.max(220, W * 0.42), 280);
@@ -617,70 +630,95 @@ export default function PhotoSphereCapture({
     eng.currentBoxWidth = boxWidth;
     eng.currentBoxHeight = boxHeight;
 
-    // 1. Dark 3D stage background
-    ctx.fillStyle = '#0d0d0d';
-    ctx.fillRect(0, 0, W, H);
+    // ── LAYER 1: Background Panorama Canvas (z-index: 1) ──
+    bgCtx.fillStyle = '#0d0d0d';
+    bgCtx.fillRect(0, 0, W, H);
 
+    // Two-Phase Capture Start:
+    // Phase 1 (0% Captured — Anchor Shot t_0): anchorYaw continuously follows currentCameraYaw!
+    if (eng.capturedCount === 0 || eng.anchorYaw === null) {
+      eng.anchorYaw = eng.camYaw;
+    }
+
+    const anchorYaw = eng.anchorYaw !== null ? eng.anchorYaw : eng.camYaw;
     const curYaw = eng.camYaw;
     const curPitch = eng.camPitch;
 
-    // 2. Render all captured photo tiles at (screenX, screenY) with width boxWidth, height boxHeight (0° rotation)
+    // 2. Render all captured photo tiles on background canvas
     if (eng.capturedTiles && eng.capturedTiles.length > 0) {
       for (const tile of eng.capturedTiles) {
-        const proj = projectWorldToScreen(
+        const proj = projectTargetDot3D(
           tile.yaw,
           tile.pitch,
+          anchorYaw,
           curYaw,
           curPitch,
           W,
           H,
-          boxWidth,
-          boxHeight
+          boxWidth
         );
         if (!proj) continue;
 
         const x = Math.round(proj.screenX - boxWidth / 2);
         const y = Math.round(proj.screenY - boxHeight / 2);
 
-        ctx.save();
-        ctx.drawImage(tile.canvas, x, y, boxWidth, boxHeight);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(x, y, boxWidth, boxHeight);
-        ctx.restore();
+        bgCtx.save();
+        bgCtx.drawImage(tile.canvas, x, y, boxWidth, boxHeight);
+        bgCtx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+        bgCtx.lineWidth = 1.5;
+        bgCtx.strokeRect(x, y, boxWidth, boxHeight);
+        bgCtx.restore();
       }
     }
 
-    // 3. Render all uncaptured visible target dots using the exact same projection!
-    for (const target of eng.targets) {
-      if (target.captured) continue; // FIX 4: Permanently hide captured dots!
-      if (!target.visible) continue;
+    // ── LAYER 3: Target Dots Overlay Canvas (z-index: 30) ──
+    if (dotsCanvas) {
+      const dotsCtx = dotsCanvas.getContext('2d');
+      if (dotsCtx) {
+        dotsCtx.clearRect(0, 0, W, H);
 
-      const proj = projectWorldToScreen(
-        target.yaw,
-        target.pitch,
-        curYaw,
-        curPitch,
-        W,
-        H,
-        boxWidth,
-        boxHeight
-      );
-      if (!proj) continue;
+        for (const target of eng.targets) {
+          if (target.captured) continue;
+          if (!target.visible) continue;
 
-      const r = target.isGapDot ? 16 : 15; // 30px-32px diameter
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(proj.screenX, proj.screenY, r, 0, 2 * Math.PI);
-      ctx.fillStyle = target.isGapDot ? '#66b2ff' : '#aaaaaa';
-      ctx.fill();
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-      ctx.stroke();
+          // For first dot t_0 when capturedCount === 0: target.baseYaw = 0, target.basePitch = 0
+          const tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
+          const tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
 
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-      ctx.shadowBlur = 8;
-      ctx.restore();
+          const proj = projectTargetDot3D(
+            tYaw,
+            tPitch,
+            anchorYaw,
+            curYaw,
+            curPitch,
+            W,
+            H,
+            boxWidth
+          );
+          if (!proj) continue;
+
+          const distPx = Math.hypot(proj.screenX - centerX, proj.screenY - centerY);
+          const isAligned = distPx <= 24;
+
+          // Target dot rendering with visual snap when aligned inside center circle
+          dotsCtx.save();
+          dotsCtx.beginPath();
+          const drawX = isAligned ? centerX : proj.screenX;
+          const drawY = isAligned ? centerY : proj.screenY;
+          const r = isAligned ? 15 : (target.isGapDot ? 16 : 15);
+
+          dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+          dotsCtx.fillStyle = isAligned ? '#4285F4' : (target.isGapDot ? '#66b2ff' : '#aaaaaa');
+          dotsCtx.fill();
+          dotsCtx.lineWidth = 2.5;
+          dotsCtx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+          dotsCtx.stroke();
+
+          dotsCtx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+          dotsCtx.shadowBlur = 8;
+          dotsCtx.restore();
+        }
+      }
     }
   }
 
@@ -695,24 +733,27 @@ export default function PhotoSphereCapture({
     const centerX = viewportW / 2;
     const centerY = viewportH / 2;
     const boxWidth = eng.currentBoxWidth || 240;
-    const boxHeight = eng.currentBoxHeight || 320;
 
     let closest = null;
     let minScreenDist = Infinity;
     let closestProj = null;
+    const anchorYaw = (eng.capturedCount === 0 || eng.anchorYaw === null) ? eng.camYaw : eng.anchorYaw;
 
     for (const t of eng.targets) {
       if (t.captured || !t.visible) continue;
 
-      const proj = projectWorldToScreen(
-        t.yaw,
-        t.pitch,
+      const tYaw = t.baseYaw !== undefined ? t.baseYaw : t.yaw;
+      const tPitch = t.basePitch !== undefined ? t.basePitch : t.pitch;
+
+      const proj = projectTargetDot3D(
+        tYaw,
+        tPitch,
+        anchorYaw,
         eng.camYaw,
         eng.camPitch,
         viewportW,
         viewportH,
-        boxWidth,
-        boxHeight
+        boxWidth
       );
       if (!proj) continue;
 
@@ -728,9 +769,9 @@ export default function PhotoSphereCapture({
     const ringProgress = ringProgressRef.current;
     const banner = instructionBannerRef.current;
 
-    // Strict Hold-Steady Lock: dot inside center circle (< 22px) and angularVelocity < 15
-    const isInsideReticle = closest && minScreenDist < 22;
-    const isMovingTooFast = (eng.angularVelocity || 0) > 15;
+    // Strict Hold-Steady Lock: dot inside center circle (distPx <= 24)
+    const isInsideReticle = closest && minScreenDist <= 24;
+    const isMovingTooFast = (eng.angularVelocity || 0) > 25;
 
     if (isInsideReticle) {
       if (isMovingTooFast) {
@@ -744,15 +785,13 @@ export default function PhotoSphereCapture({
         eng.holdStartTime = timestamp;
       }
 
-      const progress = Math.min(1, (timestamp - eng.holdStartTime) / 350);
+      const elapsed = timestamp - eng.holdStartTime;
+      const progress = Math.min(1, elapsed / 350);
 
-      // Smoothly pull blue dot toward exact center (centerX, centerY)
+      // Snap blue dot to center
       if (centerBlueDot) {
         centerBlueDot.style.opacity = '1';
-        const pullFactor = Math.min(1, progress * 1.5);
-        const pullX = (closestProj.screenX - centerX) * (1 - pullFactor);
-        const pullY = (closestProj.screenY - centerY) * (1 - pullFactor);
-        centerBlueDot.style.transform = `translate(calc(-50% + ${pullX.toFixed(1)}px), calc(-50% + ${pullY.toFixed(1)}px)) scale(${0.7 + 0.3 * progress})`;
+        centerBlueDot.style.transform = 'translate(-50%, -50%) scale(1)';
       }
 
       if (ringProgress) {
@@ -773,10 +812,10 @@ export default function PhotoSphereCapture({
       if (banner) {
         if (eng.coveragePercent >= 99) {
           banner.textContent = '360° Complete! Tap the checkmark ✓';
-        } else if (eng.capturedTiles && eng.capturedTiles.length === 0) {
-          banner.textContent = 'To start, keep center dot inside circle';
+        } else if (eng.capturedCount === 0) {
+          banner.textContent = 'Hold phone upright to start (Pitch ≈ 0°)';
         } else {
-          banner.textContent = 'Aim camera at the next dot to unlock that surface';
+          banner.textContent = 'Aim camera at the next dot to capture';
         }
       }
     }
@@ -1131,19 +1170,27 @@ export default function PhotoSphereCapture({
     eng.masterPanoCtx.fillStyle = '#121212';
     eng.masterPanoCtx.fillRect(0, 0, CONFIG.PANO_WIDTH, CONFIG.PANO_HEIGHT);
 
-    // Setup 2D Live Stage Canvas
+    // Setup 2D Live Stage Canvas & Target Dots Overlay Canvas
     if (webglCanvasRef.current) {
       webglCanvasRef.current.width = window.innerWidth;
       webglCanvasRef.current.height = window.innerHeight;
     }
+    if (dotsCanvasRef.current) {
+      dotsCanvasRef.current.width = window.innerWidth;
+      dotsCanvasRef.current.height = window.innerHeight;
+    }
 
     initTargetLattice();
 
-    // Resize Handler
+    // Resize Handler for both background canvas and dots overlay
     const handleResize = () => {
       if (webglCanvasRef.current) {
         webglCanvasRef.current.width = window.innerWidth;
         webglCanvasRef.current.height = window.innerHeight;
+      }
+      if (dotsCanvasRef.current) {
+        dotsCanvasRef.current.width = window.innerWidth;
+        dotsCanvasRef.current.height = window.innerHeight;
       }
     };
     window.addEventListener('resize', handleResize);
@@ -1178,24 +1225,23 @@ export default function PhotoSphereCapture({
       window.addEventListener('pointerup', onPointerUp);
     }
 
-    // Gyroscope DeviceOrientation Binding with Horizon-Locked ZXY Looking Direction (Fix 1)
+    // Gyroscope DeviceOrientation Binding with 3D Rotation Matrix Projection (Fix 3)
     const onDeviceOrientation = (e) => {
       if (e.alpha === null || e.beta === null) return;
       eng.useGyro = true;
 
-      // Extract clean, horizon-locked yaw and pitch without wrist roll (gamma)
-      const { yaw: rawYaw, pitch: rawPitch } = getStabilizedYawPitch(e.alpha, e.beta, e.gamma);
+      // Extract clean 3D camera orientation basis without wrist roll
+      const { yawDeg, pitchDeg } = getCameraBasisFromDeviceOrientation(e.alpha, e.beta, e.gamma);
 
       // Lock initial reference orientation when opening capture mode
       if (eng.initialYaw === null) {
-        eng.initialYaw = rawYaw;
-        eng.camYaw = 0;
-        eng.camPitch = rawPitch;
+        eng.initialYaw = yawDeg;
+        eng.camYaw = yawDeg;
+        eng.camPitch = pitchDeg;
       }
 
-      // Compass-free relative yaw anchored to starting frame
-      const targetYaw = ((rawYaw - eng.initialYaw + 540) % 360) - 180;
-      const targetPitch = THREE.MathUtils.clamp(rawPitch, -89, 89);
+      const targetYaw = yawDeg;
+      const targetPitch = THREE.MathUtils.clamp(pitchDeg, -89, 89);
 
       // Track movement speed (deg/sec) with dt measurement to protect against jerky motion
       const now = performance.now();
@@ -1451,7 +1497,7 @@ export default function PhotoSphereCapture({
         To start, keep center dot inside circle
       </div>
 
-      {/* The centered white-bordered camera viewfinder box (exact distance from video & screenshot) */}
+      {/* Layer 2: The centered white-bordered camera viewfinder box (z-index: 10) */}
       <div
         className="camera-viewfinder-box"
         style={{
@@ -1465,7 +1511,7 @@ export default function PhotoSphereCapture({
           boxShadow: '0 0 24px rgba(0, 0, 0, 0.6)',
           borderRadius: '4px',
           overflow: 'hidden',
-          zIndex: 5,
+          zIndex: 10,
           pointerEvents: 'none',
           backgroundColor: '#0d0d0d',
         }}
@@ -1483,63 +1529,77 @@ export default function PhotoSphereCapture({
             pointerEvents: 'none',
           }}
         />
+      </div>
 
-        {/* Fixed center target ring inside the viewfinder box */}
+      {/* Layer 3: Target Dots Overlay Canvas (z-index: 30) - ALWAYS ON TOP OF VIDEO */}
+      <canvas
+        ref={dotsCanvasRef}
+        className="target-dots-overlay"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          width: '100vw',
+          height: '100vh',
+          pointerEvents: 'none',
+          zIndex: 30,
+        }}
+      />
+
+      {/* Layer 4: Center Reticle Ring & Snap Indicator (z-index: 35) */}
+      <div
+        className="center-reticle-ring"
+        style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          width: '54px',
+          height: '54px',
+          transform: 'translate(-50%, -50%)',
+          border: '2.5px solid rgba(255, 255, 255, 0.9)',
+          borderRadius: '50%',
+          pointerEvents: 'none',
+          zIndex: 35,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxSizing: 'border-box',
+        }}
+      >
+        <svg
+          width="54"
+          height="54"
+          viewBox="0 0 54 54"
+          style={{ position: 'absolute', transform: 'rotate(-90deg)', zIndex: 2 }}
+        >
+          <circle
+            ref={ringProgressRef}
+            cx="27"
+            cy="27"
+            r="22"
+            fill="none"
+            stroke="#4285F4"
+            strokeWidth="4"
+            strokeDasharray={String(RETICLE_CIRCUMFERENCE)}
+            strokeDashoffset={String(RETICLE_CIRCUMFERENCE)}
+            strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 0.05s linear' }}
+          />
+        </svg>
         <div
-          className="center-reticle-ring"
+          ref={centerBlueDotRef}
+          id="center-blue-dot"
           style={{
             position: 'absolute',
-            top: '50%',
-            left: '50%',
-            width: '54px',
-            height: '54px',
-            transform: 'translate(-50%, -50%)',
-            border: '2.5px solid rgba(255, 255, 255, 0.9)',
+            width: '30px',
+            height: '30px',
             borderRadius: '50%',
-            pointerEvents: 'none',
-            zIndex: 10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxSizing: 'border-box',
+            background: '#4285F4',
+            opacity: 0,
+            transform: 'scale(0.4)',
+            transition: 'opacity 0.14s ease, transform 0.14s ease',
+            zIndex: 1,
           }}
-        >
-          <svg
-            width="54"
-            height="54"
-            viewBox="0 0 54 54"
-            style={{ position: 'absolute', transform: 'rotate(-90deg)', zIndex: 2 }}
-          >
-            <circle
-              ref={ringProgressRef}
-              cx="27"
-              cy="27"
-              r="22"
-              fill="none"
-              stroke="#4285F4"
-              strokeWidth="4"
-              strokeDasharray={String(RETICLE_CIRCUMFERENCE)}
-              strokeDashoffset={String(RETICLE_CIRCUMFERENCE)}
-              strokeLinecap="round"
-              style={{ transition: 'stroke-dashoffset 0.05s linear' }}
-            />
-          </svg>
-          <div
-            ref={centerBlueDotRef}
-            id="center-blue-dot"
-            style={{
-              position: 'absolute',
-              width: '30px',
-              height: '30px',
-              borderRadius: '50%',
-              background: '#4285F4',
-              opacity: 0,
-              transform: 'scale(0.4)',
-              transition: 'opacity 0.14s ease, transform 0.14s ease',
-              zIndex: 1,
-            }}
-          />
-        </div>
+        />
       </div>
 
       {/* Shutter Flash Animation */}

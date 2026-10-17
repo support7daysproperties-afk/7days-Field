@@ -826,3 +826,100 @@ export function projectWorldToScreen(
   return { screenX, screenY, deltaYaw, deltaPitch };
 }
 
+/**
+ * Convert W3C DeviceOrientation (alpha, beta, gamma) into a 3x3 Rotation Matrix (Z-X'-Y'' intrinsic order)
+ */
+export function getCameraBasisFromDeviceOrientation(alphaDeg, betaDeg, gammaDeg) {
+  const rad = Math.PI / 180;
+  const a = (alphaDeg || 0) * rad;
+  const b = (betaDeg !== null && betaDeg !== undefined ? betaDeg : 90) * rad;
+  const g = (gammaDeg || 0) * rad;
+
+  const cA = Math.cos(a), sA = Math.sin(a);
+  const cB = Math.cos(b), sB = Math.sin(b);
+  const cG = Math.cos(g), sG = Math.sin(g);
+
+  // Device axes in World Coordinates (East = +X, North = +Y, Up = +Z)
+  // Right vector of phone screen (+X_device):
+  const rx = cA * cG - sA * sB * sG;
+  const ry = sA * cG + cA * sB * sG;
+  const rz = -cB * sG;
+
+  // Up vector of phone screen (+Y_device):
+  const ux = -sA * cB;
+  const uy = cA * cB;
+  const uz = sB;
+
+  // Forward look vector of Rear Camera (-Z_device):
+  const fx = -cA * sG - sA * sB * cG;
+  const fy = -sA * sG + cA * sB * cG;
+  const fz = -cB * cG;
+
+  // Extract world Pitch (-90° straight down, 0° horizon, +90° straight up)
+  const pitchDeg = Math.asin(Math.max(-1, Math.min(1, fz))) / rad;
+
+  // Extract world Yaw (0° to 360° clockwise when looking from above: atan2(East, North))
+  let yawDeg = Math.atan2(fx, fy) / rad;
+  if (yawDeg < 0) yawDeg += 360;
+
+  return { yawDeg, pitchDeg, right: [rx, ry, rz], up: [ux, uy, uz], forward: [fx, fy, fz] };
+}
+
+/**
+ * 3D Vector Dot-Product Perspective Projection (glued to real world, roll-stabilized)
+ * Used for both target dots and captured photo tiles.
+ */
+export function projectTargetDot3D(
+  targetYaw,
+  targetPitch,
+  anchorYaw,
+  smoothedYaw,
+  smoothedPitch,
+  screenWidth,
+  screenHeight,
+  viewfinderBoxWidth
+) {
+  // 1. Convert target (yaw, pitch) relative to anchorYaw into a 3D World Unit Vector:
+  //    (World: +X = East/Right, +Y = North/Forward at yaw=0, +Z = Up)
+  const worldYawRad = (((anchorYaw || 0) + targetYaw) * Math.PI) / 180;
+  const worldPitchRad = (targetPitch * Math.PI) / 180;
+
+  const tx = Math.cos(worldPitchRad) * Math.sin(worldYawRad);
+  const ty = Math.cos(worldPitchRad) * Math.cos(worldYawRad);
+  const tz = Math.sin(worldPitchRad);
+
+  // 2. Project target vector onto a Roll-Stabilized Camera Frame:
+  const camYawRad = (smoothedYaw * Math.PI) / 180;
+  const camPitchRad = (smoothedPitch * Math.PI) / 180;
+
+  // Camera Forward vector:
+  const cfx = Math.cos(camPitchRad) * Math.sin(camYawRad);
+  const cfy = Math.cos(camPitchRad) * Math.cos(camYawRad);
+  const cfz = Math.sin(camPitchRad);
+
+  // Horizon-locked Camera Right vector (always parallel to the floor, roll = 0!):
+  const crx = Math.cos(camYawRad);
+  const cry = -Math.sin(camYawRad);
+  const crz = 0;
+
+  // Horizon-locked Camera Up vector (Forward × Right):
+  const cux = -Math.sin(camPitchRad) * Math.sin(camYawRad);
+  const cuy = -Math.sin(camPitchRad) * Math.cos(camYawRad);
+  const cuz = Math.cos(camPitchRad);
+
+  // Dot product into camera space:
+  const x_cam = tx * crx + ty * cry + tz * crz; // + is Right on screen
+  const y_cam = tx * cux + ty * cuy + tz * cuz; // + is Up on screen
+  const z_cam = tx * cfx + ty * cfy + tz * cfz; // + is In Front of camera
+
+  // 3. Cull if behind camera:
+  if (z_cam <= 0.15) return null;
+
+  // 4. Convert to Screen Coordinates (where viewfinderBoxWidth = 42° horizontal FOV):
+  const focalPx = (viewfinderBoxWidth / 2) / Math.tan((21 * Math.PI) / 180);
+  const screenX = (screenWidth / 2) + (x_cam / z_cam) * focalPx;
+  const screenY = (screenHeight / 2) - (y_cam / z_cam) * focalPx;
+
+  return { screenX, screenY, x_cam, y_cam, z_cam, focalPx };
+}
+
