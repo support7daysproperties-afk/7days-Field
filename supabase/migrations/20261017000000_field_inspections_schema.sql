@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_field_supervisors_auth_user_id ON public.field_su
 -- Note: field_inspections references supervisor_id (field_supervisors.id), NOT auth_user_id directly.
 CREATE TABLE IF NOT EXISTS public.field_inspections (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  property_id uuid,
+  property_id uuid DEFAULT gen_random_uuid(),
   supervisor_id uuid REFERENCES public.field_supervisors(id) ON DELETE SET NULL,
   task_id uuid DEFAULT gen_random_uuid(),
   status inspection_status DEFAULT 'COMPLETED',

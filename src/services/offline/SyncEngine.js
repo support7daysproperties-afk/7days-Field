@@ -510,7 +510,9 @@ class SyncEngine {
 
     const serverId = existingServerId || generateUUID();
 
-    const propertyId = isValidUUID(inspection.property_id) ? inspection.property_id : null;
+    const existingPropertyId = (isValidUUID(inspection.property_id) && inspection.property_id) || null;
+    const propertyId = existingPropertyId || generateUUID();
+
     const existingTaskId = (isValidUUID(inspection.task_id) && inspection.task_id) ||
                            (isValidUUID(inspection.field_task_id) && inspection.field_task_id) ||
                            null;
@@ -544,15 +546,17 @@ class SyncEngine {
 
     const confirmedServerId = data?.id || serverId;
 
-    // Persist confirmed server ID and task ID locally so subsequent retries are strictly idempotent
+    // Persist confirmed server ID, task ID, and property ID locally so subsequent retries are strictly idempotent
     inspection.server_id = confirmedServerId;
     inspection.supabase_id = confirmedServerId;
     inspection.task_id = taskId;
+    inspection.property_id = propertyId;
     await InspectionRepository.saveInspection({
       ...inspection,
       server_id: confirmedServerId,
       supabase_id: confirmedServerId,
       task_id: taskId,
+      property_id: propertyId,
     });
 
     return confirmedServerId;

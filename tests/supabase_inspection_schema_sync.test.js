@@ -168,10 +168,14 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     expect(sentRecord.remarks).toBe('Site clear and verified');
     expect(sentRecord.checklist).toEqual({ 'Road accessible': true, 'Meter checked': true });
 
-    // task_id must NEVER be null (violates PostgreSQL not-null constraint)
+    // task_id and property_id must NEVER be null (violates PostgreSQL not-null constraints)
     expect(sentRecord.task_id).toBeDefined();
     expect(sentRecord.task_id).not.toBeNull();
     expect(isValidUUID(sentRecord.task_id)).toBe(true);
+
+    expect(sentRecord.property_id).toBeDefined();
+    expect(sentRecord.property_id).not.toBeNull();
+    expect(isValidUUID(sentRecord.property_id)).toBe(true);
 
     // Validate enum constraints
     expect(DB_ENUMS.sync_status).toContain(sentRecord.sync_status);
@@ -183,8 +187,8 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     }
   });
 
-  // 2. Server identity & task_id resolution & persistence: generates / resolves UUID and saves to local inspection record
-  it('resolves server UUID identity and persists server_id and task_id locally for idempotent retries', async () => {
+  // 2. Server identity, task_id & property_id resolution & persistence: generates / resolves UUID and saves to local inspection record
+  it('resolves server UUID identity and persists server_id, task_id, and property_id locally for idempotent retries', async () => {
     const inspectionId = 'INS-20261017-291';
     mockInspections.set(inspectionId, {
       id: inspectionId,
@@ -208,6 +212,11 @@ describe('Supabase field_inspections Schema Mismatch & Identity Sync Tests', () 
     expect(updatedInspection.task_id).toBeDefined();
     expect(isValidUUID(updatedInspection.task_id)).toBe(true);
     expect(updatedInspection.task_id).toBe(capturedUpsertPayloads[0].task_id);
+
+    // Verify property_id is resolved to a valid UUID and persisted locally
+    expect(updatedInspection.property_id).toBeDefined();
+    expect(isValidUUID(updatedInspection.property_id)).toBe(true);
+    expect(updatedInspection.property_id).toBe(capturedUpsertPayloads[0].property_id);
   });
 
   // 3. Existing inspection retry without duplicates: uses onConflict: 'id' with server_id
