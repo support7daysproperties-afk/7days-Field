@@ -4,6 +4,7 @@ import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User,
 import FieldCamera from '../components/FieldCamera';
 import VideoCamera from '../components/VideoCamera';
 import PhotoSphereCapture from '../features/photo-sphere/PhotoSphereCapture';
+import InteractivePhotoSphereViewer from '../features/photo-sphere/components/InteractivePhotoSphereViewer';
 import VRViewer from '../features/photo-sphere/components/VRViewer';
 import MotionSensorViewer from '../features/photo-sphere/components/MotionSensorViewer';
 import SignaturePad from '../components/SignaturePad';
@@ -2219,33 +2220,13 @@ export default function InspectionSession() {
               style={{ width: '100%', height: '100%', objectFit: 'contain' }} 
             />
           ) : evidenceList[selectedMediaIndex].mediaType === 'photo_sphere' ? (
-            <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-              <img key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage} alt="Photo Sphere" style={{ width: '100%', maxHeight: '75vh', objectFit: 'contain' }} />
-              
-              {/* Overlay with 2 prominent viewing buttons */}
-              <div style={{ position: 'absolute', bottom: '32px', display: 'flex', gap: '16px', zIndex: 10001 }}>
-                <button
-                  className="btn"
-                  style={{ backgroundColor: '#7c3aed', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '24px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-                  onClick={() => {
-                    const imgUrl = evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage;
-                    setViewerMode({ mode: 'vr', url: imgUrl });
-                  }}
-                >
-                  VR View
-                </button>
-                <button
-                  className="btn"
-                  style={{ backgroundColor: '#0284c7', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '24px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-                  onClick={() => {
-                    const imgUrl = evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage;
-                    setViewerMode({ mode: 'motion', url: imgUrl });
-                  }}
-                >
-                  Motion Sensor View
-                </button>
-              </div>
-            </div>
+            <InteractivePhotoSphereViewer
+              imageUrl={evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage}
+              title="360° Photo Sphere Evidence"
+              subtitle={evidenceList[selectedMediaIndex].title || 'Inspection 360 View'}
+              isEvidenceView={true}
+              onClose={() => setSelectedMediaIndex(null)}
+            />
           ) : (
             <img key={evidenceList[selectedMediaIndex].id} src={evidenceList[selectedMediaIndex].geotaggedImage || evidenceList[selectedMediaIndex].originalImage} alt="Fullscreen Evidence" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           )}

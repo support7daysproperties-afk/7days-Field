@@ -20,6 +20,7 @@ public class PhotoSphereSensorPlugin extends Plugin implements SensorEventListen
     private final float[] quaternion = new float[4];
     private final float[] rotationMatrix = new float[16];
     private final float[] orientation = new float[3];
+    private double lastStableYaw = 0.0;
 
     @Override
     public void load() {
@@ -75,8 +76,32 @@ public class PhotoSphereSensorPlugin extends Plugin implements SensorEventListen
             // quaternion is [w, x, y, z]
 
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
-            SensorManager.getOrientation(rotationMatrix, orientation);
-            // orientation is [azimuth (yaw), pitch, roll] in radians
+
+            // Compute camera forward look vector (-Z of device coordinate system) in Earth frame
+            // East = +X, North = +Y, Up = +Z:
+            float fx = -rotationMatrix[2];
+            float fy = -rotationMatrix[6];
+            float fz = -rotationMatrix[10];
+
+            // Pitch is elevation angle above the horizon (-90° Nadir to +90° Zenith):
+            double pitchRad = Math.asin(Math.max(-1.0f, Math.min(1.0f, fz)));
+            double pitchDeg = Math.toDegrees(pitchRad);
+
+            // Horizontal distance of look vector:
+            double horizontalDist = Math.hypot(fx, fy);
+            double yawDeg;
+            if (horizontalDist > 0.12) { // Beyond polar singularity
+                double yawRad = Math.atan2(fx, fy);
+                yawDeg = Math.toDegrees(yawRad);
+                if (yawDeg < 0) {
+                    yawDeg += 360.0;
+                }
+                lastStableYaw = yawDeg;
+            } else {
+                // Near zenith (+90°) or nadir (-90°): lock yaw to last known stable heading
+                // This completely eliminates gimbal lock rotation when looking straight up or down!
+                yawDeg = lastStableYaw;
+            }
 
             JSObject data = new JSObject();
             data.put("qx", (double) quaternion[1]);
@@ -84,13 +109,11 @@ public class PhotoSphereSensorPlugin extends Plugin implements SensorEventListen
             data.put("qz", (double) quaternion[3]);
             data.put("qw", (double) quaternion[0]);
 
-            double yawDeg = Math.toDegrees(orientation[0]);
-            double pitchDeg = Math.toDegrees(orientation[1]);
-            double rollDeg = Math.toDegrees(orientation[2]);
-
             data.put("yaw", yawDeg);
             data.put("pitch", pitchDeg);
-            data.put("roll", rollDeg);
+            data.put("fx", (double) fx);
+            data.put("fy", (double) fy);
+            data.put("fz", (double) fz);
             data.put("timestamp", System.currentTimeMillis());
 
             notifyListeners("sensorOrientation", data);

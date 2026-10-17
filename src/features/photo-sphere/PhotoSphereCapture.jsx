@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
-import { X, RefreshCw, Undo2, Check, Download, Globe, Orbit, Image as ImageIcon } from 'lucide-react';
+import { X, RefreshCw, Undo2, Check, Download, Globe, Orbit, Image as ImageIcon, ArrowLeft, Compass, Eye, Glasses, Layers } from 'lucide-react';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { photoSphereStorage } from './storage/PhotoSphereStorage';
+import useBackHandler from '../../hooks/useBackHandler';
+import InteractivePhotoSphereViewer from './components/InteractivePhotoSphereViewer';
 
 const PhotoSphereSensor = registerPlugin('PhotoSphereSensor');
 
@@ -66,6 +68,22 @@ export default function PhotoSphereCapture({
   const [needsGyroPermission, setNeedsGyroPermission] = useState(
     () => typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'
   );
+
+  // Global back handler for Photo Sphere capture (priority 90)
+  useBackHandler('photo_sphere_capture', () => {
+    if (showResultModal) {
+      setShowResultModal(false);
+      return true;
+    }
+    if (engineRef.current?.capturedCount > 0) {
+      if (window.confirm('Exit Photo Sphere capture? Unsaved progress will be discarded.')) {
+        onClose();
+      }
+      return true;
+    }
+    onClose();
+    return true;
+  }, 90);
 
   // Internal Engine State Reference
   const engineRef = useRef({
@@ -677,6 +695,16 @@ export default function PhotoSphereCapture({
     setCanUndo(true);
     setCanFinish(true);
 
+    const isComplete = eng.capturedCount >= 34 || (eng.targets && eng.targets.length > 0 && eng.targets.every((t) => t.captured));
+    if (isComplete) {
+      if (instructionBannerRef.current) {
+        instructionBannerRef.current.textContent = 'Sphere Sealed! Generating 360 View...';
+      }
+      setTimeout(() => {
+        handleOpenResults();
+      }, 450);
+    }
+
     setTimeout(() => {
       eng.isCapturing = false;
     }, 180);
@@ -716,11 +744,16 @@ export default function PhotoSphereCapture({
       eng.camera.aspect = W / H;
       eng.camera.updateProjectionMatrix();
 
-      // Horizon-locked 3D Camera Rotation (zero roll!)
-      eng.camera.rotation.order = 'YXZ';
-      eng.camera.rotation.y = -THREE.MathUtils.degToRad(relYaw);
-      eng.camera.rotation.x = THREE.MathUtils.degToRad(eng.camPitch);
-      eng.camera.rotation.z = 0;
+      // Horizon-locked 3D Camera Rotation via Quaternions (Gimbal-lock Free at Poles!)
+      const qYaw = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        -THREE.MathUtils.degToRad(relYaw)
+      );
+      const qPitch = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(1, 0, 0),
+        THREE.MathUtils.degToRad(eng.camPitch)
+      );
+      eng.camera.quaternion.copy(qYaw).multiply(qPitch);
 
       eng.renderer.setSize(W, H, false);
       eng.renderer.render(eng.scene, eng.camera);
@@ -828,9 +861,14 @@ export default function PhotoSphereCapture({
     const ringProgress = ringProgressRef.current;
     const banner = instructionBannerRef.current;
 
-    // Strict Hold-Steady Lock: dot inside center circle (distPx <= 26)
-    const isInsideReticle = closest && minScreenDist <= 26;
-    const isMovingTooFast = (eng.angularVelocity || 0) > 28;
+    // Polar Dot Snapping: overhead (zenith +90°) and ground (nadir -90°) dots have slightly wider
+    // catchment radius and velocity tolerance matching Google Camera LightCycle native decompiled app
+    const isPolarDot = closest && Math.abs(closest.pitch) >= 70;
+    const reticleRadiusPx = isPolarDot ? 38 : 28;
+    const maxVelocity = isPolarDot ? 40 : 28;
+
+    const isInsideReticle = closest && minScreenDist <= reticleRadiusPx;
+    const isMovingTooFast = (eng.angularVelocity || 0) > maxVelocity;
 
     if (isInsideReticle) {
       if (isMovingTooFast) {
@@ -1174,16 +1212,7 @@ export default function PhotoSphereCapture({
 
   // Open Results Screen
   const handleOpenResults = () => {
-    const eng = engineRef.current;
-    if (equirectPreviewCanvasRef.current && eng.masterPanoCanvas) {
-      const eqCtx = equirectPreviewCanvasRef.current.getContext('2d');
-      eqCtx.drawImage(eng.masterPanoCanvas, 0, 0);
-    }
-    generateTinyPlanet();
     setShowResultModal(true);
-    setTimeout(() => {
-      initInteractive360Viewer();
-    }, 50);
   };
 
   // Save Final Evidence & Close
@@ -1349,7 +1378,7 @@ export default function PhotoSphereCapture({
       }
 
       const targetYaw = yawDeg;
-      const targetPitch = THREE.MathUtils.clamp(pitchDeg, -89, 89);
+      const targetPitch = THREE.MathUtils.clamp(pitchDeg, -90, 90);
 
       // Track movement speed (deg/sec) with dt measurement to protect against jerky motion
       const now = performance.now();
@@ -1381,7 +1410,7 @@ export default function PhotoSphereCapture({
         PhotoSphereSensor.addListener('sensorOrientation', (data) => {
           if (!eng.camera || !data) return;
           const targetYaw = ((data.yaw % 360) + 360) % 360;
-          const targetPitch = Math.max(-85, Math.min(85, data.pitch));
+          const targetPitch = Math.max(-90, Math.min(90, data.pitch));
 
           const now = performance.now();
           if (eng.lastOrientTime) {
@@ -1788,280 +1817,15 @@ export default function PhotoSphereCapture({
         </button>
       </div>
 
-      {/* Result Viewer Modal */}
+      {/* Interactive 360 Output Viewer Matching Real Work Output */}
       {showResultModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(10, 10, 10, 0.94)',
-            backdropFilter: 'blur(12px)',
-            zIndex: 90,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 'max(10px, env(safe-area-inset-top, 10px)) 10px max(14px, env(safe-area-inset-bottom, 14px)) 10px',
-          }}
-        >
-          <div
-            style={{
-              background: '#181818',
-              border: '1px solid rgba(255, 255, 255, 0.15)',
-              borderRadius: '16px',
-              width: '100%',
-              maxWidth: '960px',
-              height: '100%',
-              maxHeight: 'min(92dvh, 850px)',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-            }}
-          >
-            {/* Header */}
-            <div
-              style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid #2c2c2c',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '8px',
-              }}
-            >
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 600, margin: 0 }}>Stitched 360° Photo Sphere</h3>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '6px',
-                  overflowX: 'auto',
-                  WebkitOverflowScrolling: 'touch',
-                  scrollbarWidth: 'none',
-                }}
-              >
-                <button
-                  onClick={() => {
-                    setActiveResultTab('360');
-                    setTimeout(() => initInteractive360Viewer(), 50);
-                  }}
-                  style={{
-                    background: activeResultTab === '360' ? '#1a73e8' : '#2a2a2a',
-                    color: '#fff',
-                    border: 'none',
-                    padding: '7px 12px',
-                    borderRadius: '8px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    whiteSpace: 'nowrap',
-                    touchAction: 'manipulation',
-                  }}
-                >
-                  <Globe size={15} /> 360°
-                </button>
-                <button
-                  onClick={() => setActiveResultTab('planet')}
-                  style={{
-                    background: activeResultTab === 'planet' ? '#1a73e8' : '#2a2a2a',
-                    color: '#fff',
-                    border: 'none',
-                    padding: '7px 12px',
-                    borderRadius: '8px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    whiteSpace: 'nowrap',
-                    touchAction: 'manipulation',
-                  }}
-                >
-                  <Orbit size={15} /> Tiny Planet
-                </button>
-                <button
-                  onClick={() => setActiveResultTab('equirect')}
-                  style={{
-                    background: activeResultTab === 'equirect' ? '#1a73e8' : '#2a2a2a',
-                    color: '#fff',
-                    border: 'none',
-                    padding: '7px 12px',
-                    borderRadius: '8px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    whiteSpace: 'nowrap',
-                    touchAction: 'manipulation',
-                  }}
-                >
-                  <ImageIcon size={15} /> 2:1 Pano
-                </button>
-              </div>
-            </div>
-
-            {/* Viewer Body */}
-            <div
-              style={{
-                flex: 1,
-                position: 'relative',
-                background: '#0d0d0d',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden',
-                minHeight: '260px',
-              }}
-            >
-              <div
-                ref={interactiveViewerContainerRef}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  display: activeResultTab === '360' ? 'block' : 'none',
-                  touchAction: 'none',
-                }}
-              />
-              <canvas
-                ref={planetCanvasRef}
-                width={960}
-                height={960}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
-                  display: activeResultTab === 'planet' ? 'block' : 'none',
-                }}
-              />
-              <canvas
-                ref={equirectPreviewCanvasRef}
-                width={CONFIG.PANO_WIDTH}
-                height={CONFIG.PANO_HEIGHT}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
-                  display: activeResultTab === 'equirect' ? 'block' : 'none',
-                }}
-              />
-            </div>
-
-            {/* Footer */}
-            <div
-              style={{
-                padding: '12px 16px',
-                borderTop: '1px solid #2c2c2c',
-                display: 'flex',
-                gap: '8px',
-                justifyContent: 'flex-end',
-                flexWrap: 'wrap',
-                maxHeight: '38vh',
-                overflowY: 'auto',
-              }}
-            >
-              <button
-                onClick={() => {
-                  const canvas = planetCanvasRef.current;
-                  if (!canvas) return;
-                  const link = document.createElement('a');
-                  link.download = `TinyPlanet_360_${Date.now()}.jpg`;
-                  link.href = canvas.toDataURL('image/jpeg', 0.95);
-                  link.click();
-                }}
-                style={{
-                  background: '#2f2f2f',
-                  color: '#fff',
-                  border: '1px solid rgba(255, 255, 255, 0.14)',
-                  padding: '9px 14px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  touchAction: 'manipulation',
-                  flex: '1 1 auto',
-                }}
-              >
-                <Download size={15} /> Tiny Planet
-              </button>
-
-              <button
-                onClick={() => {
-                  const eng = engineRef.current;
-                  if (!eng.masterPanoCanvas) return;
-                  const link = document.createElement('a');
-                  link.download = `PhotoSphere_360_${Date.now()}.jpg`;
-                  link.href = eng.masterPanoCanvas.toDataURL('image/jpeg', 0.95);
-                  link.click();
-                }}
-                style={{
-                  background: '#2f2f2f',
-                  color: '#fff',
-                  border: '1px solid rgba(255, 255, 255, 0.14)',
-                  padding: '9px 14px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  touchAction: 'manipulation',
-                  flex: '1 1 auto',
-                }}
-              >
-                <Download size={15} /> 360° Photo
-              </button>
-
-              <button
-                onClick={handleSaveEvidence}
-                style={{
-                  background: '#1a73e8',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '9px 16px',
-                  borderRadius: '10px',
-                  fontSize: '0.84rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  boxShadow: '0 0 16px rgba(26, 115, 232, 0.5)',
-                  touchAction: 'manipulation',
-                  flex: '2 1 auto',
-                }}
-              >
-                <Check size={17} /> Save Evidence
-              </button>
-
-              <button
-                onClick={() => setShowResultModal(false)}
-                style={{
-                  background: '#242424',
-                  color: '#ccc',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
-                  padding: '9px 14px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  cursor: 'pointer',
-                  touchAction: 'manipulation',
-                  flex: '1 1 auto',
-                  textAlign: 'center',
-                }}
-              >
-                Keep Capturing
-              </button>
-            </div>
-          </div>
-        </div>
+        <InteractivePhotoSphereViewer
+          sourceCanvas={engineRef.current?.masterPanoCanvas}
+          title="360° Photo Sphere"
+          subtitle={`${coveragePercent}% Coverage • ${engineRef.current?.capturedCount || 34} Photos`}
+          onSaveEvidence={handleSaveEvidence}
+          onClose={() => setShowResultModal(false)}
+        />
       )}
 
       {/* Alignment CSS Animations */}
