@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import { supabase } from '../lib/supabase';
 import GoogleDriveService, { DRIVE_STATUS } from '../services/GoogleDriveService';
 import DriveAuthRepository from '../services/offline/DriveAuthRepository';
+import DatabaseService from '../services/offline/DatabaseService';
 import SyncEngine from '../services/offline/SyncEngine';
 
 const AuthContext = createContext();
@@ -115,10 +116,22 @@ export function AuthProvider({ children }) {
       setLoading(false);
       // Clear in-memory token state
       GoogleDriveService.setTokenData({ accessToken: null });
+      await DatabaseService.setCurrentUser(null);
       return;
     }
 
     try {
+      // Check if a different user was previously active on this device
+      const prevUserId = localStorage.getItem('7days_active_user_id');
+      if (prevUserId && prevUserId !== sessionUser.id) {
+        // Clear previous user's in-memory token & drive connection
+        GoogleDriveService.setTokenData({ accessToken: null });
+        GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
+      }
+
+      // Activate user-scoped database partition
+      await DatabaseService.setCurrentUser(sessionUser.id);
+
       const { data, error } = await supabase
         .from('field_supervisors')
         .select('*')
@@ -156,6 +169,7 @@ export function AuthProvider({ children }) {
         setUser(null);
         setAuthenticated(false);
         setLoading(false);
+        await DatabaseService.setCurrentUser(null);
         return;
       }
 
@@ -235,6 +249,8 @@ export function AuthProvider({ children }) {
         setAuthenticated(false);
         setLoading(false);
         GoogleDriveService.setTokenData({ accessToken: null });
+        GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
+        DatabaseService.setCurrentUser(null).catch(() => {});
         return;
       }
       
@@ -309,15 +325,21 @@ export function AuthProvider({ children }) {
    * so on next login their connection can be restored seamlessly.
    */
   const signOut = async () => {
+    const activeUserId = currentUserRef.current?.id;
     localStorage.removeItem('pending_drive_onboarding');
     localStorage.removeItem('drive_onboarding_done');
-    if (currentUserRef.current?.id) {
-      localStorage.removeItem(`supervisor_profile_${currentUserRef.current.id}`);
+    if (activeUserId) {
+      localStorage.removeItem(`supervisor_profile_${activeUserId}`);
+      localStorage.removeItem(`drive_onboarding_done_${activeUserId}`);
+      localStorage.removeItem(`pending_drive_onboarding_${activeUserId}`);
     }
+    localStorage.removeItem('7days_active_user_id');
     GoogleDriveService.setTokenData({ accessToken: null });
+    GoogleDriveService.setStatus(DRIVE_STATUS.DISCONNECTED);
     currentUserRef.current = null;
     setUser(null);
     setAuthenticated(false);
+    await DatabaseService.setCurrentUser(null);
     await supabase.auth.signOut();
   };
 

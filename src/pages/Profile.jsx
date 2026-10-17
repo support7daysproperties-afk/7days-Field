@@ -1,14 +1,35 @@
-import { User, LogOut, Smartphone, HardDrive, CheckCircle2, XCircle, ChevronRight } from 'lucide-react';
+import { useState } from 'react';
+import { User, LogOut, Smartphone, HardDrive, CheckCircle2, XCircle, ChevronRight, Trash2, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import DatabaseService from '../services/offline/DatabaseService';
 
 export default function Profile() {
   const navigate = useNavigate();
   const { user, signOut, driveAuthorized, driveStatus, driveEmail } = useAuth();
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   
   const name = user?.supervisorProfile?.name || 'Field Supervisor';
   const email = user?.email || 'N/A';
   const phone = user?.supervisorProfile?.phone || 'Not provided';
+
+  const handleResetCache = async () => {
+    setIsResetting(true);
+    try {
+      await DatabaseService.clearCurrentDatabase();
+      // Re-initialize empty partition
+      await DatabaseService.init();
+      setShowResetConfirm(false);
+      window.location.reload();
+    } catch (err) {
+      console.error('Failed to clear local cache:', err);
+      alert('Failed to reset storage. Please try again.');
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   return (
     <div className="profile-page pb-xl" style={{ backgroundColor: 'var(--bg-color)', minHeight: '100vh', padding: '16px', paddingBottom: '100px' }}>
       <header className="mb-lg text-center mt-md">
@@ -97,13 +118,32 @@ export default function Profile() {
         <div className="flex justify-between py-sm" style={{ borderBottom: '1px solid var(--border-color)', fontSize: '14px' }}>
           <div className="flex items-center gap-sm">
             <Smartphone size={16} style={{ color: 'var(--text-secondary)' }} />
-            <span style={{ color: 'var(--text-secondary)' }}>Local Cache (IndexedDB)</span>
+            <span style={{ color: 'var(--text-secondary)' }}>Storage Partition</span>
           </div>
-          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Active (Offline Ready)</span>
+          <span style={{ fontWeight: 600, color: 'var(--success-color)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+            <ShieldCheck size={14} /> Account Private
+          </span>
         </div>
-        <div className="flex justify-between py-sm" style={{ fontSize: '14px', paddingTop: '10px' }}>
+        <div className="flex justify-between py-sm" style={{ borderBottom: '1px solid var(--border-color)', fontSize: '14px' }}>
+          <span style={{ color: 'var(--text-secondary)' }}>Database</span>
+          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>IndexedDB (Isolated)</span>
+        </div>
+        <div className="flex justify-between py-sm" style={{ borderBottom: '1px solid var(--border-color)', fontSize: '14px' }}>
           <span style={{ color: 'var(--text-secondary)' }}>Build Version</span>
           <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>1.0.0 (PWA)</span>
+        </div>
+        <div className="flex justify-between items-center py-sm" style={{ fontSize: '14px', paddingTop: '10px' }}>
+          <div>
+            <div style={{ color: 'var(--text-secondary)' }}>Reset Device Cache</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Wipes local drafts before device handover</div>
+          </div>
+          <button 
+            className="btn btn-secondary btn-sm"
+            onClick={() => setShowResetConfirm(true)}
+            style={{ width: 'auto', padding: '4px 10px', fontSize: '12px', color: 'var(--warning-color)', borderColor: 'var(--warning-border)' }}
+          >
+            Clear Cache
+          </button>
         </div>
       </div>
 
@@ -125,6 +165,60 @@ export default function Profile() {
         <LogOut size={18} />
         Log Out Session
       </button>
+
+      {/* ── Clear Cache Confirmation Modal ── */}
+      {showResetConfirm && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000,
+          padding: '20px'
+        }}>
+          <div className="card" style={{ maxWidth: '360px', width: '100%', padding: '20px', borderRadius: '16px', border: '1px solid var(--border-color)' }}>
+            <div style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '10px',
+              backgroundColor: 'rgba(245, 158, 11, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--warning-color)',
+              marginBottom: '12px'
+            }}>
+              <AlertTriangle size={22} />
+            </div>
+            <h3 style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px' }}>
+              Reset Local Storage?
+            </h3>
+            <p className="text-xs text-secondary mb-lg" style={{ lineHeight: 1.5 }}>
+              This will clear all local drafts and cached evidence stored on this device for your account. Already synchronized surveys in the cloud will not be affected.
+            </p>
+            <div className="flex gap-sm">
+              <button 
+                className="btn btn-secondary flex-1"
+                onClick={() => setShowResetConfirm(false)}
+                disabled={isResetting}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn btn-primary flex-1"
+                onClick={handleResetCache}
+                disabled={isResetting}
+                style={{ backgroundColor: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
+              >
+                {isResetting ? 'Clearing...' : 'Clear Storage'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

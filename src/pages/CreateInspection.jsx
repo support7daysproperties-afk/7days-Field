@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Loader2 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import { locationService } from '../services/platform/LocationService';
 
 export default function CreateInspection() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   
   const [formData, setFormData] = useState({
     title: '',
@@ -103,6 +105,9 @@ export default function CreateInspection() {
         property_type: formData.property_type,
         purpose: formData.purpose,
         reference_number: formData.reference_number,
+        supervisor_id: user?.supervisorProfile?.id || user?.id || null,
+        auth_user_id: user?.id || null,
+        supervisor_name: user?.supervisorProfile?.name || 'Field Supervisor',
         latitude: location?.latitude || null,
         longitude: location?.longitude || null,
         altitude: location?.altitude || null,

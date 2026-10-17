@@ -1,17 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle } from 'lucide-react';
+import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle, ClipboardList } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 
 export default function Tasks() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [inspections, setInspections] = useState([]);
   const [filter, setFilter] = useState('All'); // All, Active, Drafts, Completed, Pending Sync
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     loadInspections();
-  }, []);
+  }, [user?.id]);
 
   const loadInspections = async () => {
     setIsLoading(true);
@@ -133,9 +135,23 @@ export default function Tasks() {
             Loading field records...
           </div>
         ) : filteredInspections.length === 0 ? (
-          <div className="card text-center flex flex-col items-center" style={{ padding: '36px 20px', borderStyle: 'dashed' }}>
-            <h3 className="mb-xs" style={{ fontSize: '15px', color: 'var(--text-primary)' }}>
-              No {filter.toLowerCase()} inspections found
+          <div className="card text-center flex flex-col items-center" style={{ padding: '40px 20px', borderStyle: 'dashed' }}>
+            <div style={{
+              width: '44px',
+              height: '44px',
+              borderRadius: '12px',
+              backgroundColor: 'var(--surface-raised)',
+              border: '1px solid var(--border-color)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: '12px',
+              color: 'var(--text-tertiary)'
+            }}>
+              <ClipboardList size={22} />
+            </div>
+            <h3 className="mb-xs" style={{ fontSize: '15px', color: 'var(--text-primary)', fontWeight: '600' }}>
+              No {filter === 'All' ? '' : `${filter.toLowerCase()} `}inspections found
             </h3>
             {filter === 'Pending Sync' ? (
               <p className="text-xs text-secondary mb-0">All local records are synchronized with the cloud.</p>
@@ -145,10 +161,12 @@ export default function Tasks() {
               <p className="text-xs text-secondary mb-0">No finalized inspections recorded yet.</p>
             ) : (
               <>
-                <p className="text-xs text-secondary mb-md">Get started by creating your first site survey.</p>
+                <p className="text-xs text-secondary mb-md" style={{ maxWidth: '300px' }}>
+                  Your workspace is clean and fresh. Start your first site survey whenever you arrive at the property.
+                </p>
                 <button 
                   className="btn btn-primary btn-sm" 
-                  style={{ width: 'auto', display: 'inline-flex' }}
+                  style={{ width: 'auto', display: 'inline-flex', padding: '8px 18px' }}
                   onClick={() => navigate('/create-inspection')}
                 >
                   <Plus size={14} /> Start New Inspection

@@ -12,7 +12,10 @@ import {
   RefreshCw,
   HardDrive,
   Compass,
-  Clock
+  Clock,
+  ShieldCheck,
+  Sparkles,
+  ClipboardCheck
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
@@ -32,7 +35,7 @@ export default function Home() {
       setIsOnline(online);
     });
     return unsub;
-  }, []);
+  }, [user?.id]);
 
   const loadInspections = async () => {
     setIsLoading(true);
@@ -121,6 +124,80 @@ export default function Home() {
           )}
         </div>
       </header>
+
+      {/* ── Fresh Workspace Hero Card (Shown for new users / empty records) ── */}
+      {inspections.length === 0 && !isLoading && (
+        <section className="mb-md">
+          <div 
+            className="card"
+            style={{
+              background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.12) 0%, rgba(30, 41, 59, 0.7) 100%)',
+              borderColor: 'rgba(59, 130, 246, 0.3)',
+              padding: '16px 18px',
+              borderRadius: '16px',
+              position: 'relative',
+              overflow: 'hidden'
+            }}
+          >
+            <div className="flex items-start gap-md">
+              <div 
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '12px',
+                  background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                  flexShrink: 0,
+                  boxShadow: '0 4px 12px rgba(37, 99, 235, 0.35)'
+                }}
+              >
+                <Sparkles size={20} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="flex items-center gap-xs mb-xs">
+                  <span className="badge badge-primary" style={{ fontSize: '10px', padding: '2px 8px' }}>FRESH WORKSPACE</span>
+                  <span className="text-xs text-secondary font-medium flex items-center gap-2xs">
+                    <ShieldCheck size={12} color="var(--success-color)" /> Account Isolated
+                  </span>
+                </div>
+                <h2 style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', margin: '0 0 4px 0' }}>
+                  Welcome to 7Days Field
+                </h2>
+                <p className="text-xs text-secondary" style={{ margin: '0 0 12px 0', lineHeight: 1.5 }}>
+                  Your workspace is clean, private, and ready. Conduct site verifications, capture GPS-tagged photos & videos, and record owner signatures directly on-site.
+                </p>
+
+                {/* 3 Step Workflow */}
+                <div className="grid gap-xs mb-md" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))' }}>
+                  <div style={{ backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontWeight: '700', color: '#60a5fa', marginBottom: '2px' }}>1. SURVEY</div>
+                    <div className="text-xs text-secondary" style={{ fontSize: '11px' }}>Property info & GPS</div>
+                  </div>
+                  <div style={{ backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontWeight: '700', color: '#34d399', marginBottom: '2px' }}>2. EVIDENCE</div>
+                    <div className="text-xs text-secondary" style={{ fontSize: '11px' }}>Photos, videos & sign</div>
+                  </div>
+                  <div style={{ backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontWeight: '700', color: '#fbbf24', marginBottom: '2px' }}>3. SYNC</div>
+                    <div className="text-xs text-secondary" style={{ fontSize: '11px' }}>Auto-upload to cloud</div>
+                  </div>
+                </div>
+
+                <button 
+                  className="btn btn-primary"
+                  onClick={() => navigate('/create-inspection')}
+                  style={{ width: 'auto', display: 'inline-flex', padding: '8px 18px', fontSize: '13px', fontWeight: '600' }}
+                >
+                  <Plus size={15} /> Start Your First Inspection
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ── Primary Action: New Field Inspection ── */}
       <section className="mb-md">
@@ -271,7 +348,9 @@ export default function Home() {
               No Active Inspection
             </div>
             <p className="text-xs text-secondary mb-md" style={{ maxWidth: '280px', margin: '0 auto 14px' }}>
-              All assigned inspections are up to date. Start a new inspection when you reach the site.
+              {inspections.length === 0
+                ? 'Workspace ready. Tap Start Field Inspection when you arrive at the property site.'
+                : 'All assigned inspections are up to date. Start a new inspection when you reach the site.'}
             </p>
             <button 
               className="btn btn-secondary btn-sm" 
