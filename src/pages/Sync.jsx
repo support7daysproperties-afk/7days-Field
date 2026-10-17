@@ -40,19 +40,26 @@ function SyncStatusBadge({ status }) {
   );
 }
 
-function MediaProgressBar({ uploaded, total }) {
+function MediaProgressBar({ uploaded, total, uploading = 0 }) {
   const pct = total === 0 ? 100 : Math.round((uploaded / total) * 100);
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
         <span>{uploaded} / {total} files uploaded</span>
-        <span>{pct}%</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {uploading > 0 && (
+            <span style={{ color: 'var(--primary-color)', fontWeight: '600', fontSize: '10px' }}>
+              ({uploading} uploading concurrently)
+            </span>
+          )}
+          <span style={{ fontWeight: '700' }}>{pct}%</span>
+        </div>
       </div>
-      <div style={{ height: '4px', backgroundColor: 'var(--bg-color)', borderRadius: '2px', overflow: 'hidden' }}>
+      <div style={{ height: '5px', backgroundColor: 'var(--bg-color)', borderRadius: '3px', overflow: 'hidden' }}>
         <div style={{
-          width: `${pct}%`, height: '100%', borderRadius: '2px',
+          width: `${pct}%`, height: '100%', borderRadius: '3px',
           backgroundColor: pct === 100 ? 'var(--success-color)' : 'var(--primary-color)',
-          transition: 'width 0.4s ease'
+          transition: 'width 0.3s ease'
         }} />
       </div>
     </div>
@@ -63,13 +70,12 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
   const [expanded, setExpanded] = useState(inspection.sync_status !== 'SYNCED');
 
   const totalMedia = mediaForInspection.length;
-  const uploadedMedia = mediaForInspection.filter(m => m.sync_status === 'UPLOADED').length;
-  const failedMedia = mediaForInspection.filter(m => m.sync_status === 'FAILED');
+  const uploadedMedia = mediaForInspection.filter(m => ['UPLOADED', 'uploaded'].includes(m.sync_status)).length;
+  const uploadingMedia = mediaForInspection.filter(m => ['UPLOADING', 'uploading', 'authorizing', 'confirming'].includes(m.sync_status)).length;
+  const failedMedia = mediaForInspection.filter(m => ['FAILED', 'failed', 'retry_wait'].includes(m.sync_status));
   const photos = mediaForInspection.filter(m => (m.type || m.mediaType) === 'photo');
   const videos = mediaForInspection.filter(m => (m.type || m.mediaType) === 'video');
   const signatures = mediaForInspection.filter(m => (m.type || m.mediaType) === 'signature');
-
-  const isSpinning = inspection.sync_status === 'SYNCING';
 
   const meta = inspection.metadata || {};
   const propName = inspection.property_name || `Property ${inspection.property_id || inspection.id}`;
@@ -113,14 +119,14 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
           <div style={{ paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
 
             {/* Upload progress */}
-            {totalMedia > 0 && <MediaProgressBar uploaded={uploadedMedia} total={totalMedia} />}
+            {totalMedia > 0 && <MediaProgressBar uploaded={uploadedMedia} total={totalMedia} uploading={uploadingMedia} />}
 
             {/* Checklist rows */}
             {[
-              { label: 'Inspection details', done: ['SYNCED', 'SYNCING', 'PARTIALLY_SYNCED'].includes(inspection.sync_status) },
-              { label: 'Checklist', done: !!(meta.checklist && Object.values(meta.checklist).some(Boolean)) },
-              { label: 'Owner information', done: !!(meta.ownerInfo?.name) },
-              { label: 'Consent & Signature', done: !!(meta.consent && meta.signature) },
+              { label: 'Inspection details & server identity', done: ['SYNCED', 'SYNCING', 'PARTIALLY_SYNCED'].includes(inspection.sync_status) },
+              { label: 'Checklist items verified', done: !!(meta.checklist && Object.values(meta.checklist).some(Boolean)) },
+              { label: 'Owner information confirmed', done: !!(meta.ownerInfo?.name) },
+              { label: 'Consent & Signature captured', done: !!(meta.consent && meta.signature) },
             ].map(({ label, done }) => (
               <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
                 {done ? <CheckCircle2 size={14} style={{ color: 'var(--success-color)', flexShrink: 0 }} />
@@ -143,14 +149,15 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
             {/* Error details */}
             {failedMedia.length > 0 && (
               <div style={{ padding: '8px 10px', borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', color: 'var(--danger-color)' }}>
-                <div style={{ fontWeight: '600', marginBottom: '2px' }}>{failedMedia.length} upload(s) failed</div>
+                <div style={{ fontWeight: '600', marginBottom: '2px' }}>{failedMedia.length} item(s) pending or interrupted</div>
                 {failedMedia[0]?.last_upload_error && <div style={{ opacity: 0.8 }}>{failedMedia[0].last_upload_error}</div>}
               </div>
             )}
 
             {job?.last_error && inspection.sync_status !== 'SYNCED' && (
-              <div style={{ padding: '8px 10px', borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', color: 'var(--danger-color)' }}>
-                {job.last_error}
+              <div style={{ padding: '8px 10px', borderRadius: '8px', backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', fontSize: '12px', color: 'var(--warning-color)' }}>
+                <div style={{ fontWeight: '600', marginBottom: '2px' }}>Notice:</div>
+                <div>{job.last_error}</div>
               </div>
             )}
 
@@ -161,9 +168,9 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
               </button>
             )}
 
-            {['FAILED', 'PARTIALLY_SYNCED'].includes(inspection.sync_status) && (
+            {['FAILED', 'PARTIALLY_SYNCED', 'QUEUED'].includes(inspection.sync_status) && (
               <button className="btn btn-primary w-full flex items-center justify-center gap-sm" style={{ fontSize: '13px' }} onClick={onRetry}>
-                <RotateCcw size={16} /> Retry Sync
+                <RotateCcw size={16} /> {inspection.sync_status === 'QUEUED' ? 'Start Upload Now' : 'Retry Failed Files'}
               </button>
             )}
 
@@ -181,22 +188,34 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
 }
 
 function MediaTypeRow({ icon: Icon, label, items }) {
-  const uploaded = items.filter(m => m.sync_status === 'UPLOADED').length;
-  const uploading = items.filter(m => m.sync_status === 'UPLOADING').length;
-  const failed = items.filter(m => m.sync_status === 'FAILED').length;
-  const allDone = uploaded === items.length;
+  const uploaded = items.filter(m => ['UPLOADED', 'uploaded'].includes(m.sync_status)).length;
+  const uploading = items.filter(m => ['UPLOADING', 'uploading', 'authorizing', 'confirming'].includes(m.sync_status)).length;
+  const failed = items.filter(m => ['FAILED', 'failed', 'retry_wait'].includes(m.sync_status)).length;
+  const allDone = uploaded === items.length && items.length > 0;
 
   let statusColor = 'var(--text-secondary)';
   let statusText = `${uploaded}/${items.length} uploaded`;
-  if (allDone) { statusColor = 'var(--success-color)'; statusText = `${items.length} uploaded`; }
-  if (uploading > 0) { statusColor = 'var(--primary-color)'; statusText = `Uploading…`; }
-  if (failed > 0) { statusColor = 'var(--danger-color)'; statusText = `${failed} failed`; }
+  if (allDone) { statusColor = 'var(--success-color)'; statusText = `${items.length} uploaded ✓`; }
+  else if (uploading > 0) { statusColor = 'var(--primary-color)'; statusText = `Uploading (${uploading} active)…`; }
+  else if (failed > 0) { statusColor = 'var(--danger-color)'; statusText = `${failed} failed`; }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
-      {allDone ? <CheckCircle2 size={14} style={{ color: 'var(--success-color)', flexShrink: 0 }} /> : <Icon size={14} style={{ color: statusColor, flexShrink: 0 }} />}
-      <span style={{ flex: 1 }}>{label}</span>
-      <span style={{ color: statusColor, fontWeight: '600', fontSize: '11px' }}>{statusText}</span>
+    <div style={{ padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+        {allDone ? <CheckCircle2 size={14} style={{ color: 'var(--success-color)', flexShrink: 0 }} /> : <Icon size={14} style={{ color: statusColor, flexShrink: 0 }} />}
+        <span style={{ flex: 1 }}>{label}</span>
+        <span style={{ color: statusColor, fontWeight: '600', fontSize: '11px' }}>{statusText}</span>
+      </div>
+      {failed > 0 && items.filter(m => ['FAILED', 'failed', 'retry_wait'].includes(m.sync_status)).map(m => (
+        <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0 2px 22px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '220px' }}>
+            {m.filename || `${m.evidenceType || m.type || 'media'} (${m.id.substring(0, 8)})`}
+          </span>
+          <span style={{ color: 'var(--danger-color)', fontSize: '10px' }}>
+            {m.last_upload_error || 'Failed'}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -258,12 +277,14 @@ export default function Sync() {
   }, [loadData]);
 
   const handleSyncNow = async () => {
-    if (!isOnline) return;
+    await ConnectivityService.checkConnectivity();
     await SyncEngine.startSync();
   };
 
   const handleRetry = async (inspectionId) => {
+    await ConnectivityService.checkConnectivity();
     await SyncEngine.enqueueInspection(inspectionId);
+    await SyncEngine.startSync();
   };
 
   const handleConnectDrive = (inspectionId) => {

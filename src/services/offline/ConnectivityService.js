@@ -1,13 +1,19 @@
 class ConnectivityService {
   constructor() {
-    this.online = navigator.onLine;
+    this.online = typeof navigator !== 'undefined' ? Boolean(navigator.onLine) : true;
     this.listeners = new Set();
+    this._checkingPromise = null;
     
-    window.addEventListener('online', () => this.checkConnectivity());
-    window.addEventListener('offline', () => this.setOffline());
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        this.setOnline();
+        this.checkConnectivity();
+      });
+      window.addEventListener('offline', () => this.setOffline());
+    }
     
-    // Initial check
-    if (this.online) {
+    // Initial connectivity verification
+    if (this.online && typeof window !== 'undefined') {
       this.checkConnectivity();
     }
   }
@@ -19,7 +25,13 @@ class ConnectivityService {
   }
   
   notify() {
-    this.listeners.forEach(cb => cb(this.online));
+    this.listeners.forEach(cb => {
+      try {
+        cb(this.online);
+      } catch (err) {
+        console.error('Error in connectivity listener:', err);
+      }
+    });
   }
   
   setOffline() {
@@ -28,31 +40,54 @@ class ConnectivityService {
       this.notify();
     }
   }
+
+  setOnline() {
+    if (!this.online) {
+      this.online = true;
+      this.notify();
+    }
+  }
   
   async checkConnectivity() {
-    if (!navigator.onLine) {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
       this.setOffline();
       return false;
     }
-    
-    try {
-      // In a real app, this would be `fetch('/api/health')`
-      // We will do a lightweight fetch to an external reliable domain or our own backend
-      const res = await fetch('https://api.cloudinary.com/v1_1/demo/ping', { method: 'HEAD', cache: 'no-store' });
-      if (res.ok || res.status === 404 || res.status === 401) {
-        // Any HTTP response means the internet is working
-        if (!this.online) {
-          this.online = true;
-          this.notify();
-        }
+
+    if (this._checkingPromise) return this._checkingPromise;
+
+    this._checkingPromise = (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+        // Fast zero-CORS probe: google.com/generate_204 with mode: 'no-cors'
+        // Never triggers CORS preflight or cross-origin blocks
+        await fetch('https://www.google.com/generate_204', {
+          method: 'GET',
+          mode: 'no-cors',
+          cache: 'no-store',
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+        this.setOnline();
         return true;
+      } catch (e) {
+        // If probe timed out or network blocked, check fallback
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          // Keep online state if navigator reports connected
+          this.setOnline();
+          return true;
+        }
+        this.setOffline();
+        return false;
+      } finally {
+        this._checkingPromise = null;
       }
-    } catch (e) {
-      // Fetch failed entirely (e.g. DNS failure, captive portal)
-    }
-    
-    this.setOffline();
-    return false;
+    })();
+
+    return this._checkingPromise;
   }
 }
 

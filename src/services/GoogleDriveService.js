@@ -426,43 +426,79 @@ class GoogleDriveService {
   // ─── Folder management ───────────────────────────────────────────────────────
 
   /**
-   * Helper that executes a Drive API call with automatic 401 retry (once)
+   * Helper that executes a Drive API call with automatic 401 retry, 429 backoff,
+   * exponential backoff with jitter, and explicit request timeout via AbortController.
    */
-  async _fetchWithRetry(url, options = {}, retries = 1) {
+  async _fetchWithRetry(url, options = {}, retries = 2, timeoutMs = 25000) {
     let token = await this.getValidToken();
     let res;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
       try {
         const headers = {
           ...(options.headers || {}),
           Authorization: `Bearer ${token}`,
         };
 
-        res = await fetch(url, { ...options, headers });
+        res = await fetch(url, {
+          ...options,
+          headers,
+          signal: options.signal || controller.signal,
+        });
+        clearTimeout(timer);
 
         if (res.status === 401 && attempt < retries) {
-          // Token might have just expired during request; force refresh and retry once
+          // Token might have expired during request; force refresh and retry once
           this._accessToken = null;
           this._tokenExpiresAt = null;
           token = await this.getValidToken();
           continue;
         }
 
-        // Retry transient server errors 500, 503
-        if ((res.status === 500 || res.status === 503) && attempt < retries) {
-          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        // Handle 429 Too Many Requests / Rate Limiting
+        if (res.status === 429 && attempt < retries) {
+          const retryAfterHeader = res.headers?.get('Retry-After');
+          const delaySec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : (attempt + 1) * 2;
+          const jitter = Math.random() * 500;
+          await new Promise(r => setTimeout(r, (delaySec * 1000) + jitter));
+          continue;
+        }
+
+        // Retry transient server errors 408, 500, 502, 503, 504
+        if ([408, 500, 502, 503, 504].includes(res.status) && attempt < retries) {
+          const backoff = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 400, 8000);
+          await new Promise(r => setTimeout(r, backoff));
           continue;
         }
 
         return res;
       } catch (err) {
-        if (!navigator.onLine) {
+        clearTimeout(timer);
+        const isTimeout = err.name === 'AbortError' || err.message?.includes('timeout') || err.message?.includes('aborted');
+        const isOffline = (typeof navigator !== 'undefined' && !navigator.onLine);
+
+        if (isOffline) {
           this.setStatus(DRIVE_STATUS.OFFLINE, 'Network disconnected');
+          const offErr = new Error('Network connection offline');
+          offErr.code = 'NETWORK_OFFLINE';
+          throw offErr;
+        }
+
+        if (attempt === retries) {
+          if (isTimeout) {
+            const timeoutErr = new Error(`Request timed out after ${timeoutMs}ms`);
+            timeoutErr.code = 'TIMEOUT';
+            throw timeoutErr;
+          }
           throw err;
         }
-        if (attempt === retries) throw err;
-        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+
+        // Exponential backoff with jitter for retries
+        const backoff = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 8000);
+        await new Promise(r => setTimeout(r, backoff));
       }
     }
     return res;
@@ -630,8 +666,11 @@ class GoogleDriveService {
     return fileData;
   }
 
-  async _uploadChunkWithRetry(uploadUrl, chunk, start, end, total, token, maxRetries = 3) {
+  async _uploadChunkWithRetry(uploadUrl, chunk, start, end, total, token, maxRetries = 3, chunkTimeoutMs = 60000) {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), chunkTimeoutMs);
+
       try {
         const res = await fetch(uploadUrl, {
           method: 'PUT',
@@ -639,21 +678,40 @@ class GoogleDriveService {
             'Content-Range': `bytes ${start}-${end}/${total}`,
             'Content-Type': 'application/octet-stream',
           },
-          body: chunk
+          body: chunk,
+          signal: controller.signal
         });
+        clearTimeout(timer);
+
         if (res.status === 308 || res.status === 200 || res.status === 201) return res;
-        if (res.status === 503 || res.status === 500) {
-          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+
+        // Rate limit 429
+        if (res.status === 429 && attempt < maxRetries) {
+          const retryAfter = res.headers?.get('Retry-After');
+          const delaySec = retryAfter ? parseInt(retryAfter, 10) : (attempt + 1) * 2;
+          await new Promise(r => setTimeout(r, (delaySec * 1000) + (Math.random() * 500)));
           continue;
         }
+
+        // Server errors
+        if ([408, 500, 502, 503, 504].includes(res.status) && attempt < maxRetries) {
+          const backoff = Math.min(Math.pow(2, attempt) * 1000 + (Math.random() * 400), 8000);
+          await new Promise(r => setTimeout(r, backoff));
+          continue;
+        }
+
         return res;
       } catch (netErr) {
-        if (!navigator.onLine) {
+        clearTimeout(timer);
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
           this.setStatus(DRIVE_STATUS.OFFLINE, 'Upload interrupted: device offline');
-          throw netErr;
+          const offErr = new Error('Upload interrupted: device offline');
+          offErr.code = 'NETWORK_OFFLINE';
+          throw offErr;
         }
         if (attempt === maxRetries) throw netErr;
-        await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+        const backoff = Math.min(Math.pow(2, attempt) * 1000 + (Math.random() * 500), 8000);
+        await new Promise(r => setTimeout(r, backoff));
       }
     }
   }
