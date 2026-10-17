@@ -41,6 +41,8 @@ export default function InspectionSession() {
   const [showPhotoCamera, setShowPhotoCamera] = useState(false);
   const [showVideoCamera, setShowVideoCamera] = useState(false);
   const [showPhotoSphere, setShowPhotoSphere] = useState(false);
+  const [showBoundaryMap, setShowBoundaryMap] = useState(false);
+  const [showAddCustomCategoryModal, setShowAddCustomCategoryModal] = useState(false);
   const [viewerMode, setViewerMode] = useState(null); // { mode: 'vr' | 'motion', url: string }
   const [evidenceSummary, setEvidenceSummary] = useState({ location: null, photos: 0, videos: 0, total: 0 });
   const [evidenceList, setEvidenceList] = useState([]);
@@ -352,7 +354,6 @@ export default function InspectionSession() {
   const [addingCategory, setAddingCategory] = useState(null); // category name currently adding to
   const [categoryItemInput, setCategoryItemInput] = useState('');
   const [categoryItemError, setCategoryItemError] = useState('');
-  const [showAddCustomCategoryModal, setShowAddCustomCategoryModal] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryItemName, setNewCategoryItemName] = useState('');
   const [customCategoryError, setCustomCategoryError] = useState('');
@@ -363,7 +364,6 @@ export default function InspectionSession() {
   const [consent, setConsent] = useState(false);
   const [signature, setSignature] = useState(null);
   const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
-  const [showBoundaryMap, setShowBoundaryMap] = useState(false);
   const [inspectionRecord, setInspectionRecord] = useState(null);
 
   useEffect(() => {
