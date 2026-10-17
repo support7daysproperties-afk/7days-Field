@@ -1,8 +1,13 @@
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
+const NativeGoogleAuth = registerPlugin('NativeGoogleAuth');
+
 // Scope: drive.file — only files created/opened by this app
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
 // Threshold above which we use resumable upload (5 MB)
 const RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024;
+
 
 export const DRIVE_STATUS = {
   CHECKING: 'CHECKING',
@@ -208,6 +213,28 @@ class GoogleDriveService {
   }
 
   _silentTokenRefresh() {
+    if (Capacitor.isNativePlatform()) {
+      return new Promise(async (resolve, reject) => {
+        try {
+          if (this._accessToken) {
+            await NativeGoogleAuth.clearDriveToken({ token: this._accessToken }).catch(() => {});
+          }
+          const res = await NativeGoogleAuth.getDriveAccessToken();
+          if (res?.accessToken) {
+            resolve({
+              access_token: res.accessToken,
+              email: res.email || this._tokenEmail,
+              expires_in: res.expiresIn || 3600,
+            });
+          } else {
+            reject(new Error('Native silent Drive renewal returned no token'));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
     return new Promise((resolve, reject) => {
       if (!this.isInitialized) {
         reject(new Error('GIS not initialized'));
@@ -285,6 +312,10 @@ class GoogleDriveService {
   }
 
   async init() {
+    if (Capacitor.isNativePlatform()) {
+      this.isInitialized = true;
+      return;
+    }
     if (this.isInitialized && window.google?.accounts?.oauth2) return;
     try {
       await this.loadGisScript();
@@ -316,6 +347,45 @@ class GoogleDriveService {
    * Can pass { loginHint, prompt }
    */
   requestDriveAccess({ loginHint = null, prompt = 'consent' } = {}) {
+    if (Capacitor.isNativePlatform()) {
+      return new Promise(async (resolve, reject) => {
+        try {
+          const res = await NativeGoogleAuth.getDriveAccessToken();
+          if (res?.accessToken) {
+            const expiresInSec = res.expiresIn || 3600;
+            const email = res.email || loginHint || this._tokenEmail;
+
+            this.setTokenData({
+              accessToken: res.accessToken,
+              expiresInSec,
+              email,
+            });
+
+            this.setStatus(DRIVE_STATUS.CONNECTED, '', email);
+            resolve({
+              access_token: res.accessToken,
+              email,
+              expires_in: expiresInSec,
+            });
+          } else {
+            const err = new Error('Native Drive authorization returned no token');
+            this.setStatus(DRIVE_STATUS.ERROR, err.message);
+            reject(err);
+          }
+        } catch (err) {
+          if (err?.code === 'USER_CANCELLED' || err?.message?.includes('cancelled') || err?.message?.includes('CANCELLED')) {
+            this.setStatus(DRIVE_STATUS.CANCELLED, 'Drive authorization was cancelled by the user');
+            const cancelErr = new Error('Authorization was cancelled.');
+            cancelErr.code = 'USER_CANCELLED';
+            reject(cancelErr);
+          } else {
+            this.setStatus(DRIVE_STATUS.ERROR, err?.message || 'Drive connection error');
+            reject(err);
+          }
+        }
+      });
+    }
+
     return new Promise((resolve, reject) => {
       this.init().then(() => {
         if (!this.clientId) {

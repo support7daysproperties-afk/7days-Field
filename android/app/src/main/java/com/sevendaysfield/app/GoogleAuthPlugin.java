@@ -1,5 +1,6 @@
 package com.sevendaysfield.app;
 
+import android.app.Activity;
 import android.content.Intent;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.JSObject;
@@ -8,6 +9,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.google.android.gms.auth.GoogleAuthUtil;
+import com.google.android.gms.auth.UserRecoverableAuthException;
 import com.google.android.gms.auth.api.signin.GoogleSignIn;
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
 import com.google.android.gms.auth.api.signin.GoogleSignInClient;
@@ -20,6 +23,7 @@ import com.google.android.gms.tasks.Task;
 public class GoogleAuthPlugin extends Plugin {
 
     private static final String DEFAULT_WEB_CLIENT_ID = "611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com";
+    private static final String DRIVE_SCOPE = "oauth2:https://www.googleapis.com/auth/drive.file";
 
     @PluginMethod
     public void signIn(PluginCall call) {
@@ -71,6 +75,87 @@ public class GoogleAuthPlugin extends Plugin {
             call.reject(errorMsg, String.valueOf(e.getStatusCode()));
         } catch (Exception e) {
             call.reject("Unexpected error during Google Sign-In: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Native Google Drive OAuth2 Access Token retrieval via Google Play Services
+     */
+    @PluginMethod
+    public void getDriveAccessToken(PluginCall call) {
+        new Thread(() -> {
+            try {
+                GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(getContext());
+                if (account == null || account.getAccount() == null) {
+                    call.reject("No active Google account found. Please sign in first.");
+                    return;
+                }
+
+                String token = GoogleAuthUtil.getToken(getContext(), account.getAccount(), DRIVE_SCOPE);
+                if (token != null && !token.isEmpty()) {
+                    JSObject ret = new JSObject();
+                    ret.put("accessToken", token);
+                    ret.put("email", account.getEmail());
+                    ret.put("expiresIn", 3600);
+                    call.resolve(ret);
+                } else {
+                    call.reject("Failed to obtain Google Drive token");
+                }
+            } catch (UserRecoverableAuthException e) {
+                // Launch native Google permission consent dialog
+                Intent consentIntent = e.getIntent();
+                startActivityForResult(call, consentIntent, "handleDriveConsentResult");
+            } catch (Exception e) {
+                call.reject("Error fetching Drive token: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    @ActivityCallback
+    private void handleDriveConsentResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+
+        if (result.getResultCode() == Activity.RESULT_OK) {
+            // User consented via native dialog! Now retrieve the token on background thread
+            new Thread(() -> {
+                try {
+                    GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(getContext());
+                    if (account == null || account.getAccount() == null) {
+                        call.reject("No Google account found after consent");
+                        return;
+                    }
+                    String token = GoogleAuthUtil.getToken(getContext(), account.getAccount(), DRIVE_SCOPE);
+                    JSObject ret = new JSObject();
+                    ret.put("accessToken", token);
+                    ret.put("email", account.getEmail());
+                    ret.put("expiresIn", 3600);
+                    call.resolve(ret);
+                } catch (Exception e) {
+                    call.reject("Error fetching Drive token after consent: " + e.getMessage());
+                }
+            }).start();
+        } else {
+            call.reject("Google Drive authorization was cancelled by the user", "USER_CANCELLED");
+        }
+    }
+
+    /**
+     * Clear cached token on expiry to trigger silent refresh
+     */
+    @PluginMethod
+    public void clearDriveToken(PluginCall call) {
+        String token = call.getString("token");
+        if (token != null && !token.isEmpty()) {
+            new Thread(() -> {
+                try {
+                    GoogleAuthUtil.clearToken(getContext(), token);
+                    call.resolve();
+                } catch (Exception e) {
+                    call.reject("Error clearing Drive token: " + e.getMessage());
+                }
+            }).start();
+        } else {
+            call.resolve();
         }
     }
 
