@@ -1,4 +1,4 @@
-package com.sevendays.field;
+package com.sevendaysfield.app;
 
 import android.content.Context;
 import android.hardware.Sensor;

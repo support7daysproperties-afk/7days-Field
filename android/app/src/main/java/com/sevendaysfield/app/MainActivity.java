@@ -1,4 +1,4 @@
-package com.sevendays.field;
+package com.sevendaysfield.app;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
@@ -7,6 +7,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(PhotoSphereSensorPlugin.class);
+        registerPlugin(GoogleAuthPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Loader2, HardDrive, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import GoogleDriveService from '../services/GoogleDriveService';
 
+const NativeGoogleAuth = registerPlugin('NativeGoogleAuth');
 
 export default function Login() {
   const { authError, authenticated, driveAuthorized, connectDrive } = useAuth();
@@ -40,6 +42,32 @@ export default function Login() {
       localStorage.setItem('pending_drive_onboarding', 'true');
       localStorage.removeItem('drive_onboarding_done');
       
+      const isNative = Capacitor.isNativePlatform();
+      if (isNative) {
+        // Native Android Google Sign-In via Google Play Services (Zero browser popups / no redirects)
+        const result = await NativeGoogleAuth.signIn({
+          webClientId: '611802862463-c1ak7q81p66o4nodgfhnlq1dthcrfq3p.apps.googleusercontent.com'
+        });
+
+        if (!result || !result.idToken) {
+          throw new Error('Google Sign-In was cancelled or did not return an ID token');
+        }
+
+        // Authenticate with Supabase using the native Google ID Token
+        const { data: authData, error: signInError } = await supabase.auth.signInWithIdToken({
+          provider: 'google',
+          token: result.idToken,
+        });
+
+        if (signInError) throw signInError;
+
+        if (result.serverAuthCode) {
+          localStorage.setItem('google_server_auth_code', result.serverAuthCode);
+        }
+        return;
+      }
+
+      // Standard Web OAuth flow for desktop/mobile browsers
       const { error: signInError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -54,6 +82,7 @@ export default function Login() {
       
       if (signInError) throw signInError;
     } catch (err) {
+      console.error('Login error:', err);
       setError(err.message || 'Failed to sign in with Google');
       setIsLoading(false);
     }

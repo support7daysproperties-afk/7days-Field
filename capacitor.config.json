@@ -1,5 +1,5 @@
 {
-  "appId": "com.sevendays.field",
+  "appId": "com.sevendaysfield.app",
   "appName": "7Days Field",
   "webDir": "dist",
   "bundledWebRuntime": false,
