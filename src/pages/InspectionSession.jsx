@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark, CheckSquare, Square, RotateCcw, Plus, PlusCircle } from 'lucide-react';
+import { Check, Camera, Image as ImageIcon, MapPin, Video, Play, FileText, User, FileSignature, Save, Upload, ArrowLeft, Folder, X, ChevronLeft, ChevronRight, Trash2, Loader2, Landmark, CheckSquare, Square, RotateCcw, Plus, PlusCircle, CheckCircle } from 'lucide-react';
 import FieldCamera from '../components/FieldCamera';
 import VideoCamera from '../components/VideoCamera';
 import PhotoSphereCapture from '../features/photo-sphere/PhotoSphereCapture';
@@ -8,6 +8,7 @@ import InteractivePhotoSphereViewer from '../features/photo-sphere/components/In
 import VRViewer from '../features/photo-sphere/components/VRViewer';
 import MotionSensorViewer from '../features/photo-sphere/components/MotionSensorViewer';
 import SignaturePad from '../components/SignaturePad';
+import OwnerCamera from '../components/OwnerCamera';
 import PropertyBoundary from './PropertyBoundary';
 import { EvidenceService } from '../services/EvidenceService';
 import InspectionRepository from '../services/offline/InspectionRepository';
@@ -82,6 +83,9 @@ export default function InspectionSession() {
   const [ownerInfo, setOwnerInfo] = useState({ name: '', phone: '', relationship: 'Owner', remarks: '' });
   const [consent, setConsent] = useState(false);
   const [signature, setSignature] = useState(null);
+  const [ownerAadhaar, setOwnerAadhaar] = useState('');
+  const [ownerPhoto, setOwnerPhoto] = useState(null);
+  const [showOwnerCamera, setShowOwnerCamera] = useState(false);
   const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
   const [inspectionRecord, setInspectionRecord] = useState(null);
 
@@ -91,6 +95,10 @@ export default function InspectionSession() {
       setEvidenceList(list || []);
       const summary = await EvidenceService.getEvidenceSummary(id);
       setEvidenceSummary(summary || { location: null, photos: 0, videos: 0, total: 0 });
+      const existingOwnerPhoto = list?.find(e => e.evidenceType === 'Owner Photo' || e.evidenceType === 'Owner Verification Photo');
+      if (existingOwnerPhoto) {
+        setOwnerPhoto(existingOwnerPhoto.geotaggedImage || existingOwnerPhoto.originalImage || null);
+      }
     } catch (err) {
       console.error("Failed to load evidence for task:", err);
     }
@@ -132,6 +140,8 @@ export default function InspectionSession() {
             if (record.metadata.ownerInfo) setOwnerInfo(record.metadata.ownerInfo);
             if (record.metadata.consent !== undefined) setConsent(record.metadata.consent);
             if (record.metadata.signature) setSignature(record.metadata.signature);
+            if (record.metadata.ownerAadhaar) setOwnerAadhaar(record.metadata.ownerAadhaar);
+            if (record.metadata.ownerPhoto) setOwnerPhoto(record.metadata.ownerPhoto);
           }
         }
         // Load any existing boundary
@@ -169,6 +179,8 @@ export default function InspectionSession() {
             ownerInfo,
             consent,
             signature,
+            ownerAadhaar,
+            ownerPhoto,
           }
         });
       } catch (err) {
@@ -177,7 +189,7 @@ export default function InspectionSession() {
     };
     
     saveState();
-  }, [id, checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature, isLoading]);
+  }, [id, checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature, ownerAadhaar, ownerPhoto, isLoading]);
 
   const checklistGroups = useMemo(() => {
     const baseGroups = [
@@ -311,6 +323,41 @@ export default function InspectionSession() {
     setShowPhotoCamera(false);
     setShowVideoCamera(false);
     await loadEvidence();
+  };
+
+  const handleAadhaarChange = (e) => {
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 12);
+    const parts = [];
+    for (let i = 0; i < raw.length; i += 4) {
+      parts.push(raw.slice(i, i + 4));
+    }
+    setOwnerAadhaar(parts.join(' '));
+  };
+
+  const handleOwnerPhotoCaptured = async (blob, dataUrl) => {
+    setShowOwnerCamera(false);
+    setOwnerPhoto(dataUrl);
+    try {
+      await EvidenceService.saveEvidence({
+        taskId: id,
+        evidenceType: 'Owner Photo',
+        mediaType: 'photo',
+        original_blob: blob,
+        mime_type: blob.type || 'image/jpeg',
+        size: blob.size || 0,
+        captured_at: new Date().toISOString()
+      });
+      await loadEvidence();
+    } catch (err) {
+      console.error('Failed to save owner photo evidence:', err);
+    }
+  };
+
+  const handleOwnerPhotoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    await handleOwnerPhotoCaptured(file, url);
   };
 
   const togglePhotoSelection = (photoId) => {
@@ -560,6 +607,11 @@ export default function InspectionSession() {
     return true;
   }, 90, showPhotoCamera);
 
+  useBackHandler('insp_owner_camera', () => {
+    setShowOwnerCamera(false);
+    return true;
+  }, 90, showOwnerCamera);
+
   useBackHandler('insp_photo_sphere', () => {
     setShowPhotoSphere(false);
     return true;
@@ -586,13 +638,13 @@ export default function InspectionSession() {
   useBackHandler('insp_active_step', () => {
     setActiveStepId('overview');
     return true;
-  }, 50, activeStepId !== 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
+  }, 50, activeStepId !== 'overview' && !showPhotoCamera && !showOwnerCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
 
   // 6. Inspection Overview -> Return to Inspections List / Tasks (Priority 20)
   useBackHandler('insp_overview', () => {
     navigate('/tasks');
     return true;
-  }, 20, activeStepId === 'overview' && !showPhotoCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
+  }, 20, activeStepId === 'overview' && !showPhotoCamera && !showOwnerCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
 
   const renderOverviewContent = () => {
     const completedCount = steps.filter(s => s.completed).length;
@@ -1689,7 +1741,7 @@ export default function InspectionSession() {
         gps_accuracy: locationEvidence?.accuracy || null,
         gps_timestamp: locationEvidence?.location_captured_at || null,
         location_verified: !!locationEvidence,
-        metadata: { checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature }
+        metadata: { checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature, ownerAadhaar, ownerPhoto }
       });
 
       // Enqueue for synchronization (starts automatically if online)
@@ -1754,6 +1806,8 @@ export default function InspectionSession() {
         <div className="flex flex-col gap-xs text-sm">
           <div className="flex justify-between"><span>Remarks</span> {remarks ? <Check size={16} className="text-success"/> : <span className="text-secondary">None</span>}</div>
           <div className="flex justify-between"><span>Owner Info</span> {ownerInfo.name ? <Check size={16} className="text-success"/> : <span className="text-secondary">None</span>}</div>
+          <div className="flex justify-between"><span>Aadhaar</span> {ownerAadhaar ? <span className="font-mono text-xs">{ownerAadhaar}</span> : <span className="text-secondary">None</span>}</div>
+          <div className="flex justify-between"><span>Owner Photo</span> {ownerPhoto ? <Check size={16} className="text-success"/> : <span className="text-secondary">Not captured</span>}</div>
           <div className="flex justify-between"><span>Consent</span> {consent ? <Check size={16} className="text-success"/> : <span className="text-secondary">Pending</span>}</div>
           <div className="flex justify-between"><span>Signature</span> {signature ? <Check size={16} className="text-success"/> : <span className="text-secondary">Pending</span>}</div>
         </div>
@@ -1813,6 +1867,12 @@ export default function InspectionSession() {
             loadEvidence();
           }}
           onCancel={() => setShowPhotoCamera(false)} 
+        />
+      )}
+      {showOwnerCamera && (
+        <OwnerCamera 
+          onPhotoCaptured={handleOwnerPhotoCaptured}
+          onClose={() => setShowOwnerCamera(false)}
         />
       )}
       {showPhotoSphere && (
@@ -1953,6 +2013,173 @@ export default function InspectionSession() {
 
             {consent && (
               <div className="card animate-fade-in" style={{ marginBottom: 0 }}>
+                {/* 1. Aadhaar Card Number */}
+                <div className="form-group mb-md">
+                  <label className="form-label flex items-center justify-between">
+                    <span className="flex items-center gap-xs font-semibold">
+                      <Landmark size={15} className="text-primary" /> Aadhaar Card Number
+                    </span>
+                    {ownerAadhaar && (
+                      <span 
+                        className="text-xs" 
+                        style={{ 
+                          color: ownerAadhaar.replace(/\D/g, '').length === 12 ? 'var(--success-color)' : 'var(--text-secondary)',
+                          fontWeight: 600
+                        }}
+                      >
+                        {ownerAadhaar.replace(/\D/g, '').length === 12 ? '✓ 12 Digits Verified' : `${ownerAadhaar.replace(/\D/g, '').length} / 12 digits`}
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    className="form-input"
+                    value={ownerAadhaar}
+                    onChange={handleAadhaarChange}
+                    placeholder="XXXX XXXX XXXX (12-digit Aadhaar)"
+                    maxLength={14}
+                    style={{
+                      letterSpacing: '1.5px',
+                      fontWeight: 600,
+                      fontSize: '15px'
+                    }}
+                  />
+                  <p className="text-xs text-secondary mt-xs" style={{ margin: '4px 0 0' }}>
+                    Enter the property owner or representative's 12-digit Aadhaar number for identity verification.
+                  </p>
+                </div>
+
+                {/* 2. Owner Photograph (Camera Option) */}
+                <div className="form-group mb-lg">
+                  <label className="form-label flex items-center justify-between">
+                    <span className="flex items-center gap-xs font-semibold">
+                      <Camera size={15} className="text-primary" /> Owner Photograph
+                    </span>
+                    {ownerPhoto && (
+                      <span className="text-xs text-success flex items-center gap-xs font-semibold">
+                        <Check size={13} /> Photo Captured
+                      </span>
+                    )}
+                  </label>
+                  
+                  {ownerPhoto ? (
+                    <div 
+                      style={{
+                        backgroundColor: 'var(--surface-color)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '12px',
+                        padding: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '14px',
+                      }}
+                    >
+                      <div 
+                        style={{ 
+                          width: '72px', 
+                          height: '72px', 
+                          borderRadius: '10px', 
+                          overflow: 'hidden', 
+                          border: '2px solid var(--success-color)',
+                          flexShrink: 0,
+                          backgroundColor: '#000'
+                        }}
+                      >
+                        <img src={ownerPhoto} alt="Owner" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="font-semibold text-sm mb-xs text-primary flex items-center gap-xs">
+                          <CheckCircle size={14} className="text-success" /> Verified Photo
+                        </div>
+                        <p className="text-xs text-secondary" style={{ margin: '0 0 8px 0' }}>
+                          Owner verification photo captured and saved to evidence.
+                        </p>
+                        <div className="flex gap-xs">
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline flex items-center gap-xs"
+                            style={{ padding: '4px 10px', fontSize: '11px' }}
+                            onClick={() => setShowOwnerCamera(true)}
+                          >
+                            <RotateCcw size={12} /> Retake
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline flex items-center gap-xs"
+                            style={{ padding: '4px 10px', fontSize: '11px', color: 'var(--danger-color)' }}
+                            onClick={() => setOwnerPhoto(null)}
+                          >
+                            <Trash2 size={12} /> Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        border: '2px dashed var(--border-color)',
+                        borderRadius: '12px',
+                        padding: '18px 14px',
+                        textAlign: 'center',
+                        backgroundColor: 'var(--surface-raised, rgba(255,255,255,0.02))',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '10px'
+                      }}
+                    >
+                      <div 
+                        style={{ 
+                          width: '48px', 
+                          height: '48px', 
+                          borderRadius: '50%', 
+                          backgroundColor: 'var(--primary-transparent, rgba(37,99,235,0.1))',
+                          color: 'var(--primary-color)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <Camera size={24} />
+                      </div>
+                      <div>
+                        <div className="font-semibold text-sm mb-xs" style={{ color: 'var(--text-primary)' }}>
+                          Capture Owner Photograph
+                        </div>
+                        <p className="text-xs text-secondary" style={{ margin: 0, maxWidth: '280px' }}>
+                          Take a clear photo of the property owner or representative granting consent.
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-xs w-full" style={{ maxWidth: '260px', marginTop: '4px' }}>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm flex items-center justify-center gap-xs"
+                          style={{ padding: '10px 16px', fontWeight: 600 }}
+                          onClick={() => setShowOwnerCamera(true)}
+                        >
+                          <Camera size={16} /> Take Owner Photo
+                        </button>
+                        <label
+                          className="btn btn-outline btn-sm flex items-center justify-center gap-xs"
+                          style={{ padding: '6px 12px', fontSize: '12px', cursor: 'pointer', margin: 0 }}
+                        >
+                          <Upload size={13} /> Or upload photo
+                          <input
+                            type="file"
+                            accept="image/*"
+                            capture="user"
+                            style={{ display: 'none' }}
+                            onChange={handleOwnerPhotoUpload}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '18px 0' }} />
+
                 <h3 className="mb-md">Owner Signature</h3>
                 {signature ? (
                   <div className="flex flex-col gap-md">
