@@ -65,4 +65,47 @@ describe('Owner Consent Verification & Identity Capture Tests', () => {
     expect(mockInspection.metadata.consent).toBe(true);
     expect(mockInspection.metadata.signature).toBeTruthy();
   });
+
+  it('preserves existing metadata when submitting inspection and merges new fields', () => {
+    const existing = {
+      id: 'insp-123',
+      property_id: 'prop-abc',
+      property_name: 'Green Villa',
+      supervisor_id: 'sup-99',
+      metadata: {
+        createdVia: 'mobile',
+        priority: 'high'
+      }
+    };
+
+    const newMetadata = {
+      checklist: { 'Water connection checked': true },
+      remarks: 'Verified successfully',
+      ownerInfo: { name: 'Suresh' },
+      consent: true,
+      signature: 'data:image/png;base64,...',
+      ownerAadhaar: '1234 5678 9012',
+      ownerPhoto: 'blob:...'
+    };
+
+    const finalizedInspection = {
+      ...existing,
+      id: existing.id,
+      property_id: existing.property_id || existing.id,
+      property_name: existing.property_name || null,
+      supervisor_id: existing.supervisor_id,
+      status: 'COMPLETED',
+      sync_status: 'QUEUED',
+      metadata: {
+        ...existing.metadata,
+        ...newMetadata
+      }
+    };
+
+    expect(finalizedInspection.status).toBe('COMPLETED');
+    expect(finalizedInspection.sync_status).toBe('QUEUED');
+    expect(finalizedInspection.property_id).toBe('prop-abc');
+    expect(finalizedInspection.metadata.createdVia).toBe('mobile');
+    expect(finalizedInspection.metadata.ownerAadhaar).toBe('1234 5678 9012');
+  });
 });

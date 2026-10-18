@@ -15,6 +15,7 @@ import { EvidenceService } from '../services/EvidenceService';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import BoundaryRepository from '../services/offline/BoundaryRepository';
 import MediaRepository from '../services/offline/MediaRepository';
+import SyncEngine from '../services/offline/SyncEngine';
 import { useAuth } from '../context/AuthContext';
 import { useBackHandler } from '../hooks/useBackHandler';
 import { navigationService } from '../services/NavigationService';
@@ -1239,19 +1240,30 @@ export default function InspectionSession() {
       await InspectionRepository.saveInspection({
         ...existing,
         id,
-        property_id: id,
-        property_name: existing?.property_name || null,
-        supervisor_id: supervisorId,
+        property_id: existing?.property_id || id,
+        property_name: existing?.property_name || existing?.title || null,
+        supervisor_id: supervisorId || existing?.supervisor_id || null,
         status: 'COMPLETED',
         sync_status: 'QUEUED',
         completed_at: now,
         submitted_at: now,
-        latitude: locationEvidence?.latitude || null,
-        longitude: locationEvidence?.longitude || null,
-        gps_accuracy: locationEvidence?.accuracy || null,
-        gps_timestamp: locationEvidence?.location_captured_at || null,
-        location_verified: !!locationEvidence,
-        metadata: { checklist, customChecklistItems, checklistReviewed, remarks, ownerInfo, consent, signature, ownerAadhaar, ownerPhoto }
+        latitude: locationEvidence?.latitude || existing?.latitude || null,
+        longitude: locationEvidence?.longitude || existing?.longitude || null,
+        gps_accuracy: locationEvidence?.accuracy || existing?.gps_accuracy || null,
+        gps_timestamp: locationEvidence?.location_captured_at || existing?.gps_timestamp || null,
+        location_verified: !!locationEvidence || !!existing?.location_verified,
+        metadata: {
+          ...(existing?.metadata || {}),
+          checklist,
+          customChecklistItems,
+          checklistReviewed,
+          remarks,
+          ownerInfo,
+          consent,
+          signature,
+          ownerAadhaar,
+          ownerPhoto
+        }
       });
 
       // Enqueue for synchronization (starts automatically if online)
@@ -1260,7 +1272,7 @@ export default function InspectionSession() {
       navigate('/sync');
     } catch (err) {
       console.error('Submit failed:', err);
-      setSubmitError('Could not save inspection. Please try again.');
+      setSubmitError(err?.message ? `Could not save inspection: ${err.message}` : 'Could not save inspection. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

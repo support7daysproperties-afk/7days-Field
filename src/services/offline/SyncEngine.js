@@ -24,6 +24,19 @@ import BoundaryRepository from './BoundaryRepository';
 import ConnectivityService from './ConnectivityService';
 import GoogleDriveService from '../GoogleDriveService';
 
+function safeUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try {
+      return crypto.randomUUID();
+    } catch (_) {}
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 /**
  * Lightweight in-memory bounded concurrency worker queue.
  */
@@ -82,7 +95,7 @@ class SyncEngine {
     if (existing && ['SYNCING', 'SYNCED'].includes(existing.status)) return;
 
     await SyncJobRepository.upsertJob({
-      id: existing?.id || crypto.randomUUID(),
+      id: existing?.id || safeUUID(),
       inspection_id: inspectionId,
       status: 'QUEUED',
       attempts: 0,
