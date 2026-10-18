@@ -363,6 +363,52 @@ export default function PhotoSphereCapture({
     return { mesh, texture, geometry };
   }
 
+  // Select strictly the ONE active guidance target in deterministic sequence matching Google Camera
+  function getActiveGuidanceTarget() {
+    const eng = engineRef.current;
+    if (!eng.targets || eng.targets.length === 0) return null;
+
+    // Before any photo is taken: strictly dot 0 (center anchor)
+    if (eng.capturedCount === 0) {
+      return eng.targets.find((t) => t.dotNumber === 0) || eng.targets[0];
+    }
+
+    const pending = eng.targets.filter((t) => !t.captured);
+    if (pending.length === 0) return null;
+
+    const anchorYaw = eng.anchorYaw !== null ? eng.anchorYaw : eng.camYaw;
+    const relYaw = ((eng.camYaw - anchorYaw + 540) % 360) - 180;
+    const camPitch = eng.camPitch;
+
+    // Ordered sequence rings matching Google Camera LightCycle:
+    // 1. Horizon ring (dots 1 to 9, yaw 36° to -36°, pitch 0°)
+    // 2. Upper ring (dots 10 to 17, pitch +38°)
+    // 3. Zenith cap (dots 26 to 29, pitch +74°)
+    // 4. Lower ring (dots 18 to 25, pitch -38°)
+    // 5. Nadir cap (dots 30 to 33, pitch -74°)
+    // 6. Dynamic gap dots
+    const ringOrder = ['horizon', 'upper', 'zenith', 'lower', 'nadir', 'gap'];
+    for (const ring of ringOrder) {
+      const ringTargets = pending.filter((t) => (t.region === ring || t.ring === ring));
+      if (ringTargets.length > 0) {
+        let closest = ringTargets[0];
+        let minAng = Infinity;
+        for (const t of ringTargets) {
+          const tYaw = t.baseYaw !== undefined ? t.baseYaw : t.yaw;
+          const tPitch = t.basePitch !== undefined ? t.basePitch : t.pitch;
+          const ang = angularDistance(relYaw, camPitch, tYaw, tPitch);
+          if (ang < minAng) {
+            minAng = ang;
+            closest = t;
+          }
+        }
+        return closest;
+      }
+    }
+
+    return pending[0];
+  }
+
   // Initialize Lattice from PHOTO_SPHERE_TARGETS (All 33 Dots + Anchor Frame)
   function initTargetLattice() {
     const eng = engineRef.current;
@@ -377,8 +423,8 @@ export default function PhotoSphereCapture({
       const yawRad = THREE.MathUtils.degToRad(t.yaw);
       const pitchRad = THREE.MathUtils.degToRad(t.pitch);
       const isCenterStartDot = t.dotNumber === 0;
-      // All 360 targets are visible across the sphere so the user never gets lost
-      spawnTargetDot(t.dotNumber, yawRad, pitchRad, true, false, t);
+      // Start with ONLY dot 0 visible (Anchor center dot)
+      spawnTargetDot(t.dotNumber, yawRad, pitchRad, isCenterStartDot, false, t);
     });
 
     updateFrontierAndGapDots();
@@ -389,14 +435,17 @@ export default function PhotoSphereCapture({
     const eng = engineRef.current;
     if (!eng.targets || eng.targets.length === 0) return;
 
-    // All uncaptured dots remain visible across the 360 space; captured dots are retired
+    // Find the single active target to guide the user to next
+    const active = getActiveGuidanceTarget();
+    eng.activeTarget = active;
+
+    // In Google Camera Photo Sphere: exactly ONE active guidance dot is shown on the viewfinder
     eng.targets.forEach((t) => {
-      if (t.captured) {
-        t.visible = false;
-        if (t.mesh) t.mesh.visible = false;
-      } else {
-        t.visible = true;
-        if (t.mesh) t.mesh.visible = true;
+      const shouldBeVisible = !t.captured && (t === active);
+      t.visible = shouldBeVisible;
+      if (t.mesh) {
+        // Keep 3D meshes hidden in Three.js so only the crisp 2D canvas renders the dot
+        t.mesh.visible = false;
       }
     });
 
@@ -414,6 +463,8 @@ export default function PhotoSphereCapture({
           { id: `gap_${eng.targets.length}`, dotNumber: eng.targets.length, yaw: gap.yawDeg, pitch: gap.pitchDeg, region: 'gap' }
         );
         gapTarget.isGapDot = true;
+        eng.activeTarget = gapTarget;
+        gapTarget.visible = true;
       }
     }
 
@@ -738,13 +789,14 @@ export default function PhotoSphereCapture({
     const focalPx = (boxWidth / 2) / Math.tan((21 * Math.PI) / 180);
     const screenVFOV = 2 * Math.atan((H / 2) / focalPx) * (180 / Math.PI);
 
-    // Two-Phase Capture Start: anchorYaw tracks camYaw during shot 0
-    if (eng.capturedCount === 0 && eng.anchorYaw === null) {
+    // Before shot 0 is taken, anchorYaw ALWAYS tracks camYaw so relYaw is strictly 0!
+    if (eng.capturedCount === 0) {
       eng.anchorYaw = eng.camYaw;
+      eng.anchorPitch = 0;
     }
 
     const anchorYaw = eng.anchorYaw !== null ? eng.anchorYaw : eng.camYaw;
-    const relYaw = ((eng.camYaw - anchorYaw + 540) % 360) - 180;
+    const relYaw = eng.capturedCount === 0 ? 0 : (((eng.camYaw - anchorYaw + 540) % 360) - 180);
 
     // ── LAYER 1: 3D WebGL Perspective Scene (Three.js) ──
     if (eng.camera && eng.renderer && eng.scene) {
@@ -777,16 +829,15 @@ export default function PhotoSphereCapture({
       if (dotsCtx && eng.camera) {
         dotsCtx.clearRect(0, 0, W, H);
 
-        // Project all uncaptured targets and identify the Active Target
-        let activeTarget = null;
-        let minCenterDist = Infinity;
-        const projectedDots = [];
+        // Project the Single Active Guidance Target
+        let activeTarget = eng.activeTarget || getActiveGuidanceTarget();
+        eng.activeTarget = activeTarget;
 
-        for (const target of eng.targets) {
-          if (target.captured || !target.visible) continue;
+        let activeProjected = null;
 
-          const tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
-          const tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
+        if (activeTarget && !activeTarget.captured) {
+          const tYaw = activeTarget.baseYaw !== undefined ? activeTarget.baseYaw : activeTarget.yaw;
+          const tPitch = activeTarget.basePitch !== undefined ? activeTarget.basePitch : activeTarget.pitch;
 
           const dist = 10;
           const yawRad = THREE.MathUtils.degToRad(tYaw);
@@ -804,105 +855,63 @@ export default function PhotoSphereCapture({
           const screenY = (-(proj.y * 0.5) + 0.5) * H;
           const distPx = Math.hypot(screenX - centerX, screenY - centerY);
 
-          if (!isBehind) {
-            projectedDots.push({ target, screenX, screenY, distPx });
-            if (distPx < minCenterDist) {
-              minCenterDist = distPx;
-              activeTarget = target;
-            }
+          if (!isBehind && screenX >= -40 && screenX <= W + 40 && screenY >= -40 && screenY <= H + 40) {
+            activeProjected = { target: activeTarget, screenX, screenY, distPx };
           }
         }
 
-        // Draw candidate dots first, then active target on top
-        for (const { target, screenX, screenY, distPx } of projectedDots) {
-          const isActive = target === activeTarget;
-          const isAligned = isActive && distPx <= 26;
+        // Draw the single active guidance dot
+        if (activeProjected) {
+          const { target, screenX, screenY, distPx } = activeProjected;
+          const isAligned = distPx <= 26;
 
           dotsCtx.save();
           dotsCtx.beginPath();
           const drawX = isAligned ? centerX : screenX;
           const drawY = isAligned ? centerY : screenY;
 
-          if (isActive) {
-            // Prominent Glowing Active Google Blue Target
-            const r = isAligned ? 17 : 15;
-            dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
-            dotsCtx.fillStyle = '#4285F4';
-            dotsCtx.shadowColor = 'rgba(66, 133, 244, 0.95)';
-            dotsCtx.shadowBlur = isAligned ? 18 : 12;
-            dotsCtx.fill();
+          // Prominent Glowing Active Google Blue Target
+          const r = isAligned ? 17 : 15;
+          dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+          dotsCtx.fillStyle = '#4285F4';
+          dotsCtx.shadowColor = 'rgba(66, 133, 244, 0.95)';
+          dotsCtx.shadowBlur = isAligned ? 18 : 12;
+          dotsCtx.fill();
 
-            // Crisp white outer ring
-            dotsCtx.lineWidth = 3.0;
-            dotsCtx.strokeStyle = '#FFFFFF';
-            dotsCtx.stroke();
+          // Crisp white outer ring
+          dotsCtx.lineWidth = 3.0;
+          dotsCtx.strokeStyle = '#FFFFFF';
+          dotsCtx.stroke();
 
-            // Inner white dot
-            dotsCtx.beginPath();
-            dotsCtx.arc(drawX, drawY, 4, 0, 2 * Math.PI);
-            dotsCtx.fillStyle = '#FFFFFF';
-            dotsCtx.fill();
-          } else {
-            // Visible Google Blue 360 constellation dot
-            const r = 12;
-            dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
-            dotsCtx.fillStyle = 'rgba(66, 133, 244, 0.65)';
-            dotsCtx.shadowColor = 'rgba(0, 0, 0, 0.75)';
-            dotsCtx.shadowBlur = 6;
-            dotsCtx.fill();
-
-            // Crisp white outline
-            dotsCtx.lineWidth = 2.0;
-            dotsCtx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-            dotsCtx.stroke();
-
-            // Center highlight
-            dotsCtx.beginPath();
-            dotsCtx.arc(drawX, drawY, 2.5, 0, 2 * Math.PI);
-            dotsCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            dotsCtx.fill();
-          }
+          // Inner white dot
+          dotsCtx.beginPath();
+          dotsCtx.arc(drawX, drawY, 4, 0, 2 * Math.PI);
+          dotsCtx.fillStyle = '#FFFFFF';
+          dotsCtx.fill();
           dotsCtx.restore();
-        }
+        } else if (activeTarget && !activeTarget.captured) {
+          // Off-screen directional guidance: guide user toward the active target
+          const tYaw = activeTarget.baseYaw !== undefined ? activeTarget.baseYaw : activeTarget.yaw;
+          const tPitch = activeTarget.basePitch !== undefined ? activeTarget.basePitch : activeTarget.pitch;
+          const dYaw = ((tYaw - relYaw + 540) % 360) - 180;
+          const dPitch = tPitch - eng.camPitch;
+          const dirAngle = Math.atan2(-dPitch, dYaw);
 
-        // Off-screen directional guidance: if no uncaptured targets inside screen, guide user toward closest target
-        if (projectedDots.length === 0 || minCenterDist > Math.max(W, H) * 0.45) {
-          let nearestAnywhere = null;
-          let minAng = Infinity;
-          for (const target of eng.targets) {
-            if (target.captured) continue;
-            const tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
-            const tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
-            const ang = angularDistance(relYaw, eng.camPitch, tYaw, tPitch);
-            if (ang < minAng) {
-              minAng = ang;
-              nearestAnywhere = target;
-            }
-          }
+          const guideRadius = 56;
+          const gx = centerX + guideRadius * Math.cos(dirAngle);
+          const gy = centerY + guideRadius * Math.sin(dirAngle);
 
-          if (nearestAnywhere) {
-            const tYaw = nearestAnywhere.baseYaw !== undefined ? nearestAnywhere.baseYaw : nearestAnywhere.yaw;
-            const tPitch = nearestAnywhere.basePitch !== undefined ? nearestAnywhere.basePitch : nearestAnywhere.pitch;
-            const dYaw = ((tYaw - relYaw + 540) % 360) - 180;
-            const dPitch = tPitch - eng.camPitch;
-            const dirAngle = Math.atan2(-dPitch, dYaw);
-
-            const guideRadius = 56;
-            const gx = centerX + guideRadius * Math.cos(dirAngle);
-            const gy = centerY + guideRadius * Math.sin(dirAngle);
-
-            dotsCtx.save();
-            dotsCtx.beginPath();
-            dotsCtx.arc(gx, gy, 7, 0, 2 * Math.PI);
-            dotsCtx.fillStyle = '#4285F4';
-            dotsCtx.shadowColor = 'rgba(66, 133, 244, 0.95)';
-            dotsCtx.shadowBlur = 10;
-            dotsCtx.fill();
-            dotsCtx.lineWidth = 2;
-            dotsCtx.strokeStyle = '#FFFFFF';
-            dotsCtx.stroke();
-            dotsCtx.restore();
-          }
+          dotsCtx.save();
+          dotsCtx.beginPath();
+          dotsCtx.arc(gx, gy, 7, 0, 2 * Math.PI);
+          dotsCtx.fillStyle = '#4285F4';
+          dotsCtx.shadowColor = 'rgba(66, 133, 244, 0.95)';
+          dotsCtx.shadowBlur = 10;
+          dotsCtx.fill();
+          dotsCtx.lineWidth = 2;
+          dotsCtx.strokeStyle = '#FFFFFF';
+          dotsCtx.stroke();
+          dotsCtx.restore();
         }
       }
     }
@@ -1590,6 +1599,8 @@ export default function PhotoSphereCapture({
         eng.initialYaw = yawDeg;
         eng.camYaw = yawDeg;
         eng.camPitch = pitchDeg;
+        eng.anchorYaw = yawDeg;
+        eng.anchorPitch = 0;
       }
 
       const targetYaw = yawDeg;
@@ -1632,6 +1643,8 @@ export default function PhotoSphereCapture({
             eng.initialYaw = targetYaw;
             eng.camYaw = targetYaw;
             eng.camPitch = targetPitch;
+            eng.anchorYaw = targetYaw;
+            eng.anchorPitch = 0;
           }
 
           const now = performance.now();
