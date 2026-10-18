@@ -1397,9 +1397,12 @@ export default function InspectionSession() {
               metadata: {
                 framesCount: data.framesCount,
                 sessionId: data.sessionId,
+                coveragePercent: data.coveragePercent,
               },
             });
             setShowPhotoSphere(false);
+            setActiveStepId('evidence');
+            setExpandedFolder('photospheres');
             await loadEvidence();
           }}
           onClose={() => setShowPhotoSphere(false)}

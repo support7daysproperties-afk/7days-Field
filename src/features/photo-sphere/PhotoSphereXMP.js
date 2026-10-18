@@ -61,6 +61,8 @@ export function generatePhotoSphereXmpXml({
       xmlns:GPano="http://ns.google.com/photos/1.0/panorama/">
       <GPano:UsePanoramaViewer>True</GPano:UsePanoramaViewer>
       <GPano:IsPhotosphere>${isPhotosphereStr}</GPano:IsPhotosphere>
+      <GPano:CaptureSoftware>7DaysField PhotoSphere</GPano:CaptureSoftware>
+      <GPano:StitchingSoftware>7DaysField Ceres/GraphCut Engine</GPano:StitchingSoftware>
       <GPano:ProjectionType>equirectangular</GPano:ProjectionType>
       <GPano:FullPanoWidthPixels>${Math.round(fullPanoWidth)}</GPano:FullPanoWidthPixels>
       <GPano:FullPanoHeightPixels>${Math.round(fullPanoHeight)}</GPano:FullPanoHeightPixels>

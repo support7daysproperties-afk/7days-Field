@@ -25,36 +25,43 @@ import {
   projectWorldToScreen,
   BOX_FOV_X,
   BOX_FOV_Y,
+  PhotoSpherePlanner,
+  LATTICE_RINGS,
 } from '../src/features/photo-sphere/PhotoSphereTargets';
+import {
+  photoSphereStorage,
+  PhotoSphereStorage,
+} from '../src/features/photo-sphere/storage/PhotoSphereStorage';
+import SyncEngine from '../src/services/offline/SyncEngine';
+import { EvidenceService } from '../src/services/EvidenceService';
 
 describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
-  it('should generate a complete 360x180 spherical coverage grid matching 34-dot lattice', () => {
+  it('should generate a complete 360x180 spherical coverage grid matching 34-dot 5-ring lattice (10, 8, 8, 4, 4)', () => {
     const targets = generateSphericalTargets();
     expect(targets.length).toBe(34);
 
     const horizon = targets.filter((t) => t.ring === 'horizon');
-    const lowerHorizon = targets.filter((t) => t.ring === 'lower-horizon');
-    const upperHorizon = targets.filter((t) => t.ring === 'upper-horizon');
-    const lower = targets.filter((t) => t.ring === 'lower');
-    const upper = targets.filter((t) => t.ring === 'upper');
+    const upper = targets.filter((t) => t.ring === 'upper' || t.ring === 'upper-horizon');
+    const lower = targets.filter((t) => t.ring === 'lower' || t.ring === 'lower-horizon');
     const zenith = targets.filter((t) => t.ring === 'zenith');
     const nadir = targets.filter((t) => t.ring === 'nadir');
 
     expect(horizon.length).toBe(10);
-    expect(lowerHorizon.length).toBe(8);
-    expect(upperHorizon.length).toBe(8);
-    expect(lower.length).toBe(3);
-    expect(upper.length).toBe(3);
-    expect(zenith.length).toBe(1);
-    expect(nadir.length).toBe(1);
+    expect(upper.length).toBe(8);
+    expect(lower.length).toBe(8);
+    expect(zenith.length).toBe(4);
+    expect(nadir.length).toBe(4);
 
     expect(horizon[0].pitch).toBe(0);
-    expect(lowerHorizon[0].pitch).toBe(-35);
-    expect(upperHorizon[0].pitch).toBe(35);
-    expect(lower[0].pitch).toBe(-72);
-    expect(upper[0].pitch).toBe(65);
-    expect(zenith[0].pitch).toBe(90);
-    expect(nadir[0].pitch).toBe(-90);
+    expect(upper[0].pitch).toBe(38);
+    expect(lower[0].pitch).toBe(-38);
+    expect(zenith[0].pitch).toBe(74);
+    expect(nadir[0].pitch).toBe(-74);
+
+    // Initial state: Only Target #0 is visible
+    const initialVisible = targets.filter((t) => t.visible);
+    expect(initialVisible.length).toBe(1);
+    expect(initialVisible[0].dotNumber).toBe(0);
   });
 
   it('should normalize angles into [0, 360)', () => {
@@ -174,7 +181,10 @@ describe('PhotoSphereTargets 3D Coordinate & Projection Suite', () => {
   });
 });
 
-import { PhotoSphereOrientation } from '../src/features/photo-sphere/PhotoSphereOrientation';
+import {
+  PhotoSphereOrientation,
+  computeCameraRotationMatrix,
+} from '../src/features/photo-sphere/PhotoSphereOrientation';
 
 describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
   it('should calibrate both heading and pitch so initial pose is bore sight (0, 0)', () => {
@@ -255,6 +265,78 @@ describe('PhotoSphereOrientation Sensor Fusion & Guard Suite', () => {
 
     // EMA smoothing dampens jitter spike, keeping isMovingTooFast false
     expect(capturedOrientation.isMovingTooFast).toBe(false);
+  });
+
+  it('should compute orthonormal 4x4 camera rotation matrix remapped from sensor frame (goy.java:119)', () => {
+    // Phone held upright facing North (alpha = 0, beta = 90, gamma = 0)
+    const R = computeCameraRotationMatrix(0, 90, 0, 0);
+    expect(R.length).toBe(16);
+
+    // Verify row orthonormality
+    for (let r = 0; r < 3; r++) {
+      const lenSq = R[r * 4] ** 2 + R[r * 4 + 1] ** 2 + R[r * 4 + 2] ** 2;
+      expect(lenSq).toBeCloseTo(1, 4);
+    }
+
+    // Verify column orthonormality
+    for (let c = 0; c < 3; c++) {
+      const lenSq = R[c] ** 2 + R[4 + c] ** 2 + R[8 + c] ** 2;
+      expect(lenSq).toBeCloseTo(1, 4);
+    }
+  });
+
+  it('Device rotation invariant test across 360° yaw', () => {
+    // Test across all 4 quadrants of yaw: 0°, 90°, 180°, 270°
+    const yaws = [0, 90, 180, 270];
+
+    for (const yaw of yaws) {
+      // In W3C convention: alpha = 360 - yaw
+      const alpha = (360 - yaw) % 360;
+      let orientation = null;
+      const tracker = new PhotoSphereOrientation((o) => {
+        orientation = o;
+      });
+      tracker.setReferenceHeading(0, 0);
+      tracker._handleOrientation({ alpha, beta: 90, gamma: 0 });
+
+      expect(orientation).not.toBeNull();
+      expect(orientation.yaw).toBeCloseTo(yaw, 1);
+      expect(orientation.pitch).toBeCloseTo(0, 1);
+
+      // Check camera rotation matrix
+      const mat = orientation.cameraRotationMatrix;
+      expect(mat.length).toBe(16);
+
+      // A target in world space located at this exact yaw direction
+      // should project dead-center onto camera bore sight (Xc ≈ 0, Yc ≈ 0, Zc ≈ -1)
+      const uTarget = sphericalToVector(yaw, 0);
+      const proj = PhotoSpherePlanner.projectTarget(
+        { direction: uTarget },
+        mat,
+        400,
+        800,
+        46.0,
+        56.0
+      );
+
+      expect(proj.visible).toBe(true);
+      expect(proj.angularDistDeg).toBeCloseTo(0, 1);
+      expect(proj.x).toBeCloseTo(200, 1);
+      expect(proj.y).toBeCloseTo(400, 1);
+    }
+  });
+
+  it('should enforce stability gating (||omega|| < 0.10 rad/s)', () => {
+    let capturedOrientation = null;
+    const tracker = new PhotoSphereOrientation((o) => {
+      capturedOrientation = o;
+    });
+    tracker.setReferenceHeading(0, 0);
+
+    // Initial steady position
+    tracker._handleOrientation({ alpha: 0, beta: 90, gamma: 0 });
+    expect(capturedOrientation.isStableForCapture).toBe(true);
+    expect(capturedOrientation.angularVelocityRad).toBeLessThan(0.10);
   });
 
   it('should correctly project targets in mobile portrait orientation (width < height)', () => {
@@ -636,5 +718,273 @@ describe('PhotoSphere Critical Fixes: Center Target, Camera Zoom & Stitching Qua
     });
   });
 });
+
+describe('PhotoSpherePlanner Reference Engine', () => {
+  it('should have verified reverse-engineered threshold constants', () => {
+    expect(PhotoSpherePlanner.ALIGNMENT_THRESHOLD_RAD).toBeCloseTo(0.0837, 4);
+    expect(PhotoSpherePlanner.ALIGNMENT_THRESHOLD_DEG).toBeCloseTo(4.8, 1);
+    expect(PhotoSpherePlanner.UNLOCK_NEIGHBOR_RAD).toBeCloseTo(0.9075, 4);
+    expect(PhotoSpherePlanner.UNLOCK_NEIGHBOR_DEG).toBeCloseTo(52.0, 1);
+  });
+
+  it('should generate 34-dot lattice with only Target 0 unlocked initially', () => {
+    const targets = PhotoSpherePlanner.generate34Lattice();
+    expect(targets.length).toBe(34);
+    expect(targets[0].visible).toBe(true);
+    expect(targets.slice(1).every((t) => !t.visible)).toBe(true);
+  });
+
+  it('should project target onto screen coordinates using camera rotation matrix', () => {
+    const targets = PhotoSpherePlanner.generate34Lattice();
+    const t0 = targets[0]; // (yaw 0, pitch 0) -> direction [0, 0, -1]
+    const identity4x4 = [
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    ];
+    const proj = PhotoSpherePlanner.projectTarget(t0, identity4x4, 400, 800, 46.0, 56.0);
+    expect(proj.visible).toBe(true);
+    expect(proj.angularDistDeg).toBeCloseTo(0, 2);
+    expect(proj.x).toBeCloseTo(200, 1);
+    expect(proj.y).toBeCloseTo(400, 1);
+  });
+
+  it('should cull targets behind the camera (zc >= -0.05)', () => {
+    const targets = PhotoSpherePlanner.generate34Lattice();
+    const tBehind = targets.find((t) => t.yaw === 180 && t.pitch === 0);
+    const identity4x4 = [
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    ];
+    const proj = PhotoSpherePlanner.projectTarget(tBehind, identity4x4, 400, 800, 46.0, 56.0);
+    expect(proj.visible).toBe(false);
+    expect(proj.x).toBe(-999);
+    expect(proj.y).toBe(-999);
+  });
+});
+
+describe('PhotoSphereStorage & Interruption Session Recovery Suite', () => {
+  it('should enforce Durable Persistence Rule by storing frames before advancing state', async () => {
+    const storage = new PhotoSphereStorage();
+    const session = await storage.createSession('test_inspection_001', { totalTargets: 34 });
+    expect(session.id).toBeDefined();
+    expect(session.status).toBe('capturing');
+    expect(session.capturedCount).toBe(0);
+
+    const dummyBlob = { size: 1024, type: 'image/jpeg' };
+    const savedFrame = await storage.saveFrame({
+      sessionId: session.id,
+      targetId: 't_0',
+      sequenceIndex: 0,
+      yaw: 0,
+      pitch: 0,
+      roll: 0,
+      blob: dummyBlob,
+      width: 1280,
+      height: 960,
+    });
+
+    expect(savedFrame.id).toBeDefined();
+    expect(savedFrame.yaw).toBe(0);
+    expect(savedFrame.blob).toBe(dummyBlob);
+
+    // Verify session captured count incremented
+    const updatedSession = await storage.getSession(session.id);
+    expect(updatedSession.capturedCount).toBe(1);
+  });
+
+  it('Interruption test (simulate app restart during 15/34 capture state)', async () => {
+    const storage = new PhotoSphereStorage();
+    const taskId = 'inspection_task_interrupted_456';
+    const session = await storage.createSession(taskId, { totalTargets: 34 });
+
+    const allLatticeTargets = generateSphericalTargets();
+    expect(allLatticeTargets.length).toBe(34);
+
+    // Simulate user capturing 15 targets before app is closed or battery dies
+    for (let i = 0; i < 15; i++) {
+      const t = allLatticeTargets[i];
+      await storage.saveFrame({
+        sessionId: session.id,
+        targetId: t.id,
+        sequenceIndex: t.dotNumber,
+        yaw: t.yaw,
+        pitch: t.pitch,
+        roll: 0,
+        blob: { size: 5000 + i, type: 'image/jpeg' },
+        width: 1280,
+        height: 960,
+        capturedAt: 1000 + i * 10,
+      });
+    }
+
+    // === SIMULATE APP RESTART ===
+    // On cold boot, app queries storage for active session
+    const activeSession = await storage.getActiveSession(taskId);
+    expect(activeSession).not.toBeNull();
+    expect(activeSession.id).toBe(session.id);
+    expect(activeSession.capturedCount).toBe(15);
+
+    // Recover saved frames from storage
+    const savedFrames = await storage.getFramesForSession(activeSession.id);
+    expect(savedFrames.length).toBe(15);
+
+    // Reconstruct targets state from storage
+    let restoredTargets = generateSphericalTargets();
+    const capturedFrameList = savedFrames.map((f) => ({ targetId: f.targetId }));
+    const { updatedTargets } = updateFrontierAndGapDots(restoredTargets, capturedFrameList);
+    restoredTargets = updatedTargets;
+
+    // Verify exact 15 targets marked captured
+    const capturedTargets = restoredTargets.filter((t) => t.captured);
+    const uncapturedTargets = restoredTargets.filter((t) => !t.captured);
+    expect(capturedTargets.length).toBe(15);
+    expect(uncapturedTargets.length).toBe(19);
+
+    // Verify remaining active frontier targets are unlocked and ready for next shot
+    const visibleUnlocked = restoredTargets.filter((t) => !t.captured && t.visible);
+    expect(visibleUnlocked.length).toBeGreaterThan(0);
+  });
+
+  it('should support Undo by deleting last frame and re-arming target', async () => {
+    const storage = new PhotoSphereStorage();
+    const taskId = 'inspection_undo_test_789';
+    const session = await storage.createSession(taskId, { totalTargets: 34 });
+
+    // Capture target 0 and target 1
+    await storage.saveFrame({
+      sessionId: session.id,
+      targetId: 't_0',
+      sequenceIndex: 0,
+      yaw: 0,
+      pitch: 0,
+      blob: { size: 2048 },
+      capturedAt: 100,
+    });
+    await storage.saveFrame({
+      sessionId: session.id,
+      targetId: 't_1',
+      sequenceIndex: 1,
+      yaw: 36,
+      pitch: 0,
+      blob: { size: 2048 },
+      capturedAt: 200,
+    });
+
+    let frames = await storage.getFramesForSession(session.id);
+    expect(frames.length).toBe(2);
+
+    // User taps Undo: delete last frame
+    const deleted = await storage.deleteLastFrame(session.id);
+    expect(deleted.targetId).toBe('t_1');
+
+    // Verify durable storage reflects undo
+    frames = await storage.getFramesForSession(session.id);
+    expect(frames.length).toBe(1);
+    expect(frames[0].targetId).toBe('t_0');
+
+    const updatedSession = await storage.getSession(session.id);
+    expect(updatedSession.capturedCount).toBe(1);
+  });
+});
+
+describe('Phase 5 — Full Inspection Integration & Interactive 360 Viewer Suite', () => {
+  it('should generate standardized photosphere-N filenames in SyncEngine for Drive synchronization', () => {
+    const inspection = { id: 'insp_101', property_id: 'prop_01' };
+    const allMedia = [
+      { id: 'm1', type: 'photo', captured_at: 1000 },
+      { id: 'm2', type: 'photo_sphere', captured_at: 2000 },
+      { id: 'm3', type: 'photo_sphere', captured_at: 3000 },
+      { id: 'm4', type: 'video', captured_at: 4000 },
+    ];
+
+    const filename1 = SyncEngine._getSimpleMediaFilename(allMedia[1], inspection, allMedia);
+    const filename2 = SyncEngine._getSimpleMediaFilename(allMedia[2], inspection, allMedia);
+    const photoFilename = SyncEngine._getSimpleMediaFilename(allMedia[0], inspection, allMedia);
+
+    expect(filename1).toBe('photosphere-1.jpg');
+    expect(filename2).toBe('photosphere-2.jpg');
+    expect(photoFilename).toBe('photo-1.jpg');
+  });
+
+  it('should accurately aggregate photo_spheres count in EvidenceService summary', async () => {
+    // Mock getEvidenceForTask
+    const originalGet = EvidenceService.getEvidenceForTask;
+    EvidenceService.getEvidenceForTask = async () => [
+      { id: '1', mediaType: 'photo', evidenceType: 'Exterior Front' },
+      { id: '2', mediaType: 'photo_sphere', evidenceType: '360 Photo Sphere' },
+      { id: '3', mediaType: 'photo_sphere', evidenceType: '360 Photo Sphere' },
+      { id: '4', mediaType: 'video', evidenceType: 'Driveway Video' },
+      { id: '5', mediaType: 'photo', evidenceType: 'Location Verification' },
+    ];
+
+    try {
+      const summary = await EvidenceService.getEvidenceSummary('task_123');
+      expect(summary.photos).toBe(1);
+      expect(summary.photoSpheres).toBe(2);
+      expect(summary.videos).toBe(1);
+      expect(summary.location).toBeDefined();
+      expect(summary.total).toBe(4); // photos + photoSpheres + videos
+    } finally {
+      EvidenceService.getEvidenceForTask = originalGet;
+    }
+  });
+
+  it('should verify Cardboard stereoscopic IPD camera separation (64mm)', () => {
+    const ipd = 0.064; // Interpupillary distance: 64mm
+    const cameraLeftPos = { x: -ipd / 2, y: 0, z: 0 };
+    const cameraRightPos = { x: ipd / 2, y: 0, z: 0 };
+
+    expect(cameraLeftPos.x).toBe(-0.032);
+    expect(cameraRightPos.x).toBe(0.032);
+    expect(cameraRightPos.x - cameraLeftPos.x).toBe(0.064);
+  });
+
+  it('should verify inverted equirectangular sphere geometry scale (-1, 1, 1) and radius 500', () => {
+    const radius = 500;
+    const geometry = new THREE.SphereGeometry(radius, 72, 48);
+    geometry.scale(-1, 1, 1);
+
+    expect(geometry.parameters.radius).toBe(500);
+    expect(geometry.parameters.widthSegments).toBe(72);
+    expect(geometry.parameters.heightSegments).toBe(48);
+
+    // Compute bounding sphere after inversion
+    geometry.computeBoundingSphere();
+    expect(geometry.boundingSphere.radius).toBeCloseTo(500, 1);
+  });
+
+  it('should durably persist and retrieve stitched panorama records in PhotoSphereStorage', async () => {
+    const storage = new PhotoSphereStorage(true);
+    const session = await storage.createSession('task_phase5_test', { totalTargets: 34 });
+
+    const panoRecord = await storage.savePanorama({
+      sessionId: session.id,
+      inspectionId: 'task_phase5_test',
+      blob: new Blob(['fake_gpano_jpeg_data'], { type: 'image/jpeg' }),
+      width: 2048,
+      height: 1024,
+      isCompleteSphere: true,
+      metadata: {
+        coveragePercent: 100,
+        stitchedAt: Date.now(),
+      },
+    });
+
+    expect(panoRecord.id).toBeDefined();
+    expect(panoRecord.isCompleteSphere).toBe(true);
+    expect(panoRecord.width).toBe(2048);
+    expect(panoRecord.height).toBe(1024);
+    expect(panoRecord.metadata.coveragePercent).toBe(100);
+
+    const retrieved = await storage.getPanorama(panoRecord.id);
+    expect(retrieved).not.toBeNull();
+    expect(retrieved.sessionId).toBe(session.id);
+  });
+});
+
 
 

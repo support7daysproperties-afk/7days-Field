@@ -5,12 +5,14 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { photoSphereStorage } from './storage/PhotoSphereStorage';
 import useBackHandler from '../../hooks/useBackHandler';
 import InteractivePhotoSphereViewer from './components/InteractivePhotoSphereViewer';
+import { PhotoSphereStitcher } from './PhotoSphereStitcher';
 
 const PhotoSphereSensor = registerPlugin('PhotoSphereSensor');
 
 import { injectXmpIntoJpeg } from './PhotoSphereXMP';
 import {
   PHOTO_SPHERE_TARGETS,
+  COVERAGE_CONFIG,
   getStabilizedYawPitch,
   getCameraBasisFromDeviceOrientation,
   projectTargetDot3D,
@@ -24,11 +26,11 @@ import {
 const RETICLE_CIRCUMFERENCE = 150.8;
 
 const CONFIG = {
-  ALIGNMENT_THRESHOLD_DEG: 4.8,
+  ALIGNMENT_THRESHOLD_DEG: COVERAGE_CONFIG.ALIGNMENT_THRESHOLD_DEG,
   MAX_ANGULAR_VELOCITY: 45.0,
-  HOLD_DURATION_MS: 320,
-  CAPTURE_FOV_H_DEG: 44,
-  CAPTURE_FOV_V_DEG: 54,
+  HOLD_DURATION_MS: COVERAGE_CONFIG.HOLD_DURATION_MS,
+  CAPTURE_FOV_H_DEG: COVERAGE_CONFIG.CAPTURE_FOV_H_DEG,
+  CAPTURE_FOV_V_DEG: COVERAGE_CONFIG.CAPTURE_FOV_V_DEG,
   SPHERE_RADIUS: 500, // Exact 3D sphere radius R = 500 units
   PANO_WIDTH: 2048,
   PANO_HEIGHT: 1024,
@@ -62,6 +64,10 @@ export default function PhotoSphereCapture({
   const [canUndo, setCanUndo] = useState(false);
   const [canFinish, setCanFinish] = useState(false);
   const [showResultModal, setShowResultModal] = useState(false);
+  const [isStitching, setIsStitching] = useState(false);
+  const [stitchingProgress, setStitchingProgress] = useState({ percent: 0, statusText: '' });
+  const [stitchedPanoData, setStitchedPanoData] = useState(null);
+  const [stitchError, setStitchError] = useState(null);
   const [activeResultTab, setActiveResultTab] = useState('360'); // '360' | 'planet' | 'equirect'
   const [cameraFacingMode, setCameraFacingMode] = useState('environment');
   const [coveragePercent, setCoveragePercent] = useState(0);
@@ -71,6 +77,14 @@ export default function PhotoSphereCapture({
 
   // Global back handler for Photo Sphere capture (priority 90)
   useBackHandler('photo_sphere_capture', () => {
+    if (stitchError) {
+      setStitchError(null);
+      return true;
+    }
+    if (isStitching) {
+      // Prevent exit while stitching is processing
+      return true;
+    }
     if (showResultModal) {
       setShowResultModal(false);
       return true;
@@ -393,11 +407,11 @@ export default function PhotoSphereCapture({
         return;
       }
 
-      // Check if t is an immediate orthogonal 4-neighbor (Left, Right, Up, Down) of any captured tile
+      // Check if t is an immediate spatial neighbor (<= 52.0 deg) of any captured tile
       let isImmediateNeighbor = false;
       for (const cap of capturedTargets) {
         const ang = angularDistance(t.yaw, t.pitch, cap.yaw, cap.pitch);
-        if (ang >= 25 && ang <= 48) {
+        if (ang > 5 && ang <= COVERAGE_CONFIG.NEIGHBOR_DISTANCE_DEG) {
           isImmediateNeighbor = true;
           break;
         }
@@ -596,19 +610,6 @@ export default function PhotoSphereCapture({
 
     eng.isCapturing = true;
 
-    // Two-Phase Capture Start (Anchor Phase -> 33-Dot Grid Phase):
-    // The instant t_0 is captured: Freeze anchorYaw = currentCameraYaw and anchorPitch = 0.
-    // All remaining 33 dots (t_1 to t_33) are now locked in 3D world space relative to anchorYaw!
-    if (eng.capturedCount === 0 || target.dotNumber === 0) {
-      eng.anchorYaw = eng.camYaw;
-      eng.anchorPitch = 0;
-    }
-    eng.capturedCount++;
-
-    target.captured = true;
-    target.visible = false;
-    if (target.mesh) target.mesh.visible = false;
-
     if (navigator.vibrate) {
       try {
         navigator.vibrate(35);
@@ -646,7 +647,40 @@ export default function PhotoSphereCapture({
     const tileCtx = tileCanvas.getContext('2d');
     tileCtx.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-    // 2. Add as a true 3D textured mesh on the sphere in Three.js
+    // 2. Durable Persistence Rule: Save full-res JPEG bytes & pose to storage FIRST
+    try {
+      const blob = await new Promise((resolve) => tileCanvas.toBlob(resolve, 'image/jpeg', 0.95));
+      if (blob) {
+        await photoSphereStorage.saveFrame({
+          id: `frame_${target.id}_${Date.now()}`,
+          sessionId: eng.sessionId,
+          targetId: target.targetId || `t_${target.dotNumber !== undefined ? target.dotNumber : target.id}`,
+          sequenceIndex: target.dotNumber !== undefined ? target.dotNumber : target.id,
+          yaw: target.yaw,
+          pitch: target.pitch,
+          roll: 0,
+          blob,
+          width: cropW,
+          height: cropH,
+          capturedAt: Date.now(),
+        });
+      }
+    } catch (err) {
+      console.warn('Could not persist frame to IndexedDB:', err);
+    }
+
+    // 3. Only after durable storage write succeeds, advance capture count & mark captured
+    if (eng.capturedCount === 0 || target.dotNumber === 0) {
+      eng.anchorYaw = eng.camYaw;
+      eng.anchorPitch = 0;
+    }
+    eng.capturedCount++;
+
+    target.captured = true;
+    target.visible = false;
+    if (target.mesh) target.mesh.visible = false;
+
+    // 4. Add as a true 3D textured mesh on the sphere in Three.js
     const tile3DEntry = addCapturedTileTo3DScene(tileCanvas, target.yaw, target.pitch);
 
     // Save snapped tile in capturedTiles
@@ -661,34 +695,10 @@ export default function PhotoSphereCapture({
       height: cropH,
     });
 
-    // 3. Paint frame into 3D sphere texture using exact target pose & zero roll
+    // 5. Paint frame into 3D sphere texture using exact target pose & zero roll
     const targetYawRad = (target.yaw * Math.PI) / 180;
     const targetPitchRad = (target.pitch * Math.PI) / 180;
     projectLiveCameraFrameOntoSphere(tileCanvas, targetYawRad, targetPitchRad);
-
-    // 4. Save uncropped tile frame to IndexedDB
-    try {
-      tileCanvas.toBlob(async (blob) => {
-        if (blob) {
-          await photoSphereStorage.saveFrame({
-            id: `frame_${target.id}_${Date.now()}`,
-            sessionId: eng.sessionId,
-            targetId: target.targetId || `t_${target.dotNumber !== undefined ? target.dotNumber : target.id}`,
-            sequenceIndex: target.dotNumber !== undefined ? target.dotNumber : target.id,
-            yaw: target.yaw,
-            pitch: target.pitch,
-            roll: 0,
-            quaternion: [0, 0, 0, 1],
-            blob,
-            width: cropW,
-            height: cropH,
-            capturedAt: Date.now(),
-          });
-        }
-      }, 'image/jpeg', 0.92);
-    } catch (err) {
-      console.warn('Could not persist frame to IndexedDB:', err);
-    }
 
     updateFrontierAndGapDots();
     resetHoldProgress();
@@ -883,7 +893,7 @@ export default function PhotoSphereCapture({
       }
 
       const elapsed = timestamp - eng.holdStartTime;
-      const progress = Math.min(1, elapsed / 350);
+      const progress = Math.min(1, elapsed / (CONFIG.HOLD_DURATION_MS || 600));
 
       // Snap blue dot to center
       if (centerBlueDot) {
@@ -1042,7 +1052,7 @@ export default function PhotoSphereCapture({
 
 
   // Undo Last Capture
-  const handleUndo = useCallback(() => {
+  const handleUndo = useCallback(async () => {
     const eng = engineRef.current;
     if (eng.capturedTiles.length === 0) return;
 
@@ -1054,6 +1064,15 @@ export default function PhotoSphereCapture({
       }
       if (lastTile.tileEntry.texture) lastTile.tileEntry.texture.dispose();
       if (lastTile.tileEntry.geometry) lastTile.tileEntry.geometry.dispose();
+    }
+
+    // Delete last frame from durable storage
+    if (eng.sessionId) {
+      try {
+        await photoSphereStorage.deleteLastFrame(eng.sessionId);
+      } catch (err) {
+        console.warn('Could not remove last frame from storage:', err);
+      }
     }
 
     // Re-enable target
@@ -1210,31 +1229,115 @@ export default function PhotoSphereCapture({
     vLoop();
   };
 
-  // Open Results Screen
-  const handleOpenResults = () => {
-    setShowResultModal(true);
+  // Open Results Screen & Run Genuine Spherical Stitching
+  const handleOpenResults = async () => {
+    const eng = engineRef.current;
+    if (isStitching) return;
+
+    setIsStitching(true);
+    setStitchError(null);
+    setStitchingProgress({ percent: 5, statusText: 'Retrieving captured spherical frames...' });
+
+    try {
+      // 1. Gather all frames for the session from IndexedDB
+      let frames = [];
+      if (eng.sessionId) {
+        frames = await photoSphereStorage.getFramesForSession(eng.sessionId);
+      }
+
+      // If storage had no frames (e.g. headless tests or in-memory fallback), gather from capturedTiles
+      if ((!frames || frames.length === 0) && eng.capturedTiles && eng.capturedTiles.length > 0) {
+        frames = await Promise.all(
+          eng.capturedTiles.map(async (tile, idx) => {
+            let blob = null;
+            if (tile.canvas && tile.canvas.toBlob) {
+              blob = await new Promise((resolve) => tile.canvas.toBlob(resolve, 'image/jpeg', 0.95));
+            }
+            return {
+              id: `mem_frame_${idx}`,
+              yaw: tile.yaw,
+              pitch: tile.pitch,
+              roll: 0,
+              blob,
+              bitmap: tile.canvas,
+            };
+          })
+        );
+      }
+
+      if (!frames || frames.length === 0) {
+        throw new Error('No captured frames available for stitching');
+      }
+
+      // 2. Execute PhotoSphereStitcher with dual native/web inverse-spherical pipeline
+      const stitchResult = await PhotoSphereStitcher.stitch(
+        frames,
+        {
+          width: CONFIG.PANO_WIDTH,
+          strictCoverage: false, // Allows partial panorama generation with honest warning
+        },
+        (progress, statusText) => {
+          setStitchingProgress({
+            percent: Math.min(100, Math.max(0, Math.round(progress * 100))),
+            statusText,
+          });
+        }
+      );
+
+      // Clean up previous blob URL if any
+      if (stitchedPanoData?.url) {
+        try {
+          URL.revokeObjectURL(stitchedPanoData.url);
+        } catch (_) {}
+      }
+
+      setStitchedPanoData(stitchResult);
+      setIsStitching(false);
+      setShowResultModal(true);
+    } catch (err) {
+      console.error('Photo Sphere stitching failed:', err);
+      setStitchError(err.message || 'Stitching failed. Please try again.');
+      setIsStitching(false);
+    }
   };
 
   // Save Final Evidence & Close
   const handleSaveEvidence = async () => {
     const eng = engineRef.current;
-    if (!eng.masterPanoCanvas) return;
+    
+    // Prioritize high-quality stitched blob with GPano XMP from PhotoSphereStitcher
+    let finalBlob = stitchedPanoData?.blob;
+    let panoWidth = stitchedPanoData?.width || CONFIG.PANO_WIDTH;
+    let panoHeight = stitchedPanoData?.height || CONFIG.PANO_HEIGHT;
+    let isComplete = stitchedPanoData?.isCompleteSphere ?? (eng.coveragePercent >= 80);
+    let coverage = stitchedPanoData?.coveragePercent ?? eng.coveragePercent;
 
-    eng.masterPanoCanvas.toBlob(async (rawBlob) => {
-      if (!rawBlob) return;
-      const xmpBlob = await injectXmpIntoJpeg(rawBlob, {
-        isCompleteSphere: eng.coveragePercent >= 90,
-      });
+    if (!finalBlob && eng.masterPanoCanvas) {
+      // Fallback to master canvas if stitchedPanoData wasn't available
+      const rawBlob = await new Promise((resolve) => eng.masterPanoCanvas.toBlob(resolve, 'image/jpeg', 0.95));
+      if (rawBlob) {
+        finalBlob = await injectXmpIntoJpeg(rawBlob, {
+          isCompleteSphere: isComplete,
+        });
+      }
+    }
 
+    if (!finalBlob) {
+      alert('No panorama image available to save');
+      return;
+    }
+
+    try {
       const panoRecord = await photoSphereStorage.savePanorama({
         sessionId: eng.sessionId,
         inspectionId: taskId,
-        blob: xmpBlob,
-        width: CONFIG.PANO_WIDTH,
-        height: CONFIG.PANO_HEIGHT,
-        isCompleteSphere: eng.coveragePercent >= 90,
+        blob: finalBlob,
+        width: panoWidth,
+        height: panoHeight,
+        isCompleteSphere: isComplete,
         metadata: {
-          coveragePercent: eng.coveragePercent,
+          coveragePercent: coverage,
+          framesCount: eng.capturedCount,
           stitchedAt: Date.now(),
         },
       });
@@ -1243,25 +1346,55 @@ export default function PhotoSphereCapture({
         onSaveEvidence({
           mediaType: 'photo_sphere',
           evidenceType: '360 Photo Sphere',
-          blob: xmpBlob,
-          url: URL.createObjectURL(xmpBlob),
+          blob: finalBlob,
+          url: stitchedPanoData?.url || URL.createObjectURL(finalBlob),
           id: panoRecord.id,
-          coveragePercent: eng.coveragePercent,
+          coveragePercent: coverage,
           framesCount: eng.capturedCount,
           sessionId: eng.sessionId,
         });
       }
       onClose();
-    }, 'image/jpeg', 0.95);
+    } catch (err) {
+      console.error('Failed to save panorama evidence:', err);
+      alert('Failed to save Photo Sphere evidence: ' + err.message);
+    }
   };
 
   // Main Mount Lifecycle
   useEffect(() => {
     const eng = engineRef.current;
 
-    // Create session in IndexedDB
-    photoSphereStorage.createSession(taskId, { totalTargets: 34 }).then((s) => {
-      eng.sessionId = s.id;
+    // Resume existing active session or create a new one in IndexedDB
+    photoSphereStorage.getActiveSession(taskId).then(async (activeSession) => {
+      let session = activeSession;
+      if (!session) {
+        session = await photoSphereStorage.createSession(taskId, { totalTargets: 34 });
+      }
+      eng.sessionId = session.id;
+
+      // Interruption recovery: restore already-captured frames from storage
+      const savedFrames = await photoSphereStorage.getFramesForSession(session.id);
+      if (savedFrames && savedFrames.length > 0) {
+        savedFrames.forEach((frame) => {
+          const t = eng.targets.find(
+            (tgt) => tgt.id === frame.targetId || tgt.targetId === frame.targetId || tgt.dotNumber === frame.sequenceIndex
+          );
+          if (t) {
+            t.captured = true;
+            t.visible = false;
+            if (t.mesh) t.mesh.visible = false;
+          }
+        });
+        eng.capturedCount = savedFrames.length;
+        if (savedFrames.length > 0) {
+          eng.anchorYaw = savedFrames[0].yaw;
+          eng.anchorPitch = 0;
+        }
+        updateFrontierAndGapDots();
+        setCanUndo(true);
+        setCanFinish(true);
+      }
     });
 
     // Master Equirectangular Texture Canvas
@@ -1501,6 +1634,17 @@ export default function PhotoSphereCapture({
     };
   }, [renderLoop, startHardwareCamera, taskId]);
 
+  // Clean up stitched panorama object URL when component unmounts or new stitch runs
+  useEffect(() => {
+    return () => {
+      if (stitchedPanoData?.url) {
+        try {
+          URL.revokeObjectURL(stitchedPanoData.url);
+        } catch (_) {}
+      }
+    };
+  }, [stitchedPanoData]);
+
   return (
     <div
       ref={containerRef}
@@ -1634,7 +1778,7 @@ export default function PhotoSphereCapture({
           style={{
             width: '100%',
             height: '100%',
-            objectFit: 'cover',
+            objectFit: 'contain',
             display: 'block',
             pointerEvents: 'none',
           }}
@@ -1655,7 +1799,7 @@ export default function PhotoSphereCapture({
         }}
       />
 
-      {/* Layer 4: Center Reticle Ring & Snap Indicator (z-index: 35) */}
+      {/* Layer 4: Center Reticle 4-Quadrant Ring (gom.java) & Snap Indicator (z-index: 35) */}
       <div
         className="center-reticle-ring"
         style={{
@@ -1665,8 +1809,6 @@ export default function PhotoSphereCapture({
           width: '58px',
           height: '58px',
           transform: 'translate(-50%, -50%)',
-          border: '2.5px solid rgba(255, 255, 255, 0.85)',
-          borderRadius: '50%',
           pointerEvents: 'none',
           zIndex: 35,
           display: 'flex',
@@ -1679,8 +1821,15 @@ export default function PhotoSphereCapture({
           width="58"
           height="58"
           viewBox="0 0 58 58"
-          style={{ position: 'absolute', transform: 'rotate(-90deg)', zIndex: 2 }}
+          style={{ position: 'absolute', zIndex: 2 }}
         >
+          {/* Base 4 Quadrant Brackets with Cardinal Gaps (gom.java) */}
+          <path d="M 32 5 A 24 24 0 0 1 53 26" fill="none" stroke="rgba(255, 255, 255, 0.85)" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M 53 32 A 24 24 0 0 1 32 53" fill="none" stroke="rgba(255, 255, 255, 0.85)" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M 26 53 A 24 24 0 0 1 5 32" fill="none" stroke="rgba(255, 255, 255, 0.85)" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M 5 26 A 24 24 0 0 1 26 5" fill="none" stroke="rgba(255, 255, 255, 0.85)" strokeWidth="2.5" strokeLinecap="round" />
+
+          {/* Dwell Progress Fill Ring across 4 Quadrants (600ms dwell) */}
           <circle
             ref={ringProgressRef}
             cx="29"
@@ -1688,10 +1837,11 @@ export default function PhotoSphereCapture({
             r="24"
             fill="none"
             stroke="#4285F4"
-            strokeWidth="4"
+            strokeWidth="3.5"
             strokeDasharray={String(RETICLE_CIRCUMFERENCE)}
             strokeDashoffset={String(RETICLE_CIRCUMFERENCE)}
             strokeLinecap="round"
+            transform="rotate(-90 29 29)"
             style={{ transition: 'stroke-dashoffset 0.05s linear' }}
           />
         </svg>
@@ -1700,14 +1850,15 @@ export default function PhotoSphereCapture({
           id="center-blue-dot"
           style={{
             position: 'absolute',
-            width: '32px',
-            height: '32px',
+            width: '28px',
+            height: '28px',
             borderRadius: '50%',
             background: '#4285F4',
             opacity: 0,
             transform: 'scale(0.35)',
             transition: 'opacity 0.12s ease, transform 0.12s ease',
             zIndex: 1,
+            boxShadow: '0 0 10px rgba(66, 133, 244, 0.85)',
           }}
         />
       </div>
@@ -1817,12 +1968,174 @@ export default function PhotoSphereCapture({
         </button>
       </div>
 
+      {/* Stitching Progress Modal Overlay */}
+      {isStitching && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 100,
+            backgroundColor: 'rgba(5, 8, 16, 0.92)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            color: '#f8fafc',
+            fontFamily: '"Google Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: '380px',
+              backgroundColor: '#111827',
+              borderRadius: '20px',
+              border: '1px solid #374151',
+              padding: '28px 24px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.75)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              textAlign: 'center',
+              gap: '16px',
+            }}
+          >
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, rgba(66, 133, 244, 0.2), rgba(52, 168, 83, 0.2))',
+                border: '2px solid #4285F4',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <RefreshCw
+                size={30}
+                color="#4285F4"
+                style={{ animation: 'spin 1.8s linear infinite' }}
+              />
+            </div>
+
+            <div>
+              <h3 style={{ margin: '0 0 6px 0', fontSize: '1.25rem', fontWeight: 600, color: '#f8fafc' }}>
+                Stitching 360° Photo Sphere
+              </h3>
+              <p style={{ margin: 0, fontSize: '0.86rem', color: '#9ca3af', lineHeight: 1.4 }}>
+                {stitchingProgress.statusText || 'Processing spherical alignment...'}
+              </p>
+            </div>
+
+            {/* Progress Bar Container */}
+            <div
+              style={{
+                width: '100%',
+                height: '8px',
+                backgroundColor: '#1f2937',
+                borderRadius: '999px',
+                overflow: 'hidden',
+                margin: '8px 0 4px 0',
+              }}
+            >
+              <div
+                style={{
+                  width: `${stitchingProgress.percent}%`,
+                  height: '100%',
+                  background: 'linear-gradient(90deg, #4285F4 0%, #34A853 100%)',
+                  borderRadius: '999px',
+                  transition: 'width 0.2s ease-out',
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', fontSize: '0.8rem', color: '#6b7280' }}>
+              <span>Spherical Blending</span>
+              <span style={{ color: '#4285F4', fontWeight: 600 }}>{stitchingProgress.percent}%</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stitching Error Alert Dialog */}
+      {stitchError && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 101,
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: '360px',
+              backgroundColor: '#1f2937',
+              borderRadius: '16px',
+              border: '1px solid #ef4444',
+              padding: '24px',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+            }}
+          >
+            <h4 style={{ margin: 0, color: '#ef4444', fontSize: '1.1rem' }}>Stitching Error</h4>
+            <p style={{ margin: 0, color: '#d1d5db', fontSize: '0.88rem' }}>{stitchError}</p>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+              <button
+                onClick={() => setStitchError(null)}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  borderRadius: '8px',
+                  border: '1px solid #4b5563',
+                  background: 'transparent',
+                  color: '#fff',
+                  cursor: 'pointer',
+                }}
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={handleOpenResults}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: '#4285F4',
+                  color: '#fff',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Interactive 360 Output Viewer Matching Real Work Output */}
       {showResultModal && (
         <InteractivePhotoSphereViewer
-          sourceCanvas={engineRef.current?.masterPanoCanvas}
+          imageUrl={stitchedPanoData?.url}
+          sourceCanvas={stitchedPanoData?.url ? undefined : engineRef.current?.masterPanoCanvas}
           title="360° Photo Sphere"
-          subtitle={`${coveragePercent}% Coverage • ${engineRef.current?.capturedCount || 34} Photos`}
+          subtitle={`${stitchedPanoData?.coveragePercent || coveragePercent}% Coverage • ${engineRef.current?.capturedCount || 34} Photos${
+            stitchedPanoData?.warning ? ` • ${stitchedPanoData.warning}` : ''
+          }`}
           onSaveEvidence={handleSaveEvidence}
           onClose={() => setShowResultModal(false)}
         />
@@ -1833,6 +2146,10 @@ export default function PhotoSphereCapture({
         #center-blue-dot.aligned {
           opacity: 0.92 !important;
           transform: scale(1) !important;
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
         }
       `}</style>
     </div>

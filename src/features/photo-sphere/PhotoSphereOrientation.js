@@ -8,7 +8,82 @@
  * Provides 'moving too fast' feedback matching GCam's Motion Stability Guard.
  */
 
-import { normalizeAngle } from './PhotoSphereTargets';
+import { normalizeAngle, createCameraMatrix } from './PhotoSphereTargets';
+
+/**
+ * Computes 4x4 Camera Rotation Matrix remapped from device sensor frame
+ * to camera optical frame, matching GCam goy.java:119-123:
+ * 1. Android/W3C device orientation -> R_device
+ * 2. Rotate 90 deg around X (points back camera optical axis forward)
+ * 3. Rotate by displayRotationDeg around Z (display compensation for portrait/landscape)
+ * 4. R_cam = R_display * (R_device * R_x(90))
+ */
+export function computeCameraRotationMatrix(
+  alphaDeg = 0,
+  betaDeg = 90,
+  gammaDeg = 0,
+  displayRotationDeg = 0
+) {
+  const deg2rad = Math.PI / 180;
+  const a = (alphaDeg || 0) * deg2rad;
+  const b = (betaDeg !== null && betaDeg !== undefined ? betaDeg : 90) * deg2rad;
+  const g = (gammaDeg || 0) * deg2rad;
+
+  const cA = Math.cos(a), sA = Math.sin(a);
+  const cB = Math.cos(b), sB = Math.sin(b);
+  const cG = Math.cos(g), sG = Math.sin(g);
+
+  // W3C Device Orientation Matrix (Z-X'-Y'' intrinsic Euler angles)
+  const r00 = cA * cG - sA * sB * sG;
+  const r01 = -cB * sA;
+  const r02 = cA * sG + sA * sB * cG;
+
+  const r10 = sA * cG + cA * sB * sG;
+  const r11 = cB * cA;
+  const r12 = sA * sG - cA * sB * cG;
+
+  const r20 = -cB * sG;
+  const r21 = sB;
+  const r22 = cB * cG;
+
+  // Step 2: Post-multiply by Rx(90 deg) [points back camera along optical axis]
+  const m00 = r00;
+  const m01 = r02;
+  const m02 = -r01;
+
+  const m10 = r10;
+  const m11 = r12;
+  const m12 = -r11;
+
+  const m20 = r20;
+  const m21 = r22;
+  const m22 = -r21;
+
+  // Step 3: Display compensation around Z axis
+  let f00 = m00, f01 = m01, f02 = m02;
+  let f10 = m10, f11 = m11, f12 = m12;
+  let f20 = m20, f21 = m21, f22 = m22;
+
+  if (displayRotationDeg !== 0) {
+    const dRad = displayRotationDeg * deg2rad;
+    const cD = Math.cos(dRad);
+    const sD = Math.sin(dRad);
+    f00 = cD * m00 - sD * m10;
+    f01 = cD * m01 - sD * m11;
+    f02 = cD * m02 - sD * m12;
+
+    f10 = sD * m00 + cD * m10;
+    f11 = sD * m01 + cD * m11;
+    f12 = sD * m02 + cD * m12;
+  }
+
+  return [
+    f00, f01, f02, 0,
+    f10, f11, f12, 0,
+    f20, f21, f22, 0,
+    0,   0,   0,   1
+  ];
+}
 
 export class PhotoSphereOrientation {
   constructor(onUpdate) {
@@ -20,7 +95,15 @@ export class PhotoSphereOrientation {
       pitch: 0,
       roll: 0,
       angularVelocity: 0,
+      angularVelocityRad: 0,
       isMovingTooFast: false,
+      isStableForCapture: false,
+      cameraRotationMatrix: [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      ],
     };
 
     this.lastTimestamp = null;
@@ -96,18 +179,16 @@ export class PhotoSphereOrientation {
     }
 
     // In W3C DeviceOrientationEvent:
-    // alpha increases counter-clockwise (turning left increases alpha; turning right decreases alpha).
+    // alpha increases counter-clockwise.
     // In spherical camera space:
     // Looking straight is yaw = 0. Turning right is positive yaw (+yaw).
-    // Therefore, camera yaw = normalizeAngle(360 - alpha) (or -alpha).
     let rawYaw = normalizeAngle(360 - alpha);
     let relYaw = rawYaw;
     if (this.referenceHeading !== null) {
       relYaw = normalizeAngle(rawYaw - this.referenceHeading);
     }
 
-    // Compute angular velocity (deg/s) with low-pass filter (Kalman/EMA emulation)
-    // Prevents single-frame sensor jitter from falsely tripping speed guard
+    // Compute angular velocity (deg/s) with low-pass filter
     let instantaneousVelocity = 0;
     if (this.lastTimestamp && this.lastYaw !== null && this.lastPitch !== null) {
       const dt = (now - this.lastTimestamp) / 1000;
@@ -135,8 +216,7 @@ export class PhotoSphereOrientation {
     this.lastYaw = relYaw;
     this.lastPitch = pitch;
 
-    // Fast movement threshold with hysteresis to prevent display flickering:
-    // Trip above 50 deg/sec; only clear once user slows down below 32 deg/sec.
+    // Fast movement warning threshold with hysteresis:
     let isMovingTooFast = this.currentOrientation.isMovingTooFast;
     if (this.smoothedVelocity > 50) {
       isMovingTooFast = true;
@@ -144,11 +224,24 @@ export class PhotoSphereOrientation {
       isMovingTooFast = false;
     }
 
+    // Angular velocity in rad/s matching REA verified motion gating (||omega|| < 0.10 rad/s)
+    const angularVelocityRad = (this.smoothedVelocity * Math.PI) / 180;
+    const isStableForCapture = angularVelocityRad < 0.10 && !isMovingTooFast;
+
     const screenOrientation = typeof window !== 'undefined' && window.screen && window.screen.orientation
       ? window.screen.orientation.angle || 0
       : (typeof window !== 'undefined' ? window.orientation || 0 : 0);
 
     const sampleDtMs = this.lastTimestamp ? Math.round(now - this.lastTimestamp) : 0;
+
+    // Construct 4x4 camera rotation matrix matching optical frame
+    const rCam = createCameraMatrix(relYaw, pitch, gamma || 0);
+    const cameraRotationMatrix = [
+      rCam[0][0], rCam[1][0], rCam[2][0], 0,
+      rCam[0][1], rCam[1][1], rCam[2][1], 0,
+      rCam[0][2], rCam[1][2], rCam[2][2], 0,
+      0,          0,          0,          1,
+    ];
 
     this.currentOrientation = {
       yaw: relYaw,
@@ -157,7 +250,10 @@ export class PhotoSphereOrientation {
       rawPitch,
       roll: gamma || 0,
       angularVelocity: Math.round(this.smoothedVelocity * 10) / 10,
+      angularVelocityRad: Math.round(angularVelocityRad * 1000) / 1000,
       isMovingTooFast,
+      isStableForCapture,
+      cameraRotationMatrix,
       sampleDtMs,
       rawSensor: {
         alpha: Math.round(alpha * 10) / 10,
@@ -172,3 +268,4 @@ export class PhotoSphereOrientation {
     }
   }
 }
+

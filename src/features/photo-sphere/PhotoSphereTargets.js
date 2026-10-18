@@ -128,77 +128,71 @@ export function transformVectorInverse(R, v) {
 }
 
 export const PHOTO_SPHERE_TARGETS = [
-  // Initial Anchor Frame (Captured first at 0,0 -> leaves 33 dots remaining)
-  { id: "t_0",  dotNumber: 0,  region: "horizon",       yaw: 0,    pitch: 0,   x: 0,       y: 0,       z: -1      },
+  // Ring 0: Horizon Ring (Pitch: 0°, 10 dots, Step: 36°, Stagger: 0°)
+  { id: "t_0",  dotNumber: 0,  region: "horizon", ring: "horizon", yaw: 0,    pitch: 0,   x: 0,       y: 0,       z: -1      },
+  { id: "t_1",  dotNumber: 1,  region: "horizon", ring: "horizon", yaw: 36,   pitch: 0,   x: 0.5878,  y: 0,       z: -0.809  },
+  { id: "t_2",  dotNumber: 2,  region: "horizon", ring: "horizon", yaw: 72,   pitch: 0,   x: 0.9511,  y: 0,       z: -0.309  },
+  { id: "t_3",  dotNumber: 3,  region: "horizon", ring: "horizon", yaw: 108,  pitch: 0,   x: 0.9511,  y: 0,       z: 0.309   },
+  { id: "t_4",  dotNumber: 4,  region: "horizon", ring: "horizon", yaw: 144,  pitch: 0,   x: 0.5878,  y: 0,       z: 0.809   },
+  { id: "t_5",  dotNumber: 5,  region: "horizon", ring: "horizon", yaw: 180,  pitch: 0,   x: 0,       y: 0,       z: 1       },
+  { id: "t_6",  dotNumber: 6,  region: "horizon", ring: "horizon", yaw: -144, pitch: 0,   x: -0.5878, y: 0,       z: 0.809   },
+  { id: "t_7",  dotNumber: 7,  region: "horizon", ring: "horizon", yaw: -108, pitch: 0,   x: -0.9511, y: 0,       z: 0.309   },
+  { id: "t_8",  dotNumber: 8,  region: "horizon", ring: "horizon", yaw: -72,  pitch: 0,   x: -0.9511, y: 0,       z: -0.309  },
+  { id: "t_9",  dotNumber: 9,  region: "horizon", ring: "horizon", yaw: -36,  pitch: 0,   x: -0.5878, y: 0,       z: -0.809  },
 
-  // 1–9: Horizon Ring (9 remaining dots, Pitch: 0°, Step: 36°)
-  { id: "t_1",  dotNumber: 1,  region: "horizon",       yaw: 36,   pitch: 0,   x: 0.5878,  y: 0,       z: -0.809  },
-  { id: "t_2",  dotNumber: 2,  region: "horizon",       yaw: 72,   pitch: 0,   x: 0.9511,  y: 0,       z: -0.309  },
-  { id: "t_3",  dotNumber: 3,  region: "horizon",       yaw: 108,  pitch: 0,   x: 0.9511,  y: 0,       z: 0.309   },
-  { id: "t_4",  dotNumber: 4,  region: "horizon",       yaw: 144,  pitch: 0,   x: 0.5878,  y: 0,       z: 0.809   },
-  { id: "t_5",  dotNumber: 5,  region: "horizon",       yaw: 180,  pitch: 0,   x: 0,       y: 0,       z: 1       },
-  { id: "t_6",  dotNumber: 6,  region: "horizon",       yaw: -144, pitch: 0,   x: -0.5878, y: 0,       z: 0.809   },
-  { id: "t_7",  dotNumber: 7,  region: "horizon",       yaw: -108, pitch: 0,   x: -0.9511, y: 0,       z: 0.309   },
-  { id: "t_8",  dotNumber: 8,  region: "horizon",       yaw: -72,  pitch: 0,   x: -0.9511, y: 0,       z: -0.309  },
-  { id: "t_9",  dotNumber: 9,  region: "horizon",       yaw: -36,  pitch: 0,   x: -0.5878, y: 0,       z: -0.809  },
+  // Ring 1: Upper Hemisphere Ring (Pitch: +38°, 8 dots, Step: 45°, Stagger: +22.5°)
+  { id: "t_10", dotNumber: 10, region: "upper", ring: "upper", yaw: 22.5,  pitch: 38,  x: 0.3016,  y: 0.6157,  z: -0.728  },
+  { id: "t_11", dotNumber: 11, region: "upper", ring: "upper", yaw: 67.5,  pitch: 38,  x: 0.728,   y: 0.6157,  z: -0.3016 },
+  { id: "t_12", dotNumber: 12, region: "upper", ring: "upper", yaw: 112.5, pitch: 38,  x: 0.728,   y: 0.6157,  z: 0.3016  },
+  { id: "t_13", dotNumber: 13, region: "upper", ring: "upper", yaw: 157.5, pitch: 38,  x: 0.3016,  y: 0.6157,  z: 0.728   },
+  { id: "t_14", dotNumber: 14, region: "upper", ring: "upper", yaw: -157.5,pitch: 38,  x: -0.3016, y: 0.6157,  z: 0.728   },
+  { id: "t_15", dotNumber: 15, region: "upper", ring: "upper", yaw: -112.5,pitch: 38,  x: -0.728,  y: 0.6157,  z: 0.3016  },
+  { id: "t_16", dotNumber: 16, region: "upper", ring: "upper", yaw: -67.5, pitch: 38,  x: -0.728,  y: 0.6157,  z: -0.3016 },
+  { id: "t_17", dotNumber: 17, region: "upper", ring: "upper", yaw: -22.5, pitch: 38,  x: -0.3016, y: 0.6157,  z: -0.728  },
 
-  // 10–17: Below Horizon Ring (8 dots, Pitch: -35°, Step: 45°)
-  { id: "t_10", dotNumber: 10, region: "lower-horizon", yaw: 0,    pitch: -35, x: 0,       y: -0.5736, z: -0.8192 },
-  { id: "t_11", dotNumber: 11, region: "lower-horizon", yaw: 45,   pitch: -35, x: 0.5792,  y: -0.5736, z: -0.5792 },
-  { id: "t_12", dotNumber: 12, region: "lower-horizon", yaw: 90,   pitch: -35, x: 0.8192,  y: -0.5736, z: 0       },
-  { id: "t_13", dotNumber: 13, region: "lower-horizon", yaw: 135,  pitch: -35, x: 0.5792,  y: -0.5736, z: 0.5792  },
-  { id: "t_14", dotNumber: 14, region: "lower-horizon", yaw: 180,  pitch: -35, x: 0,       y: -0.5736, z: 0.8192  },
-  { id: "t_15", dotNumber: 15, region: "lower-horizon", yaw: -135, pitch: -35, x: -0.5792, y: -0.5736, z: 0.5792  },
-  { id: "t_16", dotNumber: 16, region: "lower-horizon", yaw: -90,  pitch: -35, x: -0.8192, y: -0.5736, z: 0       },
-  { id: "t_17", dotNumber: 17, region: "lower-horizon", yaw: -45,  pitch: -35, x: -0.5792, y: -0.5736, z: -0.5792 },
+  // Ring 2: Lower Hemisphere Ring (Pitch: -38°, 8 dots, Step: 45°, Stagger: +22.5°)
+  { id: "t_18", dotNumber: 18, region: "lower", ring: "lower", yaw: 22.5,  pitch: -38, x: 0.3016,  y: -0.6157, z: -0.728  },
+  { id: "t_19", dotNumber: 19, region: "lower", ring: "lower", yaw: 67.5,  pitch: -38, x: 0.728,   y: -0.6157, z: -0.3016 },
+  { id: "t_20", dotNumber: 20, region: "lower", ring: "lower", yaw: 112.5, pitch: -38, x: 0.728,   y: -0.6157, z: 0.3016  },
+  { id: "t_21", dotNumber: 21, region: "lower", ring: "lower", yaw: 157.5, pitch: -38, x: 0.3016,  y: -0.6157, z: 0.728   },
+  { id: "t_22", dotNumber: 22, region: "lower", ring: "lower", yaw: -157.5,pitch: -38, x: -0.3016, y: -0.6157, z: 0.728   },
+  { id: "t_23", dotNumber: 23, region: "lower", ring: "lower", yaw: -112.5,pitch: -38, x: -0.728,  y: -0.6157, z: 0.3016  },
+  { id: "t_24", dotNumber: 24, region: "lower", ring: "lower", yaw: -67.5, pitch: -38, x: -0.728,  y: -0.6157, z: -0.3016 },
+  { id: "t_25", dotNumber: 25, region: "lower", ring: "lower", yaw: -22.5, pitch: -38, x: -0.3016, y: -0.6157, z: -0.728  },
 
-  // 18–25: Above Horizon Ring (8 dots, Pitch: +35°, Step: 45°)
-  { id: "t_18", dotNumber: 18, region: "upper-horizon", yaw: 0,    pitch: 35,  x: 0,       y: 0.5736,  z: -0.8192 },
-  { id: "t_19", dotNumber: 19, region: "upper-horizon", yaw: 45,   pitch: 35,  x: 0.5792,  y: 0.5736,  z: -0.5792 },
-  { id: "t_20", dotNumber: 20, region: "upper-horizon", yaw: 90,   pitch: 35,  x: 0.8192,  y: 0.5736,  z: 0       },
-  { id: "t_21", dotNumber: 21, region: "upper-horizon", yaw: 135,  pitch: 35,  x: 0.5792,  y: 0.5736,  z: 0.5792  },
-  { id: "t_22", dotNumber: 22, region: "upper-horizon", yaw: 180,  pitch: 35,  x: 0,       y: 0.5736,  z: 0.8192  },
-  { id: "t_23", dotNumber: 23, region: "upper-horizon", yaw: -135, pitch: 35,  x: -0.5792, y: 0.5736,  z: 0.5792  },
-  { id: "t_24", dotNumber: 24, region: "upper-horizon", yaw: -90,  pitch: 35,  x: -0.8192, y: 0.5736,  z: 0       },
-  { id: "t_25", dotNumber: 25, region: "upper-horizon", yaw: -45,  pitch: 35,  x: -0.5792, y: 0.5736,  z: -0.5792 },
+  // Ring 3: Zenith Cap (Pitch: +74°, 4 dots, Step: 90°, Stagger: 0°)
+  { id: "t_26", dotNumber: 26, region: "zenith", ring: "zenith", yaw: 0,    pitch: 74,  x: 0,       y: 0.9613,  z: -0.2756 },
+  { id: "t_27", dotNumber: 27, region: "zenith", ring: "zenith", yaw: 90,   pitch: 74,  x: 0.2756,  y: 0.9613,  z: 0       },
+  { id: "t_28", dotNumber: 28, region: "zenith", ring: "zenith", yaw: 180,  pitch: 74,  x: 0,       y: 0.9613,  z: 0.2756  },
+  { id: "t_29", dotNumber: 29, region: "zenith", ring: "zenith", yaw: -90,  pitch: 74,  x: -0.2756, y: 0.9613,  z: 0       },
 
-  // 26–28: Lower Viewing Angles (3 dots, Pitch: -72°, Step: 120°)
-  { id: "t_26", dotNumber: 26, region: "lower",         yaw: 0,    pitch: -72, x: 0,       y: -0.9511, z: -0.309  },
-  { id: "t_27", dotNumber: 27, region: "lower",         yaw: 120,  pitch: -72, x: 0.2676,  y: -0.9511, z: 0.1545  },
-  { id: "t_28", dotNumber: 28, region: "lower",         yaw: -120, pitch: -72, x: -0.2676, y: -0.9511, z: 0.1545  },
-
-  // 29–31: Upper Viewing Angles (3 dots, Pitch: +65°, Step: 120°)
-  { id: "t_29", dotNumber: 29, region: "upper",         yaw: 0,    pitch: 65,  x: 0,       y: 0.9063,  z: -0.4226 },
-  { id: "t_30", dotNumber: 30, region: "upper",         yaw: 120,  pitch: 65,  x: 0.366,   y: 0.9063,  z: 0.2113  },
-  { id: "t_31", dotNumber: 31, region: "upper",         yaw: -120, pitch: 65,  x: -0.366,  y: 0.9063,  z: 0.2113  },
-
-  // 32: Sky / Zenith (1 dot, Pitch: +90°)
-  { id: "t_32", dotNumber: 32, region: "zenith",        yaw: 0,    pitch: 90,  x: 0,       y: 1,       z: 0       },
-
-  // 33: Ground / Nadir (1 dot, Pitch: -90°)
-  { id: "t_33", dotNumber: 33, region: "nadir",         yaw: 0,    pitch: -90, x: 0,       y: -1,      z: 0       }
+  // Ring 4: Nadir Cap (Pitch: -74°, 4 dots, Step: 90°, Stagger: 0°)
+  { id: "t_30", dotNumber: 30, region: "nadir", ring: "nadir", yaw: 0,    pitch: -74, x: 0,       y: -0.9613, z: -0.2756 },
+  { id: "t_31", dotNumber: 31, region: "nadir", ring: "nadir", yaw: 90,   pitch: -74, x: 0.2756,  y: -0.9613, z: 0       },
+  { id: "t_32", dotNumber: 32, region: "nadir", ring: "nadir", yaw: 180,  pitch: -74, x: 0,       y: -0.9613, z: 0.2756  },
+  { id: "t_33", dotNumber: 33, region: "nadir", ring: "nadir", yaw: -90,  pitch: -74, x: -0.2756, y: -0.9613, z: 0       }
 ];
 
 export const LATTICE_RINGS = [
-  { pitchDeg: 0, count: 10, name: 'horizon' },
-  { pitchDeg: -35, count: 8, name: 'lower-horizon' },
-  { pitchDeg: 35, count: 8, name: 'upper-horizon' },
-  { pitchDeg: -72, count: 3, name: 'lower' },
-  { pitchDeg: 65, count: 3, name: 'upper' },
-  { pitchDeg: 90, count: 1, name: 'zenith' },
-  { pitchDeg: -90, count: 1, name: 'nadir' },
+  { pitchDeg: 0, count: 10, staggerDeg: 0, name: 'horizon', ring: 'horizon' },
+  { pitchDeg: 38, count: 8, staggerDeg: 22.5, name: 'upper', ring: 'upper' },
+  { pitchDeg: -38, count: 8, staggerDeg: 22.5, name: 'lower', ring: 'lower' },
+  { pitchDeg: 74, count: 4, staggerDeg: 0, name: 'zenith', ring: 'zenith' },
+  { pitchDeg: -74, count: 4, staggerDeg: 0, name: 'nadir', ring: 'nadir' },
 ];
 
 export const COVERAGE_CONFIG = {
   LON_STEPS: 72,
   LAT_STEPS: 36,
   NEIGHBOR_DISTANCE_DEG: 52.0,
-  AUTO_RETIRE_COVERAGE_RATIO: 0.96,
+  AUTO_RETIRE_COVERAGE_RATIO: 0.95,
   ALIGNMENT_THRESHOLD_DEG: 4.8,
-  HOLD_DURATION_MS: 320,
-  MAX_ANGULAR_VELOCITY: 20.0,
-  CAPTURE_FOV_H_DEG: 44,
-  CAPTURE_FOV_V_DEG: 54,
+  ALIGNMENT_THRESHOLD_RAD: 0.0837,
+  UNLOCK_NEIGHBOR_RAD: 0.9075,
+  HOLD_DURATION_MS: 600,
+  MAX_ANGULAR_VELOCITY: 5.73,
+  CAPTURE_FOV_H_DEG: 46,
+  CAPTURE_FOV_V_DEG: 56,
 };
 
 /**
@@ -921,5 +915,65 @@ export function projectTargetDot3D(
   const screenY = (screenHeight / 2) - (y_cam / z_cam) * focalPx;
 
   return { screenX, screenY, x_cam, y_cam, z_cam, focalPx };
+}
+
+/**
+ * PhotoSpherePlanner: Reference Implementation for 34-Target Lattice,
+ * Frontier State Engine, and Spherical Perspective Projection.
+ */
+export class PhotoSpherePlanner {
+  static ALIGNMENT_THRESHOLD_RAD = 0.0837; // 4.8 degrees
+  static UNLOCK_NEIGHBOR_RAD = 0.9075;     // 52.0 degrees
+  static ALIGNMENT_THRESHOLD_DEG = 4.8;
+  static UNLOCK_NEIGHBOR_DEG = 52.0;
+
+  static generate34Lattice() {
+    return generateSphericalTargets();
+  }
+
+  static projectTarget(
+    target,
+    camRotMatrix, // 16-element float array (4x4 row-major) or 3x3 array
+    viewportW,
+    viewportH,
+    fovHDeg = 46.0,
+    fovVDeg = 56.0
+  ) {
+    const [ux, uy, uz] = target.direction || [target.x, target.y, target.z];
+
+    let xc, yc, zc;
+    if (camRotMatrix.length === 16) {
+      xc = camRotMatrix[0] * ux + camRotMatrix[1] * uy + camRotMatrix[2] * uz;
+      yc = camRotMatrix[4] * ux + camRotMatrix[5] * uy + camRotMatrix[6] * uz;
+      zc = camRotMatrix[8] * ux + camRotMatrix[9] * uy + camRotMatrix[10] * uz;
+    } else if (Array.isArray(camRotMatrix[0])) {
+      xc = camRotMatrix[0][0] * ux + camRotMatrix[0][1] * uy + camRotMatrix[0][2] * uz;
+      yc = camRotMatrix[1][0] * ux + camRotMatrix[1][1] * uy + camRotMatrix[1][2] * uz;
+      zc = camRotMatrix[2][0] * ux + camRotMatrix[2][1] * uy + camRotMatrix[2][2] * uz;
+    } else {
+      xc = camRotMatrix[0] * ux + camRotMatrix[1] * uy + camRotMatrix[2] * uz;
+      yc = camRotMatrix[3] * ux + camRotMatrix[4] * uy + camRotMatrix[5] * uz;
+      zc = camRotMatrix[6] * ux + camRotMatrix[7] * uy + camRotMatrix[8] * uz;
+    }
+
+    if (zc >= -0.05) {
+      return { x: -999, y: -999, visible: false, angularDistDeg: 180 };
+    }
+
+    const tanH = Math.tan(((fovHDeg / 2) * Math.PI) / 180);
+    const tanV = Math.tan(((fovVDeg / 2) * Math.PI) / 180);
+
+    const xNdc = xc / (-zc * tanH);
+    const yNdc = yc / (-zc * tanV);
+
+    const xPixel = (viewportW / 2) * (1 + xNdc);
+    const yPixel = (viewportH / 2) * (1 - yNdc);
+
+    const cosAngle = Math.max(-1, Math.min(1, -zc));
+    const angularDistDeg = (Math.acos(cosAngle) * 180) / Math.PI;
+
+    const inBounds = xPixel >= 0 && xPixel <= viewportW && yPixel >= 0 && yPixel <= viewportH;
+    return { x: xPixel, y: yPixel, visible: inBounds, angularDistDeg };
+  }
 }
 

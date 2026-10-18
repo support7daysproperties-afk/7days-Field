@@ -10,18 +10,32 @@
  * - Automatic Google Photo Sphere XMP metadata injection (GPano:UsePanoramaViewer)
  */
 
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { injectXmpIntoJpeg } from './PhotoSphereXMP';
+
+const PhotoSphereNativeStitcher = registerPlugin('PhotoSphereNativeStitcher');
 
 export class PhotoSphereStitcher {
   /**
    * Evaluates the angular bounding box and completeness of captured frames.
+   * Total base lattice in verified Photo Sphere is 34 targets.
    *
    * @param {Array<{yaw: number, pitch: number}>} frames
-   * @returns {{ isCompleteSphere: boolean, minPitch: number, maxPitch: number, hasZenith: boolean, hasNadir: boolean }}
+   * @returns {{ isCompleteSphere: boolean, isPartial: boolean, isValidCoverage: boolean, coveragePercent: number, warning: string|null, minPitch: number, maxPitch: number, hasZenith: boolean, hasNadir: boolean }}
    */
   static evaluateCoverage(frames) {
     if (!frames || frames.length === 0) {
-      return { isCompleteSphere: false, minPitch: 0, maxPitch: 0, hasZenith: false, hasNadir: false };
+      return {
+        isCompleteSphere: false,
+        isPartial: true,
+        isValidCoverage: false,
+        coveragePercent: 0,
+        warning: 'No frames captured',
+        minPitch: 0,
+        maxPitch: 0,
+        hasZenith: false,
+        hasNadir: false,
+      };
     }
 
     let minPitch = 90;
@@ -36,11 +50,21 @@ export class PhotoSphereStitcher {
       if (f.pitch <= -65) hasNadir = true;
     }
 
-    // A complete sphere requires sufficient shots (e.g. >= 24 shots) including zenith and nadir
-    const isCompleteSphere = frames.length >= 24 && hasZenith && hasNadir;
+    const count = frames.length;
+    const coveragePercent = Math.min(100, Math.round((count / 34) * 100));
+    const isValidCoverage = coveragePercent >= 80;
+    const isCompleteSphere = count >= 28 && hasZenith && hasNadir && coveragePercent >= 80;
+    const isPartial = !isCompleteSphere;
+    const warning = !isValidCoverage
+      ? `Incomplete coverage (${coveragePercent}% < 80%). Partial panorama produced.`
+      : null;
 
     return {
       isCompleteSphere,
+      isPartial,
+      isValidCoverage,
+      coveragePercent,
+      warning,
       minPitch,
       maxPitch,
       hasZenith,
@@ -51,18 +75,66 @@ export class PhotoSphereStitcher {
   /**
    * Stitch captured frames into an equirectangular panorama.
    *
+   * Dual-mode execution:
+   * 1. Android Capacitor: Invokes native C++ Ceres Solver & GraphCut seam bridge (liblightcycle.so).
+   * 2. Web PWA: Runs inverse-spherical rasterizer with cosine alpha-feathering for on-device preview.
+   *
    * @param {Array<{blob: Blob, yaw: number, pitch: number, roll: number}>} frames
    * @param {object} options
-   * @param {number} [options.width=2048] Output panorama width in pixels (2:1 aspect ratio)
-   * @param {number} [options.fov=65] Estimated horizontal FOV of the phone camera lens
+   * @param {number} [options.width=2048] Output panorama width in pixels (2:1 aspect ratio: 2048x1024 or 4096x2048)
+   * @param {number} [options.fov=46] Nominal horizontal FOV of the camera lens (default 46°)
+   * @param {boolean} [options.strictCoverage=false] If true, throws error if coverage < 80%
    * @param {(progress: number, statusText: string) => void} onProgress
-   * @returns {Promise<{ blob: Blob, width: number, height: number, url: string, isCompleteSphere: boolean }>}
+   * @returns {Promise<{ blob: Blob, width: number, height: number, url: string, isCompleteSphere: boolean, coveragePercent: number, isValidCoverage: boolean, warning: string|null }>}
    */
   static async stitch(frames, options = {}, onProgress = () => {}) {
     if (!frames || frames.length === 0) {
       throw new Error('No frames provided for stitching');
     }
 
+    const coverage = this.evaluateCoverage(frames);
+    if (options.strictCoverage && !coverage.isValidCoverage) {
+      throw new Error(`Insufficient sphere coverage: ${coverage.coveragePercent}% (< 80%). Minimum 80% coverage required.`);
+    }
+
+    // ── Mode A: Native Android Capacitor Bridge (liblightcycle.so / Ceres Solver) ──
+    if (
+      typeof Capacitor !== 'undefined' &&
+      Capacitor.isNativePlatform?.() &&
+      Capacitor.getPlatform?.() === 'android' &&
+      PhotoSphereNativeStitcher?.stitch
+    ) {
+      try {
+        onProgress(0.15, 'Invoking Android native Ceres / GraphCut stitcher bridge...');
+        const nativeResult = await PhotoSphereNativeStitcher.stitch({
+          frames: frames.map((f) => ({
+            id: f.id,
+            path: f.filePath || f.path,
+            yaw: f.yaw,
+            pitch: f.pitch,
+            roll: f.roll || 0,
+            cameraRotationMatrix: f.cameraRotationMatrix,
+          })),
+          panoWidth: options.width || 4096,
+          panoHeight: Math.round((options.width || 4096) / 2),
+          lensFovH: options.fov || 46.0,
+        });
+
+        if (nativeResult && nativeResult.blob) {
+          return {
+            ...nativeResult,
+            isCompleteSphere: coverage.isCompleteSphere,
+            coveragePercent: coverage.coveragePercent,
+            isValidCoverage: coverage.isValidCoverage,
+            warning: coverage.warning,
+          };
+        }
+      } catch (nativeErr) {
+        console.warn('Native stitcher bridge bypassed, executing Web inverse-spherical rasterizer:', nativeErr);
+      }
+    }
+
+    // ── Mode B: Web PWA Inverse-Spherical Rasterizer ──
     onProgress(0.05, 'Loading captured frames...');
 
     // 1. Decode all frames into ImageBitmaps
@@ -94,7 +166,7 @@ export class PhotoSphereStitcher {
 
     onProgress(0.25, 'Calculating equirectangular canvas dimensions...');
 
-    // Determine output panorama dimensions (standard 2:1 equirectangular ratio)
+    // Determine output panorama dimensions (standard 2:1 equirectangular ratio: 2048x1024 or 4096x2048)
     const panoWidth = options.width || 2048;
     const panoHeight = Math.round(panoWidth / 2);
 
@@ -107,13 +179,10 @@ export class PhotoSphereStitcher {
     ctx.fillStyle = '#0b0f19';
     ctx.fillRect(0, 0, panoWidth, panoHeight);
 
-    // Evaluate coverage honest status
-    const coverage = this.evaluateCoverage(loadedFrames);
-
     onProgress(0.35, 'Analyzing image overlap and spherical projections...');
 
-    // Camera estimated horizontal FOV (approx 65 degrees)
-    const hFov = (options.fov || 65) * (Math.PI / 180);
+    // Camera estimated horizontal FOV (nominal 46° H x 56° V)
+    const hFov = (options.fov || 46) * (Math.PI / 180);
 
     // Create equirectangular accumulator buffers for seamless cosine blending
     const accumR = new Float32Array(panoWidth * panoHeight);
@@ -333,6 +402,9 @@ export class PhotoSphereStitcher {
       height: panoHeight,
       url,
       isCompleteSphere: coverage.isCompleteSphere,
+      coveragePercent: coverage.coveragePercent,
+      isValidCoverage: coverage.isValidCoverage,
+      warning: coverage.warning,
       croppedTop,
       croppedHeight,
     };

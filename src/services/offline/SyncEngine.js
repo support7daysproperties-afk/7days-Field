@@ -849,10 +849,18 @@ class SyncEngine {
       return `signature-${num}.${ext}`;
     }
 
+    if (mediaType === 'photo_sphere') {
+      const psItems = mediaList.filter(m => (m.type || m.mediaType) === 'photo_sphere').sort(sortFn);
+      const idx = psItems.findIndex(m => m.id === media.id);
+      const num = idx >= 0 ? idx + 1 : 1;
+      return `photosphere-${num}.${ext}`;
+    }
+
     // Default: photo (exterior, interior, boundary, etc.)
     const photoItems = mediaList.filter(m => 
       (m.type || m.mediaType) !== 'video' && 
       (m.type || m.mediaType) !== 'signature' && 
+      (m.type || m.mediaType) !== 'photo_sphere' && 
       m.evidenceType !== 'Location Verification'
     ).sort(sortFn);
     const idx = photoItems.findIndex(m => m.id === media.id);

@@ -132,8 +132,8 @@ export default function InteractivePhotoSphereViewer({
       planetCanvas.height = size;
       const pCtx = planetCanvas.getContext('2d');
 
-      const srcW = canvas.width || 2048;
-      const srcH = canvas.height || 1024;
+      const srcW = canvas.naturalWidth || canvas.width || 2048;
+      const srcH = canvas.naturalHeight || canvas.height || 1024;
       const tempC = document.createElement('canvas');
       tempC.width = srcW;
       tempC.height = srcH;
