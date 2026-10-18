@@ -7,6 +7,8 @@ class DatabaseService {
   constructor() {
     this.dbPromise = null;
     this.userId = null;
+    this.userEmail = null;
+    this.supervisorId = null;
     this._initializedDbName = null;
     this._listeners = new Set();
     this._switchLock = Promise.resolve();
@@ -20,17 +22,17 @@ class DatabaseService {
   _notify(event = {}) {
     this._listeners.forEach(cb => {
       try {
-        cb({ userId: this.userId, dbName: this._initializedDbName, ...event });
+        cb({ userId: this.userId, email: this.userEmail, dbName: this._initializedDbName, ...event });
       } catch (err) {
         console.error('Error in DatabaseService listener:', err);
       }
     });
   }
 
-  getDbName(userId = this.userId) {
-    const id = userId || this._resolveCurrentUserId();
+  getDbName(identifier = (this.userEmail || this.userId)) {
+    const id = identifier || this._resolveCurrentUserEmail() || this._resolveCurrentUserId();
     if (id) {
-      const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeId = String(id).toLowerCase().replace(/[^a-zA-Z0-9_-]/g, '_');
       return `${BASE_DB_PREFIX}_${safeId}`;
     }
     return `${BASE_DB_PREFIX}_guest`;
@@ -45,16 +47,31 @@ class DatabaseService {
     return null;
   }
 
-  async setCurrentUser(userId) {
+  _resolveCurrentUserEmail() {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem('7days_active_user_email') || null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  async setCurrentUser(userId, email = null, supervisorId = null) {
     // Chain onto switch lock to prevent race conditions during rapid user transitions
     this._switchLock = this._switchLock.then(async () => {
       const targetUserId = userId || null;
-      const targetDbName = this.getDbName(targetUserId);
+      const targetUserEmail = (email || '').toLowerCase().trim() || null;
+      const targetSupervisorId = supervisorId || null;
+
+      this.userId = targetUserId;
+      this.userEmail = targetUserEmail;
+      this.supervisorId = targetSupervisorId;
+
+      const targetDbName = this.getDbName(targetUserEmail || targetUserId);
 
       // If already initialized with this exact database, maintain connection
       if (this.dbPromise && this._initializedDbName === targetDbName) {
-        this.userId = targetUserId;
-        this._notify({ type: 'user_retained', userId: targetUserId });
+        this._notify({ type: 'user_retained', userId: targetUserId, email: targetUserEmail });
         return this.dbPromise;
       }
 
@@ -70,7 +87,6 @@ class DatabaseService {
         this._initializedDbName = null;
       }
 
-      this.userId = targetUserId;
       if (targetUserId) {
         try {
           window.localStorage?.setItem('7days_active_user_id', targetUserId);
@@ -81,13 +97,110 @@ class DatabaseService {
         } catch (_) {}
       }
 
+      if (targetUserEmail) {
+        try {
+          window.localStorage?.setItem('7days_active_user_email', targetUserEmail);
+        } catch (_) {}
+      } else {
+        try {
+          window.localStorage?.removeItem('7days_active_user_email');
+        } catch (_) {}
+      }
+
       // Initialize the scoped database partition
       const db = await this.init();
-      this._notify({ type: 'user_switched', userId: targetUserId, dbName: targetDbName });
+
+      // If switching to an authenticated user partition, migrate any pending guest or legacy items
+      if (targetUserId || targetUserEmail) {
+        await this._migrateLegacyRecords(db, targetUserId, targetUserEmail);
+      }
+
+      this._notify({ type: 'user_switched', userId: targetUserId, email: targetUserEmail, dbName: targetDbName });
       return db;
     });
 
     return await this._switchLock;
+  }
+
+  async _migrateLegacyRecords(targetDb, targetUserId, targetUserEmail) {
+    try {
+      const candidateDbNames = [];
+      // 1. Guest DB
+      candidateDbNames.push(`${BASE_DB_PREFIX}_guest`);
+
+      // 2. Legacy partition named directly by targetUserId if different from targetDbName
+      if (targetUserId) {
+        const legacyUserDbName = `${BASE_DB_PREFIX}_${String(targetUserId).toLowerCase().replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        if (legacyUserDbName !== this._initializedDbName) {
+          candidateDbNames.push(legacyUserDbName);
+        }
+      }
+
+      for (const legacyName of candidateDbNames) {
+        try {
+          const legacyDb = await openDB(legacyName, DB_VERSION).catch(() => null);
+          if (!legacyDb) continue;
+
+          const hasStore = (d, name) => !d.objectStoreNames || (typeof d.objectStoreNames.contains === 'function' ? d.objectStoreNames.contains(name) : true);
+
+          // Migrate inspections
+          if (hasStore(legacyDb, 'inspections')) {
+            const legacyInspections = await legacyDb.getAll('inspections').catch(() => []);
+            for (const ins of legacyInspections) {
+              const existing = await targetDb.get('inspections', ins.id);
+              if (!existing) {
+                const migrated = {
+                  ...ins,
+                  auth_user_id: ins.auth_user_id || targetUserId,
+                  user_email: ins.user_email || targetUserEmail,
+                };
+                await targetDb.put('inspections', migrated);
+              }
+            }
+          }
+
+          // Migrate media
+          if (hasStore(legacyDb, 'media')) {
+            const legacyMedia = await legacyDb.getAll('media').catch(() => []);
+            for (const m of legacyMedia) {
+              const existingM = await targetDb.get('media', m.id);
+              if (!existingM) {
+                await targetDb.put('media', m);
+              }
+            }
+          }
+
+          // Migrate boundaries
+          if (hasStore(legacyDb, 'boundaries')) {
+            const legacyBoundaries = await legacyDb.getAll('boundaries').catch(() => []);
+            for (const b of legacyBoundaries) {
+              const existingB = await targetDb.get('boundaries', b.id);
+              if (!existingB) {
+                await targetDb.put('boundaries', b);
+              }
+            }
+          }
+
+          // Clear guest database after successful migration
+          if (legacyName === `${BASE_DB_PREFIX}_guest` && hasStore(legacyDb, 'inspections') && typeof legacyDb.transaction === 'function') {
+            try {
+              const tx = legacyDb.transaction(['inspections', 'media', 'boundaries'], 'readwrite');
+              if (tx && tx.objectStore) {
+                await Promise.all([
+                  tx.objectStore('inspections')?.clear?.().catch(() => {}),
+                  tx.objectStore('media')?.clear?.().catch(() => {}),
+                  tx.objectStore('boundaries')?.clear?.().catch(() => {})
+                ]);
+              }
+            } catch (_) {}
+          }
+
+          legacyDb.close();
+        } catch (_) {}
+      }
+    } catch (err) {
+      console.warn('[DatabaseService] Legacy migration note:', err);
+    }
   }
 
   async init() {

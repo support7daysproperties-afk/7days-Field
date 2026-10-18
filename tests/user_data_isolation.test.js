@@ -177,4 +177,55 @@ describe('Multi-User Data Isolation & Fresh Workspace Tests', () => {
       expect(carolRecords[0].id).toBe('CAROL-INS-01');
     });
   });
+
+  describe('Email-Specific Persistence & Account Memory', () => {
+    it('scopes database to sanitized email when email is provided', async () => {
+      await DatabaseService.setCurrentUser('uid-123', 'vanji.test@gmail.com');
+      expect(DatabaseService.getDbName()).toBe('7days_offline_db_vanji_test_gmail_com');
+    });
+
+    it('retains all inspections when user logs out and logs back in with the same email', async () => {
+      // 1. User logs in with email and creates an inspection
+      await DatabaseService.setCurrentUser('uid-001', 'supervisor@7days.com');
+      await InspectionRepository.saveInspection({
+        id: 'INS-VANJI-001',
+        title: 'Site 101 Land Survey',
+        user_email: 'supervisor@7days.com',
+        status: 'COMPLETED'
+      });
+
+      const initialList = await InspectionRepository.getAllInspections();
+      expect(initialList).toHaveLength(1);
+      expect(initialList[0].id).toBe('INS-VANJI-001');
+
+      // 2. User logs out (session becomes null/guest)
+      await DatabaseService.setCurrentUser(null);
+      expect(DatabaseService.getDbName()).toBe('7days_offline_db_guest');
+
+      // 3. User logs back in with the SAME email (even if a fresh session UID is assigned)
+      await DatabaseService.setCurrentUser('uid-fresh-session-999', 'supervisor@7days.com');
+      expect(DatabaseService.getDbName()).toBe('7days_offline_db_supervisor_7days_com');
+
+      // All inspections MUST be retained for this email
+      const restoredList = await InspectionRepository.getAllInspections();
+      expect(restoredList).toHaveLength(1);
+      expect(restoredList[0].title).toBe('Site 101 Land Survey');
+    });
+
+    it('migrates guest inspections into the user email database partition upon login', async () => {
+      // User creates inspection before logging in (as guest)
+      await DatabaseService.setCurrentUser(null);
+      await InspectionRepository.saveInspection({
+        id: 'INS-GUEST-001',
+        title: 'Offline Draft Before Login',
+        status: 'DRAFT'
+      });
+
+      // User now logs in with their email
+      await DatabaseService.setCurrentUser('uid-auth-55', 'fieldagent@7days.com');
+      
+      const userInspections = await InspectionRepository.getAllInspections();
+      expect(userInspections.some(i => i.id === 'INS-GUEST-001')).toBe(true);
+    });
+  });
 });

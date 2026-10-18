@@ -147,6 +147,8 @@ export default function CreateInspection() {
         reference_number: formData.reference_number,
         supervisor_id: user?.supervisorProfile?.id || user?.id || null,
         auth_user_id: user?.id || null,
+        user_email: user?.email || user?.supervisorProfile?.email || null,
+        supervisor_email: user?.email || user?.supervisorProfile?.email || null,
         supervisor_name: user?.supervisorProfile?.name || 'Field Supervisor',
         latitude: location?.latitude || null,
         longitude: location?.longitude || null,

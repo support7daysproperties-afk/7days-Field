@@ -152,7 +152,7 @@ export function AuthProvider({ children }) {
       }
 
       // Activate user-scoped database partition
-      await DatabaseService.setCurrentUser(sessionUser.id);
+      await DatabaseService.setCurrentUser(sessionUser.id, sessionUser.email);
 
       // 1. First check: match by auth_user_id
       let supervisorRecord = null;
@@ -199,14 +199,17 @@ export function AuthProvider({ children }) {
             const cachedProfile = JSON.parse(cachedProfileStr);
             setAuthError('');
             const fullUser = { ...sessionUser, supervisorProfile: cachedProfile };
+            await DatabaseService.setCurrentUser(sessionUser.id, sessionUser.email, cachedProfile?.id);
             currentUserRef.current = fullUser;
             setUser(fullUser);
             setAuthenticated(true);
             try {
               localStorage.setItem('7days_cached_user', JSON.stringify(fullUser));
               localStorage.setItem('7days_active_user_id', sessionUser.id);
+              if (sessionUser.email) localStorage.setItem('7days_active_user_email', sessionUser.email);
             } catch (_) {}
             await restoreDriveConnection(fullUser, providerToken);
+            SyncEngine.syncRemoteInspections(fullUser).catch(() => {});
             setLoading(false);
             return;
           } catch (e) {
@@ -227,9 +230,16 @@ export function AuthProvider({ children }) {
 
       // Authorized supervisor
       setAuthError('');
+      // Update database partition with resolved supervisor ID
+      await DatabaseService.setCurrentUser(sessionUser.id, sessionUser.email || data.email, data.id);
+
       // Cache profile and user locally for instant offline launches
       try {
         localStorage.setItem(`supervisor_profile_${sessionUser.id}`, JSON.stringify(data));
+        if (sessionUser.email) {
+          localStorage.setItem(`supervisor_profile_${sessionUser.email.toLowerCase().trim()}`, JSON.stringify(data));
+          localStorage.setItem('7days_active_user_email', sessionUser.email.toLowerCase().trim());
+        }
         localStorage.setItem('7days_active_user_id', sessionUser.id);
       } catch (e) {
         console.warn('Could not cache supervisor profile:', e);
@@ -245,6 +255,9 @@ export function AuthProvider({ children }) {
 
       // Restore supervisor-scoped Drive authorization
       await restoreDriveConnection(fullUser, providerToken);
+
+      // Pull down any remote inspections from Supabase so user has full history
+      SyncEngine.syncRemoteInspections(fullUser).catch((e) => console.warn('Remote sync note:', e));
     } catch (err) {
       // Check if we have cached profile for offline/network error scenarios
       const cachedProfileStr = localStorage.getItem(`supervisor_profile_${sessionUser.id}`);
@@ -407,9 +420,9 @@ export function AuthProvider({ children }) {
       localStorage.removeItem('drive_onboarding_done');
       localStorage.removeItem('7days_drive_token');
       localStorage.removeItem('7days_active_user_id');
+      localStorage.removeItem('7days_active_user_email');
       localStorage.removeItem('7days_cached_user');
       if (activeUserId) {
-        localStorage.removeItem(`supervisor_profile_${activeUserId}`);
         localStorage.removeItem(`drive_onboarding_done_${activeUserId}`);
         localStorage.removeItem(`pending_drive_onboarding_${activeUserId}`);
       }

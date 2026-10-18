@@ -4,6 +4,8 @@ import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle, Clipboard
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import DatabaseService from '../services/offline/DatabaseService';
+import ConnectivityService from '../services/offline/ConnectivityService';
+import SyncEngine from '../services/offline/SyncEngine';
 import useBackHandler from '../hooks/useBackHandler';
 
 export default function Tasks() {
@@ -53,6 +55,10 @@ export default function Tasks() {
       // Sort by updated_at descending
       data.sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime());
       setInspections(data);
+
+      if (user && (ConnectivityService.online || navigator?.onLine)) {
+        SyncEngine.syncRemoteInspections(user).catch(() => {});
+      }
     } catch (err) {
       console.error(err);
     } finally {

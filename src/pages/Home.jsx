@@ -21,6 +21,7 @@ import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import ConnectivityService from '../services/offline/ConnectivityService';
 import DatabaseService from '../services/offline/DatabaseService';
+import SyncEngine from '../services/offline/SyncEngine';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -67,6 +68,10 @@ export default function Home() {
       const data = await InspectionRepository.getAllInspections();
       data.sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime());
       setInspections(data);
+
+      if (user && (ConnectivityService.online || navigator?.onLine)) {
+        SyncEngine.syncRemoteInspections(user).catch(() => {});
+      }
     } catch (err) {
       console.error('Failed to load inspections:', err);
     } finally {

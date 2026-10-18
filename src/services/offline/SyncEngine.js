@@ -114,6 +114,147 @@ class SyncEngine {
     }
   }
 
+  async syncRemoteInspections(user) {
+    if (!ConnectivityService.online && !navigator?.onLine) return;
+    if (!user) return;
+
+    try {
+      const supervisorId = user.supervisorProfile?.id || user.id;
+      const userEmail = (user.email || user.supervisorProfile?.email || '').toLowerCase().trim();
+
+      // 1. Resolve supervisor record ID if needed
+      let targetSupervisorId = supervisorId;
+      if (!targetSupervisorId && userEmail) {
+        try {
+          const { data: sup } = await supabase
+            .from('field_supervisors')
+            .select('id')
+            .ilike('email', userEmail)
+            .maybeSingle();
+          if (sup?.id) targetSupervisorId = sup.id;
+        } catch (_) {}
+      }
+
+      // 2. Fetch all inspections associated with this supervisor from Supabase
+      let query = supabase
+        .from('field_inspections')
+        .select(`
+          id,
+          property_id,
+          supervisor_id,
+          task_id,
+          status,
+          sync_status,
+          checklist,
+          remarks,
+          owner_name,
+          owner_phone,
+          consent_given,
+          signature_url,
+          created_at,
+          updated_at,
+          field_tasks (
+            id,
+            name,
+            type,
+            location
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (targetSupervisorId) {
+        query = query.eq('supervisor_id', targetSupervisorId);
+      }
+
+      const { data: remoteInspections, error } = await query;
+      if (error) {
+        console.warn('[SyncEngine] Remote inspections fetch notice:', error.message);
+        return;
+      }
+
+      if (!remoteInspections || remoteInspections.length === 0) return;
+
+      // 3. Restore each remote inspection into local storage if not already present
+      for (const remote of remoteInspections) {
+        const local = await InspectionRepository.getInspection(remote.id);
+
+        if (!local) {
+          const taskInfo = remote.field_tasks || {};
+          const restoredInspection = {
+            id: remote.id,
+            server_id: remote.id,
+            supabase_id: remote.id,
+            task_id: remote.task_id,
+            property_id: remote.property_id,
+            title: taskInfo.name || `Inspection ${remote.id.slice(0, 8)}`,
+            property_name: taskInfo.name || `Property ${remote.property_id ? remote.property_id.slice(0, 8) : ''}`,
+            location_name: taskInfo.location || '',
+            inspection_type: taskInfo.type || 'Property Verification',
+            supervisor_id: remote.supervisor_id,
+            auth_user_id: user.id || null,
+            user_email: userEmail || null,
+            status: remote.status || 'COMPLETED',
+            sync_status: 'SYNCED',
+            created_at: remote.created_at,
+            updated_at: remote.updated_at,
+            metadata: {
+              checklist: remote.checklist || {},
+              remarks: remote.remarks || '',
+              ownerInfo: {
+                name: remote.owner_name || '',
+                phone: remote.owner_phone || '',
+              },
+              consent: remote.consent_given,
+              signature: remote.signature_url,
+            }
+          };
+
+          await InspectionRepository.saveInspection(restoredInspection);
+
+          // Restore associated media references from Supabase
+          try {
+            const { data: mediaItems } = await supabase
+              .from('field_inspection_media')
+              .select('*')
+              .eq('inspection_id', remote.id);
+
+            if (mediaItems && mediaItems.length > 0) {
+              for (const m of mediaItems) {
+                const existingMedia = await MediaRepository.getMedia(m.id);
+                if (!existingMedia) {
+                  await MediaRepository.saveMedia({
+                    id: m.id,
+                    inspection_id: remote.id,
+                    type: m.type,
+                    mediaType: m.type,
+                    evidenceType: m.category || (m.type === 'video' ? 'Video' : 'Photo'),
+                    filename: m.filename || `${m.type}-${m.id.slice(0, 6)}`,
+                    mime_type: m.mime_type,
+                    size: m.file_size,
+                    duration: m.duration,
+                    captured_at: m.captured_at,
+                    latitude: m.latitude,
+                    longitude: m.longitude,
+                    accuracy: m.gps_accuracy,
+                    sync_status: 'UPLOADED',
+                    upload_status: 'uploaded',
+                    remote_asset_id: m.drive_file_id,
+                    remote_url: m.drive_web_url,
+                    uploaded_at: m.uploaded_at,
+                  });
+                }
+              }
+            }
+          } catch (_mediaErr) {}
+        }
+      }
+
+      this._notify();
+    } catch (err) {
+      console.warn('[SyncEngine] syncRemoteInspections notice:', err);
+    }
+  }
+
   subscribe(callback) {
     this._progressListeners.add(callback);
     return () => this._progressListeners.delete(callback);
