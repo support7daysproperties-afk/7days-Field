@@ -38,19 +38,34 @@ export class PhotoSphereStitcher {
       };
     }
 
+    // Deduplicate frames: if the user took multiple shots for the same target, keep only the latest clean frame
+    const uniqueMap = new Map();
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      const key = f.targetId !== undefined
+        ? f.targetId
+        : (f.sequenceIndex !== undefined
+          ? `seq_${f.sequenceIndex}`
+          : (f.id !== undefined
+            ? f.id
+            : `${Math.round(f.yaw || 0)}_${Math.round(f.pitch || 0)}`));
+      uniqueMap.set(key, f);
+    }
+    const cleanFrames = Array.from(uniqueMap.values());
+
     let minPitch = 90;
     let maxPitch = -90;
     let hasZenith = false;
     let hasNadir = false;
 
-    for (const f of frames) {
+    for (const f of cleanFrames) {
       if (f.pitch < minPitch) minPitch = f.pitch;
       if (f.pitch > maxPitch) maxPitch = f.pitch;
       if (f.pitch >= 65) hasZenith = true;
       if (f.pitch <= -65) hasNadir = true;
     }
 
-    const count = frames.length;
+    const count = cleanFrames.length;
     const coveragePercent = Math.min(100, Math.round((count / 34) * 100));
     const isValidCoverage = coveragePercent >= 80;
     const isCompleteSphere = count >= 28 && hasZenith && hasNadir && coveragePercent >= 80;
@@ -92,7 +107,22 @@ export class PhotoSphereStitcher {
       throw new Error('No frames provided for stitching');
     }
 
-    const coverage = this.evaluateCoverage(frames);
+    // Deduplicate frames: if the user retook a shot or multiple frames exist for the same target, keep only the latest clean frame
+    const uniqueMap = new Map();
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      const key = f.targetId !== undefined
+        ? f.targetId
+        : (f.sequenceIndex !== undefined
+          ? `seq_${f.sequenceIndex}`
+          : (f.id !== undefined
+            ? f.id
+            : `${Math.round(f.yaw || 0)}_${Math.round(f.pitch || 0)}`));
+      uniqueMap.set(key, f);
+    }
+    const cleanFrames = Array.from(uniqueMap.values());
+
+    const coverage = this.evaluateCoverage(cleanFrames);
     if (options.strictCoverage && !coverage.isValidCoverage) {
       throw new Error(`Insufficient sphere coverage: ${coverage.coveragePercent}% (< 80%). Minimum 80% coverage required.`);
     }
@@ -107,7 +137,7 @@ export class PhotoSphereStitcher {
       try {
         onProgress(0.15, 'Invoking Android native Ceres / GraphCut stitcher bridge...');
         const nativeResult = await PhotoSphereNativeStitcher.stitch({
-          frames: frames.map((f) => ({
+          frames: cleanFrames.map((f) => ({
             id: f.id,
             path: f.filePath || f.path,
             yaw: f.yaw,
@@ -117,7 +147,7 @@ export class PhotoSphereStitcher {
           })),
           panoWidth: options.width || 4096,
           panoHeight: Math.round((options.width || 4096) / 2),
-          lensFovH: options.fov || 46.0,
+          lensFovH: options.fov || 42.0,
         });
 
         if (nativeResult && nativeResult.blob) {
@@ -139,8 +169,8 @@ export class PhotoSphereStitcher {
 
     // 1. Decode all frames into ImageBitmaps
     const loadedFrames = [];
-    for (let i = 0; i < frames.length; i++) {
-      const frame = frames[i];
+    for (let i = 0; i < cleanFrames.length; i++) {
+      const frame = cleanFrames[i];
       let bitmap;
       if (frame.bitmap) {
         bitmap = frame.bitmap;
@@ -157,7 +187,7 @@ export class PhotoSphereStitcher {
         h: bitmap.height,
       });
 
-      onProgress(0.05 + 0.15 * ((i + 1) / frames.length), `Decoded frame ${i + 1} of ${frames.length}`);
+      onProgress(0.05 + 0.15 * ((i + 1) / cleanFrames.length), `Decoded frame ${i + 1} of ${cleanFrames.length}`);
     }
 
     if (loadedFrames.length === 0) {
@@ -258,12 +288,12 @@ export class PhotoSphereStitcher {
       }
 
       const aspect = f.w / f.h;
-      // Calibrated wide-angle smartphone diagonal FOV ~74.0 degrees
-      const tanHalfD = Math.tan(37.0 * (Math.PI / 180));
-      const tanHalfV = tanHalfD / Math.sqrt(1 + aspect * aspect);
-      const tanHalfH = aspect * tanHalfV;
+      // Calibrated smartphone camera FOV: exact 42.0° horizontal viewfinder
+      const fovH = (options.fov || 42.0) * (Math.PI / 180);
+      const tanHalfH = Math.tan(fovH / 2);
+      const tanHalfV = tanHalfH / aspect;
 
-      const angularRadius = Math.atan(tanHalfD);
+      const angularRadius = Math.atan(Math.hypot(tanHalfH, tanHalfV));
       const maxCosRadius = Math.cos(angularRadius * 1.08);
 
       const minLat = Math.max(-Math.PI / 2, pitchRad - angularRadius * 1.15);
@@ -302,10 +332,10 @@ export class PhotoSphereStitcher {
             const srcIdx = (srcY * f.w + srcX) * 4;
             const pIdx = py * panoWidth + px;
 
-            // Continuous 2D cosine weight: 1.0 at optical center, exactly 0.0 at borders
+            // Continuous 2D cosine weight: 1.0 at optical center, smooth exponent 2.5 falloff to borders
             const wx = Math.cos((normX * Math.PI) / 2);
             const wy = Math.cos((normY * Math.PI) / 2);
-            let weight = Math.pow(Math.max(0, wx * wy), 1.4);
+            let weight = Math.pow(Math.max(0, wx * wy), 2.5);
 
             // Boost polar cap coverage so high-latitude rows receive solid accumulation
             if (Math.abs(lat) >= (70 * Math.PI) / 180 && Math.abs(normX) <= 0.96 && Math.abs(normY) <= 0.96) {

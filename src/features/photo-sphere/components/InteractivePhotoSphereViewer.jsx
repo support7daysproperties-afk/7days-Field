@@ -18,6 +18,55 @@ const PhotoSphereSensor = registerPlugin('PhotoSphereSensor');
  * - Android Back button / Back gesture integration
  * - Export options: Save Evidence, Download 360 JPEG, Tiny Planet
  */
+
+// True Aligned Inward Spherical Geometry: maps U=0.5 directly to (0, 0, -radius) forward
+function createTrueAlignedSphereGeometry(radius = 500, widthSegments = 72, heightSegments = 48) {
+  const geo = new THREE.BufferGeometry();
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let iy = 0; iy <= heightSegments; iy++) {
+    const v = iy / heightSegments;
+    const pitch = (v - 0.5) * Math.PI;
+
+    for (let ix = 0; ix <= widthSegments; ix++) {
+      const u = ix / widthSegments;
+      const yaw = (u - 0.5) * 2 * Math.PI;
+
+      // Coordinate mapping matching equirectangular projection:
+      // u = 0.5 (lon = 0) -> x = 0, y = 0, z = -radius (facing camera)
+      // u = 0.75 (lon = +PI/2) -> x = +radius, y = 0, z = 0 (right)
+      // u = 0.25 (lon = -PI/2) -> x = -radius, y = 0, z = 0 (left)
+      const x = Math.cos(pitch) * Math.sin(yaw) * radius;
+      const y = Math.sin(pitch) * radius;
+      const z = -Math.cos(pitch) * Math.cos(yaw) * radius;
+
+      positions.push(x, y, z);
+      uvs.push(u, v);
+    }
+  }
+
+  for (let iy = 0; iy < heightSegments; iy++) {
+    for (let ix = 0; ix < widthSegments; ix++) {
+      const a = iy * (widthSegments + 1) + ix;
+      const b = a + 1;
+      const c = (iy + 1) * (widthSegments + 1) + ix;
+      const d = c + 1;
+
+      // Inward-facing winding: normals point inside towards camera at (0, 0, 0)
+      indices.push(a, b, d);
+      indices.push(a, d, c);
+    }
+  }
+
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export default function InteractivePhotoSphereViewer({
   sourceCanvas,
   imageUrl,
@@ -222,9 +271,8 @@ export default function InteractivePhotoSphereViewer({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     s.renderer = renderer;
 
-    // 4. Inverted Equirectangular Sphere (Radius = 500)
-    const geometry = new THREE.SphereGeometry(500, 72, 48);
-    geometry.scale(-1, 1, 1); // View from inside
+    // 4. True Aligned Inward Equirectangular Sphere (Radius = 500)
+    const geometry = createTrueAlignedSphereGeometry(500, 72, 48);
 
     let texture;
     if (sourceCanvas) {
@@ -234,7 +282,7 @@ export default function InteractivePhotoSphereViewer({
       texture.colorSpace = THREE.SRGBColorSpace;
       s.texture = texture;
 
-      const material = new THREE.MeshBasicMaterial({ map: texture });
+      const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
       const mesh = new THREE.Mesh(geometry, material);
       scene.add(mesh);
       s.sphereMesh = mesh;
@@ -246,7 +294,7 @@ export default function InteractivePhotoSphereViewer({
         tex.colorSpace = THREE.SRGBColorSpace;
         s.texture = tex;
 
-        const material = new THREE.MeshBasicMaterial({ map: tex });
+        const material = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
         const mesh = new THREE.Mesh(geometry, material);
         scene.add(mesh);
         s.sphereMesh = mesh;

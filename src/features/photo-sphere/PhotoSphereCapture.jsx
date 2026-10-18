@@ -599,6 +599,22 @@ export default function PhotoSphereCapture({
 
     eng.isCapturing = true;
 
+    // Immediately mark target captured and hidden so evaluate loop never re-triggers it
+    target.captured = true;
+    target.visible = false;
+    if (target.mesh) target.mesh.visible = false;
+
+    // First shot locks initial anchor reference yaw
+    if (eng.anchorYaw === null || eng.capturedCount === 0) {
+      eng.anchorYaw = eng.camYaw;
+      eng.anchorPitch = 0;
+    }
+
+    // Precise camera orientation at the exact moment of shutter
+    const anchorYaw = eng.anchorYaw !== null ? eng.anchorYaw : eng.camYaw;
+    const capturedYaw = ((eng.camYaw - anchorYaw + 540) % 360) - 180;
+    const capturedPitch = eng.camPitch;
+
     if (navigator.vibrate) {
       try {
         navigator.vibrate(35);
@@ -637,16 +653,17 @@ export default function PhotoSphereCapture({
     tileCtx.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
     // 2. Durable Persistence Rule: Save full-res JPEG bytes & pose to storage FIRST
+    const frameId = `frame_${eng.sessionId || 'ps'}_t_${target.dotNumber !== undefined ? target.dotNumber : target.id}`;
     try {
       const blob = await new Promise((resolve) => tileCanvas.toBlob(resolve, 'image/jpeg', 0.95));
       if (blob) {
         await photoSphereStorage.saveFrame({
-          id: `frame_${target.id}_${Date.now()}`,
+          id: frameId,
           sessionId: eng.sessionId,
           targetId: target.targetId || `t_${target.dotNumber !== undefined ? target.dotNumber : target.id}`,
           sequenceIndex: target.dotNumber !== undefined ? target.dotNumber : target.id,
-          yaw: target.yaw,
-          pitch: target.pitch,
+          yaw: capturedYaw,
+          pitch: capturedPitch,
           roll: 0,
           blob,
           width: cropW,
@@ -658,35 +675,27 @@ export default function PhotoSphereCapture({
       console.warn('Could not persist frame to IndexedDB:', err);
     }
 
-    // 3. Only after durable storage write succeeds, advance capture count & mark captured
-    if (eng.capturedCount === 0 || target.dotNumber === 0) {
-      eng.anchorYaw = eng.camYaw;
-      eng.anchorPitch = 0;
-    }
+    // 3. Increment capture count
     eng.capturedCount++;
 
-    target.captured = true;
-    target.visible = false;
-    if (target.mesh) target.mesh.visible = false;
-
-    // 4. Add as a true 3D textured mesh on the sphere in Three.js
-    const tile3DEntry = addCapturedTileTo3DScene(tileCanvas, target.yaw, target.pitch);
+    // 4. Add as a true 3D textured mesh on the sphere in Three.js at exact captured orientation
+    const tile3DEntry = addCapturedTileTo3DScene(tileCanvas, capturedYaw, capturedPitch);
 
     // Save snapped tile in capturedTiles
     eng.capturedTiles.push({
       targetId: target.id,
       dotNumber: target.dotNumber !== undefined ? target.dotNumber : target.id,
-      yaw: target.yaw,
-      pitch: target.pitch,
+      yaw: capturedYaw,
+      pitch: capturedPitch,
       canvas: tileCanvas,
       tileEntry: tile3DEntry,
       width: cropW,
       height: cropH,
     });
 
-    // 5. Paint frame into 3D sphere texture using exact target pose & zero roll
-    const targetYawRad = (target.yaw * Math.PI) / 180;
-    const targetPitchRad = (target.pitch * Math.PI) / 180;
+    // 5. Paint frame into 3D sphere texture using exact captured pose & zero roll
+    const targetYawRad = (capturedYaw * Math.PI) / 180;
+    const targetPitchRad = (capturedPitch * Math.PI) / 180;
     projectLiveCameraFrameOntoSphere(tileCanvas, targetYawRad, targetPitchRad);
 
     updateFrontierAndGapDots();
@@ -706,7 +715,7 @@ export default function PhotoSphereCapture({
 
     setTimeout(() => {
       eng.isCapturing = false;
-    }, 180);
+    }, 320);
   }, []);
 
   // Render 3D WebGL Perspective Stage and Target Dots Overlay
@@ -730,12 +739,12 @@ export default function PhotoSphereCapture({
     const screenVFOV = 2 * Math.atan((H / 2) / focalPx) * (180 / Math.PI);
 
     // Two-Phase Capture Start: anchorYaw tracks camYaw during shot 0
-    if (eng.capturedCount === 0 || eng.anchorYaw === null) {
+    if (eng.capturedCount === 0 && eng.anchorYaw === null) {
       eng.anchorYaw = eng.camYaw;
     }
 
     const anchorYaw = eng.anchorYaw !== null ? eng.anchorYaw : eng.camYaw;
-    const relYaw = eng.camYaw - anchorYaw;
+    const relYaw = ((eng.camYaw - anchorYaw + 540) % 360) - 180;
 
     // ── LAYER 1: 3D WebGL Perspective Scene (Three.js) ──
     if (eng.camera && eng.renderer && eng.scene) {
@@ -1617,6 +1626,13 @@ export default function PhotoSphereCapture({
           if (!eng.camera || !data) return;
           const targetYaw = ((data.yaw % 360) + 360) % 360;
           const targetPitch = Math.max(-90, Math.min(90, data.pitch));
+
+          // Lock initial reference orientation immediately on first reading
+          if (eng.initialYaw === null) {
+            eng.initialYaw = targetYaw;
+            eng.camYaw = targetYaw;
+            eng.camPitch = targetPitch;
+          }
 
           const now = performance.now();
           if (eng.lastOrientTime) {

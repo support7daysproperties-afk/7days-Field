@@ -13,6 +13,49 @@ import { X, Glasses, RotateCcw } from 'lucide-react';
  * - Keep viewing direction and panorama projection consistent between eyes with appropriate inter-pupillary offset.
  * - Provide clear exit button to return to the panorama result screen.
  */
+
+function createTrueAlignedSphereGeometry(radius = 500, widthSegments = 60, heightSegments = 40) {
+  const geo = new THREE.BufferGeometry();
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let iy = 0; iy <= heightSegments; iy++) {
+    const v = iy / heightSegments;
+    const pitch = (v - 0.5) * Math.PI;
+
+    for (let ix = 0; ix <= widthSegments; ix++) {
+      const u = ix / widthSegments;
+      const yaw = (u - 0.5) * 2 * Math.PI;
+
+      const x = Math.cos(pitch) * Math.sin(yaw) * radius;
+      const y = Math.sin(pitch) * radius;
+      const z = -Math.cos(pitch) * Math.cos(yaw) * radius;
+
+      positions.push(x, y, z);
+      uvs.push(u, v);
+    }
+  }
+
+  for (let iy = 0; iy < heightSegments; iy++) {
+    for (let ix = 0; ix < widthSegments; ix++) {
+      const a = iy * (widthSegments + 1) + ix;
+      const b = a + 1;
+      const c = (iy + 1) * (widthSegments + 1) + ix;
+      const d = c + 1;
+
+      indices.push(a, b, d);
+      indices.push(a, d, c);
+    }
+  }
+
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export default function VRViewer({ panoramaUrl, onClose }) {
   const containerRef = useRef(null);
   const leftEyeRef = useRef(null);
@@ -79,9 +122,8 @@ export default function VRViewer({ panoramaUrl, onClose }) {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       texture.colorSpace = THREE.SRGBColorSpace;
 
-      const geometry = new THREE.SphereGeometry(500, 60, 40);
-      geometry.scale(-1, 1, 1);
-      const material = new THREE.MeshBasicMaterial({ map: texture });
+      const geometry = createTrueAlignedSphereGeometry(500, 60, 40);
+      const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
       sphereMesh = new THREE.Mesh(geometry, material);
       scene.add(sphereMesh);
     });
