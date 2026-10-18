@@ -40,12 +40,20 @@ export default function InspectionSession() {
     } catch (_) {}
   };
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState(null);
-  const [showPhotoCamera, setShowPhotoCamera] = useState(false);
-  const [showVideoCamera, setShowVideoCamera] = useState(false);
-  const [showPhotoSphere, setShowPhotoSphere] = useState(false);
-  const [showBoundaryMap, setShowBoundaryMap] = useState(false);
-  const [viewerMode, setViewerMode] = useState(null); // { mode: 'vr' | 'motion', url: string }
+  // Consolidated modal / tool overlay state to completely eliminate variable ordering hazards
+  const [activeModal, setActiveModal] = useState(null); // 'photo' | 'video' | 'photo_sphere' | 'boundary' | 'owner_photo' | null
+  const showPhotoCamera = activeModal === 'photo';
+  const setShowPhotoCamera = (show) => setActiveModal(show ? 'photo' : null);
+  const showVideoCamera = activeModal === 'video';
+  const setShowVideoCamera = (show) => setActiveModal(show ? 'video' : null);
+  const showPhotoSphere = activeModal === 'photo_sphere';
+  const setShowPhotoSphere = (show) => setActiveModal(show ? 'photo_sphere' : null);
+  const showBoundaryMap = activeModal === 'boundary';
+  const setShowBoundaryMap = (show) => setActiveModal(show ? 'boundary' : null);
+  const showOwnerCamera = activeModal === 'owner_photo';
+  const setShowOwnerCamera = (show) => setActiveModal(show ? 'owner_photo' : null);
+  const viewerModeState = useState(null);
+  const [viewerMode, setViewerMode] = viewerModeState;
   const [evidenceSummary, setEvidenceSummary] = useState({ location: null, photos: 0, videos: 0, total: 0 });
   const [evidenceList, setEvidenceList] = useState([]);
   const [expandedFolder, setExpandedFolder] = useState('photos');
@@ -80,7 +88,6 @@ export default function InspectionSession() {
   const [signature, setSignature] = useState(null);
   const [ownerAadhaar, setOwnerAadhaar] = useState('');
   const [ownerPhoto, setOwnerPhoto] = useState(null);
-  const [showOwnerCamera, setShowOwnerCamera] = useState(false);
   const [boundary, setBoundary] = useState(null); // saved BoundaryRepository record
   const [inspectionRecord, setInspectionRecord] = useState(null);
 
@@ -481,30 +488,10 @@ export default function InspectionSession() {
   }, 100, viewerMode !== null);
 
   // 3. Camera Modals & Tools (Priority 90)
-  useBackHandler('insp_photo_camera', () => {
-    setShowPhotoCamera(false);
+  useBackHandler('insp_modal_tool', () => {
+    setActiveModal(null);
     return true;
-  }, 90, showPhotoCamera);
-
-  useBackHandler('insp_owner_camera', () => {
-    setShowOwnerCamera(false);
-    return true;
-  }, 90, showOwnerCamera);
-
-  useBackHandler('insp_photo_sphere', () => {
-    setShowPhotoSphere(false);
-    return true;
-  }, 90, showPhotoSphere);
-
-  useBackHandler('insp_video_camera', () => {
-    setShowVideoCamera(false);
-    return true;
-  }, 90, showVideoCamera);
-
-  useBackHandler('insp_boundary_map', () => {
-    setShowBoundaryMap(false);
-    return true;
-  }, 90, showBoundaryMap);
+  }, 90, Boolean(activeModal));
 
   // 4. Batch Selection Modes (Priority 80)
   useBackHandler('insp_selection_mode', () => {
@@ -517,13 +504,13 @@ export default function InspectionSession() {
   useBackHandler('insp_active_step', () => {
     setActiveStepId('overview');
     return true;
-  }, 50, activeStepId !== 'overview' && !showPhotoCamera && !showOwnerCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
+  }, 50, activeStepId !== 'overview' && !activeModal && selectedMediaIndex === null);
 
   // 6. Inspection Overview -> Return to Inspections List / Tasks (Priority 20)
   useBackHandler('insp_overview', () => {
     navigate('/tasks');
     return true;
-  }, 20, activeStepId === 'overview' && !showPhotoCamera && !showOwnerCamera && !showPhotoSphere && !showVideoCamera && !showBoundaryMap && selectedMediaIndex === null);
+  }, 20, activeStepId === 'overview' && !activeModal && selectedMediaIndex === null);
 
   const renderOverviewContent = () => {
     const completedCount = steps.filter(s => s.completed).length;
@@ -1436,6 +1423,8 @@ export default function InspectionSession() {
           inspectionId={id}
           propertyId={id}
           propertyAreaAcres={null}
+          user={user}
+          supervisorId={user?.supervisorProfile?.id || user?.id}
           onSave={(saved) => {
             setBoundary(saved);
             setShowBoundaryMap(false);

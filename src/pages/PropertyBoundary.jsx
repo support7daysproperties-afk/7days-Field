@@ -42,7 +42,6 @@ import {
 } from '../services/BoundaryService';
 import { computeCollisionFreeLabels } from '../services/BoundaryLabelPlacementService';
 import { loadGoogleMaps, getGoogleMapsApiKey } from '../services/GoogleMapsLoader';
-import { useAuth } from '../context/AuthContext';
 import useBackHandler from '../hooks/useBackHandler';
 
 // ── Visual constants ───────────────────────────────────────────────────────────
@@ -63,8 +62,10 @@ export default function PropertyBoundary({
   propertyAreaAcres,
   onSave,
   onCancel,
+  user: propUser = null,
+  supervisorId: propSupervisorId = null,
 }) {
-  const { user } = useAuth();
+  const user = propUser;
 
   // DOM
   const mapEl = useRef(null);
@@ -568,7 +569,7 @@ export default function PropertyBoundary({
     setSnapshotLoading(true);
     setSaveError(null);
     try {
-      const supervisorId = user?.supervisorProfile?.id || user?.id;
+      const supervisorId = propSupervisorId || user?.supervisorProfile?.id || user?.id || null;
 
       // Ensure map is fitted to boundary before snapshot with generous padding for edge labels
       if (mapRef.current && googleMapsRef.current) {
