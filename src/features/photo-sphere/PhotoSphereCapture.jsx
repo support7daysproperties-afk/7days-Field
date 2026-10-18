@@ -249,7 +249,7 @@ export default function PhotoSphereCapture({
     // Exact 28px-32px diameter (30px diameter uncaptured target dots, radius 15 units)
     const dotGeo = new THREE.SphereGeometry(isGapDot ? 17 : 15, 24, 24);
     const dotMat = new THREE.MeshBasicMaterial({
-      color: isGapDot ? 0x66b2ff : 0xaaaaaa,
+      color: isGapDot ? 0x66b2ff : 0x4285F4,
       transparent: true,
       opacity: 0.92,
       depthTest: false,
@@ -377,57 +377,43 @@ export default function PhotoSphereCapture({
       const yawRad = THREE.MathUtils.degToRad(t.yaw);
       const pitchRad = THREE.MathUtils.degToRad(t.pitch);
       const isCenterStartDot = t.dotNumber === 0;
-      spawnTargetDot(t.dotNumber, yawRad, pitchRad, isCenterStartDot, false, t);
+      // All 360 targets are visible across the sphere so the user never gets lost
+      spawnTargetDot(t.dotNumber, yawRad, pitchRad, true, false, t);
     });
 
     updateFrontierAndGapDots();
   }
 
-  // Update 4-Neighbor Frontier (Left, Right, Up, Down)
+  // Update All 360 Dots Visibility and Dynamic Gap Sealing
   function updateFrontierAndGapDots() {
     const eng = engineRef.current;
     if (!eng.targets || eng.targets.length === 0) return;
 
-    if (eng.capturedCount === 0) {
-      eng.targets.forEach((t, idx) => {
-        t.captured = false;
-        t.visible = idx === 0;
-        if (t.mesh) t.mesh.visible = idx === 0;
-      });
-      updateHUD();
-      return;
-    }
-
-    const capturedTargets = eng.targets.filter((t) => t.captured);
-
+    // All uncaptured dots remain visible across the 360 space; captured dots are retired
     eng.targets.forEach((t) => {
       if (t.captured) {
         t.visible = false;
         if (t.mesh) t.mesh.visible = false;
-        return;
+      } else {
+        t.visible = true;
+        if (t.mesh) t.mesh.visible = true;
       }
-
-      // Check if t is an immediate spatial neighbor (<= 52.0 deg) of any captured tile
-      let isImmediateNeighbor = false;
-      for (const cap of capturedTargets) {
-        const ang = angularDistance(t.yaw, t.pitch, cap.yaw, cap.pitch);
-        if (ang > 5 && ang <= COVERAGE_CONFIG.NEIGHBOR_DISTANCE_DEG) {
-          isImmediateNeighbor = true;
-          break;
-        }
-      }
-
-      t.visible = isImmediateNeighbor;
-      if (t.mesh) t.mesh.visible = isImmediateNeighbor;
     });
 
-    // Fallback: If all immediate 4-neighbors are captured, show next uncaptured dot
-    const visibleCount = eng.targets.filter((t) => !t.captured && t.visible).length;
-    if (visibleCount === 0) {
-      const remaining = eng.targets.filter((t) => !t.captured);
-      if (remaining.length > 0) {
-        remaining[0].visible = true;
-        if (remaining[0].mesh) remaining[0].mesh.visible = true;
+    // Dynamic gap-filling: if uncaptured dots are depleted but coverage is incomplete, spawn gap dot
+    const remainingUncaptured = eng.targets.filter((t) => !t.captured);
+    if (remainingUncaptured.length === 0 && eng.coveragePercent < 98 && eng.coverageGrid) {
+      const gap = findLargestUncapturedGap(eng.coverageGrid);
+      if (gap) {
+        const gapTarget = spawnTargetDot(
+          eng.targets.length,
+          gap.yawRad,
+          gap.pitchRad,
+          true,
+          true,
+          { id: `gap_${eng.targets.length}`, dotNumber: eng.targets.length, yaw: gap.yawDeg, pitch: gap.pitchDeg, region: 'gap' }
+        );
+        gapTarget.isGapDot = true;
       }
     }
 
@@ -578,6 +564,9 @@ export default function PhotoSphereCapture({
         }
       }
     }
+
+    // Seal zenith and nadir poles so the live 3D preview sphere has zero black holes
+    PhotoSphereStitcher.sealPolarGaps(dstData, eng.panoAccumW, W, H);
 
     eng.masterPanoCtx.putImageData(dstImageData, 0, 0);
     if (eng.sphereTexture) eng.sphereTexture.needsUpdate = true;
@@ -779,11 +768,16 @@ export default function PhotoSphereCapture({
       if (dotsCtx && eng.camera) {
         dotsCtx.clearRect(0, 0, W, H);
 
+        // Project all uncaptured targets and identify the Active Target
+        let activeTarget = null;
+        let minCenterDist = Infinity;
+        const projectedDots = [];
+
         for (const target of eng.targets) {
           if (target.captured || !target.visible) continue;
 
-          let tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
-          let tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
+          const tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
+          const tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
 
           const dist = 10;
           const yawRad = THREE.MathUtils.degToRad(tYaw);
@@ -795,32 +789,111 @@ export default function PhotoSphereCapture({
           );
 
           const proj = dotPos.clone().project(eng.camera);
-          if (proj.z > 1.0) continue; // Behind camera
+          const isBehind = proj.z > 1.0;
 
           const screenX = (proj.x * 0.5 + 0.5) * W;
           const screenY = (-(proj.y * 0.5) + 0.5) * H;
-
           const distPx = Math.hypot(screenX - centerX, screenY - centerY);
-          const isAligned = distPx <= 26;
 
-          // Render Google Camera style dot
+          if (!isBehind) {
+            projectedDots.push({ target, screenX, screenY, distPx });
+            if (distPx < minCenterDist) {
+              minCenterDist = distPx;
+              activeTarget = target;
+            }
+          }
+        }
+
+        // Draw candidate dots first, then active target on top
+        for (const { target, screenX, screenY, distPx } of projectedDots) {
+          const isActive = target === activeTarget;
+          const isAligned = isActive && distPx <= 26;
+
           dotsCtx.save();
           dotsCtx.beginPath();
           const drawX = isAligned ? centerX : screenX;
           const drawY = isAligned ? centerY : screenY;
-          const r = isAligned ? 16 : 14;
 
-          dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
-          dotsCtx.fillStyle = isAligned ? '#4285F4' : 'rgba(215, 215, 215, 0.78)';
-          dotsCtx.fill();
+          if (isActive) {
+            // Prominent Glowing Active Google Blue Target
+            const r = isAligned ? 17 : 15;
+            dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+            dotsCtx.fillStyle = '#4285F4';
+            dotsCtx.shadowColor = 'rgba(66, 133, 244, 0.95)';
+            dotsCtx.shadowBlur = isAligned ? 18 : 12;
+            dotsCtx.fill();
 
-          dotsCtx.lineWidth = 2.5;
-          dotsCtx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-          dotsCtx.stroke();
+            // Crisp white outer ring
+            dotsCtx.lineWidth = 3.0;
+            dotsCtx.strokeStyle = '#FFFFFF';
+            dotsCtx.stroke();
 
-          dotsCtx.shadowColor = 'rgba(0, 0, 0, 0.75)';
-          dotsCtx.shadowBlur = 8;
+            // Inner white dot
+            dotsCtx.beginPath();
+            dotsCtx.arc(drawX, drawY, 4, 0, 2 * Math.PI);
+            dotsCtx.fillStyle = '#FFFFFF';
+            dotsCtx.fill();
+          } else {
+            // Visible Google Blue 360 constellation dot
+            const r = 12;
+            dotsCtx.arc(drawX, drawY, r, 0, 2 * Math.PI);
+            dotsCtx.fillStyle = 'rgba(66, 133, 244, 0.65)';
+            dotsCtx.shadowColor = 'rgba(0, 0, 0, 0.75)';
+            dotsCtx.shadowBlur = 6;
+            dotsCtx.fill();
+
+            // Crisp white outline
+            dotsCtx.lineWidth = 2.0;
+            dotsCtx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+            dotsCtx.stroke();
+
+            // Center highlight
+            dotsCtx.beginPath();
+            dotsCtx.arc(drawX, drawY, 2.5, 0, 2 * Math.PI);
+            dotsCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            dotsCtx.fill();
+          }
           dotsCtx.restore();
+        }
+
+        // Off-screen directional guidance: if no uncaptured targets inside screen, guide user toward closest target
+        if (projectedDots.length === 0 || minCenterDist > Math.max(W, H) * 0.45) {
+          let nearestAnywhere = null;
+          let minAng = Infinity;
+          for (const target of eng.targets) {
+            if (target.captured) continue;
+            const tYaw = target.baseYaw !== undefined ? target.baseYaw : target.yaw;
+            const tPitch = target.basePitch !== undefined ? target.basePitch : target.pitch;
+            const ang = angularDistance(relYaw, eng.camPitch, tYaw, tPitch);
+            if (ang < minAng) {
+              minAng = ang;
+              nearestAnywhere = target;
+            }
+          }
+
+          if (nearestAnywhere) {
+            const tYaw = nearestAnywhere.baseYaw !== undefined ? nearestAnywhere.baseYaw : nearestAnywhere.yaw;
+            const tPitch = nearestAnywhere.basePitch !== undefined ? nearestAnywhere.basePitch : nearestAnywhere.pitch;
+            const dYaw = ((tYaw - relYaw + 540) % 360) - 180;
+            const dPitch = tPitch - eng.camPitch;
+            const dirAngle = Math.atan2(-dPitch, dYaw);
+
+            const guideRadius = 56;
+            const gx = centerX + guideRadius * Math.cos(dirAngle);
+            const gy = centerY + guideRadius * Math.sin(dirAngle);
+
+            dotsCtx.save();
+            dotsCtx.beginPath();
+            dotsCtx.arc(gx, gy, 7, 0, 2 * Math.PI);
+            dotsCtx.fillStyle = '#4285F4';
+            dotsCtx.shadowColor = 'rgba(66, 133, 244, 0.95)';
+            dotsCtx.shadowBlur = 10;
+            dotsCtx.fill();
+            dotsCtx.lineWidth = 2;
+            dotsCtx.strokeStyle = '#FFFFFF';
+            dotsCtx.stroke();
+            dotsCtx.restore();
+          }
         }
       }
     }

@@ -33,6 +33,7 @@ export default function InteractivePhotoSphereViewer({
   // UI state
   const [motionActive, setMotionActive] = useState(false);
   const [vrMode, setVrMode] = useState(false);
+  const [autoRotate, setAutoRotate] = useState(true);
   const [fov, setFov] = useState(70);
   const [showTinyPlanet, setShowTinyPlanet] = useState(false);
   const [planetDataUrl, setPlanetDataUrl] = useState(null);
@@ -77,6 +78,7 @@ export default function InteractivePhotoSphereViewer({
     lastPointerY: 0,
     velocityX: 0,
     velocityY: 0,
+    lastInteractionTime: performance.now(),
 
     // Pinch zoom
     initialPinchDist: 0,
@@ -258,6 +260,13 @@ export default function InteractivePhotoSphereViewer({
       const W = container.clientWidth || window.innerWidth;
       const H = container.clientHeight || window.innerHeight;
 
+      // Gentle continuous 360 auto-rotation when idle
+      const now = performance.now();
+      const isIdle = !s.isDragging && !motionActive && (now - (s.lastInteractionTime || 0) > 1200);
+      if (isIdle && autoRotate) {
+        s.targetYaw += 0.08;
+      }
+
       // Inertia decay when not dragging and not using motion
       if (!s.isDragging && !motionActive) {
         s.targetYaw += s.velocityX;
@@ -266,7 +275,8 @@ export default function InteractivePhotoSphereViewer({
         s.velocityY *= 0.92;
       }
 
-      s.targetPitch = Math.max(-88, Math.min(88, s.targetPitch));
+      // Seamless vertical pitch range (-89.5 to +89.5) with sealed polar caps
+      s.targetPitch = Math.max(-89.5, Math.min(89.5, s.targetPitch));
 
       // Smooth lerp to target yaw & pitch
       s.yaw += (s.targetYaw - s.yaw) * 0.18;
@@ -339,7 +349,7 @@ export default function InteractivePhotoSphereViewer({
       if (s.texture) s.texture.dispose();
       if (renderer) renderer.dispose();
     };
-  }, [sourceCanvas, imageUrl, vrMode, fov, motionActive]);
+  }, [sourceCanvas, imageUrl, vrMode, fov, motionActive, autoRotate]);
 
   // Sensor Listener Effect
   useEffect(() => {
@@ -358,7 +368,7 @@ export default function InteractivePhotoSphereViewer({
         PhotoSphereSensor.addListener('sensorOrientation', (data) => {
           if (!data) return;
           const rawYaw = ((data.yaw % 360) + 360) % 360;
-          const rawPitch = Math.max(-88, Math.min(88, data.pitch));
+          const rawPitch = Math.max(-89.5, Math.min(89.5, data.pitch));
 
           if (s.sensorInitialYaw === null) {
             s.sensorInitialYaw = rawYaw - s.targetYaw;
@@ -377,7 +387,7 @@ export default function InteractivePhotoSphereViewer({
       const handleWebOrientation = (e) => {
         if (e.alpha === null || e.beta === null) return;
         const rawYaw = (360 - e.alpha) % 360;
-        const rawPitch = Math.max(-88, Math.min(88, e.beta - 90));
+        const rawPitch = Math.max(-89.5, Math.min(89.5, e.beta - 90));
 
         if (s.sensorInitialYaw === null) {
           s.sensorInitialYaw = rawYaw - s.targetYaw;
@@ -409,6 +419,7 @@ export default function InteractivePhotoSphereViewer({
     s.lastPointerY = e.clientY;
     s.velocityX = 0;
     s.velocityY = 0;
+    s.lastInteractionTime = performance.now();
   };
 
   const handlePointerMove = (e) => {
@@ -432,14 +443,18 @@ export default function InteractivePhotoSphereViewer({
 
     s.lastPointerX = e.clientX;
     s.lastPointerY = e.clientY;
+    s.lastInteractionTime = performance.now();
   };
 
   const handlePointerUp = () => {
-    stateRef.current.isDragging = false;
+    const s = stateRef.current;
+    s.isDragging = false;
+    s.lastInteractionTime = performance.now();
   };
 
   // Touch Pinch Zoom Handler
   const handleTouchStart = (e) => {
+    stateRef.current.lastInteractionTime = performance.now();
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -449,6 +464,7 @@ export default function InteractivePhotoSphereViewer({
   };
 
   const handleTouchMove = (e) => {
+    stateRef.current.lastInteractionTime = performance.now();
     if (e.touches.length === 2 && stateRef.current.initialPinchDist > 0) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -580,8 +596,31 @@ export default function InteractivePhotoSphereViewer({
           )}
         </div>
 
-        {/* Right Actions: Tiny Planet, Download, and Save Evidence */}
+        {/* Right Actions: Auto-Rotate, Tiny Planet, Download, and Save Evidence */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', pointerEvents: 'auto' }}>
+          <button
+            onClick={() => setAutoRotate((prev) => !prev)}
+            style={{
+              width: '38px',
+              height: '38px',
+              borderRadius: '50%',
+              background: autoRotate ? '#1a73e8' : 'rgba(25, 25, 25, 0.75)',
+              backdropFilter: 'blur(10px)',
+              border: autoRotate ? '1.5px solid #ffffff' : '1px solid rgba(255, 255, 255, 0.25)',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              touchAction: 'manipulation',
+              boxShadow: autoRotate ? '0 0 12px rgba(26, 115, 232, 0.8)' : 'none',
+              transition: 'all 0.2s ease',
+            }}
+            title={autoRotate ? 'Auto-Rotate ON (Tap to Pause)' : 'Auto-Rotate OFF (Tap to Play)'}
+          >
+            <RefreshCw size={17} style={{ transform: autoRotate ? 'none' : 'none' }} />
+          </button>
+
           <button
             onClick={generateTinyPlanet}
             style={{

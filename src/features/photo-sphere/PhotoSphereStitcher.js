@@ -305,7 +305,12 @@ export class PhotoSphereStitcher {
             // Continuous 2D cosine weight: 1.0 at optical center, exactly 0.0 at borders
             const wx = Math.cos((normX * Math.PI) / 2);
             const wy = Math.cos((normY * Math.PI) / 2);
-            const weight = Math.pow(Math.max(0, wx * wy), 1.4);
+            let weight = Math.pow(Math.max(0, wx * wy), 1.4);
+
+            // Boost polar cap coverage so high-latitude rows receive solid accumulation
+            if (Math.abs(lat) >= (70 * Math.PI) / 180 && Math.abs(normX) <= 0.96 && Math.abs(normY) <= 0.96) {
+              weight = Math.max(weight, 0.12);
+            }
 
             if (weight > 0.001) {
               accumR[pIdx] += srcData[srcIdx] * weight;
@@ -337,6 +342,10 @@ export class PhotoSphereStitcher {
         panoData[dIdx + 3] = 255;
       }
     }
+
+    // Seal zenith (+90°) and nadir (-90°) poles and internal gaps to guarantee 0 black gaps
+    this.sealPolarGaps(panoData, accumW, panoWidth, panoHeight);
+
     ctx.putImageData(panoImageData, 0, 0);
 
     onProgress(0.85, 'Encoding equirectangular panorama image...');
@@ -408,5 +417,170 @@ export class PhotoSphereStitcher {
       croppedTop,
       croppedHeight,
     };
+  }
+
+  /**
+   * Seals polar gaps (zenith row 0 down, nadir row H-1 up) and internal unstitched holes
+   * to guarantee zero black gaps in the final equirectangular sphere.
+   *
+   * @param {Uint8ClampedArray} panoData Raw RGBA pixel array
+   * @param {Float32Array} accumW Accumulation weights buffer
+   * @param {number} panoWidth Panorama width in pixels
+   * @param {number} panoHeight Panorama height in pixels
+   */
+  static sealPolarGaps(panoData, accumW, panoWidth, panoHeight) {
+    const W = panoWidth;
+    const H = panoHeight;
+
+    // 1. Identify topmost and bottommost rows with valid accumulated weights
+    let topValidRow = -1;
+    let botValidRow = -1;
+
+    for (let py = 0; py < H; py++) {
+      let rowHasValid = false;
+      for (let px = 0; px < W; px++) {
+        if (accumW[py * W + px] > 0.0001) {
+          rowHasValid = true;
+          break;
+        }
+      }
+      if (rowHasValid) {
+        if (topValidRow === -1) topValidRow = py;
+        botValidRow = py;
+      }
+    }
+
+    if (topValidRow === -1 || botValidRow === -1) {
+      return;
+    }
+
+    // 2. Compute average color of top valid row (zenith pole apex color)
+    let zR = 0, zG = 0, zB = 0, zCount = 0;
+    for (let px = 0; px < W; px++) {
+      const idx = topValidRow * W + px;
+      if (accumW[idx] > 0.0001) {
+        const dIdx = idx * 4;
+        zR += panoData[dIdx];
+        zG += panoData[dIdx + 1];
+        zB += panoData[dIdx + 2];
+        zCount++;
+      }
+    }
+    const avgZenithR = zCount > 0 ? Math.round(zR / zCount) : 180;
+    const avgZenithG = zCount > 0 ? Math.round(zG / zCount) : 180;
+    const avgZenithB = zCount > 0 ? Math.round(zB / zCount) : 180;
+
+    // 3. Compute average color of bottom valid row (nadir pole apex color)
+    let nR = 0, nG = 0, nB = 0, nCount = 0;
+    for (let px = 0; px < W; px++) {
+      const idx = botValidRow * W + px;
+      if (accumW[idx] > 0.0001) {
+        const dIdx = idx * 4;
+        nR += panoData[dIdx];
+        nG += panoData[dIdx + 1];
+        nB += panoData[dIdx + 2];
+        nCount++;
+      }
+    }
+    const avgNadirR = nCount > 0 ? Math.round(nR / nCount) : 80;
+    const avgNadirG = nCount > 0 ? Math.round(nG / nCount) : 80;
+    const avgNadirB = nCount > 0 ? Math.round(nB / nCount) : 80;
+
+    // 4. Seal Zenith Cap (rows 0 to topValidRow, and any unpainted pixel in the upper quarter)
+    const upperLimit = Math.max(topValidRow, Math.floor(H * 0.28));
+    for (let px = 0; px < W; px++) {
+      let firstPaintedY = -1;
+      for (let py = 0; py <= upperLimit; py++) {
+        if (accumW[py * W + px] > 0.0001) {
+          firstPaintedY = py;
+          break;
+        }
+      }
+      if (firstPaintedY === -1) firstPaintedY = upperLimit;
+
+      const pIdxFirst = firstPaintedY * W + px;
+      const refR = accumW[pIdxFirst] > 0.0001 ? panoData[pIdxFirst * 4] : avgZenithR;
+      const refG = accumW[pIdxFirst] > 0.0001 ? panoData[pIdxFirst * 4 + 1] : avgZenithG;
+      const refB = accumW[pIdxFirst] > 0.0001 ? panoData[pIdxFirst * 4 + 2] : avgZenithB;
+
+      for (let py = 0; py < firstPaintedY; py++) {
+        const dIdx = (py * W + px) * 4;
+        const factor = firstPaintedY > 0 ? py / firstPaintedY : 0;
+        panoData[dIdx] = Math.round((1 - factor) * avgZenithR + factor * refR);
+        panoData[dIdx + 1] = Math.round((1 - factor) * avgZenithG + factor * refG);
+        panoData[dIdx + 2] = Math.round((1 - factor) * avgZenithB + factor * refB);
+        panoData[dIdx + 3] = 255;
+        accumW[py * W + px] = 1.0;
+      }
+    }
+
+    // 5. Seal Nadir Cap (rows botValidRow to H-1, and any unpainted pixel in the lower quarter)
+    const lowerLimit = Math.min(botValidRow, Math.floor(H * 0.72));
+    for (let px = 0; px < W; px++) {
+      let lastPaintedY = -1;
+      for (let py = H - 1; py >= lowerLimit; py--) {
+        if (accumW[py * W + px] > 0.0001) {
+          lastPaintedY = py;
+          break;
+        }
+      }
+      if (lastPaintedY === -1) lastPaintedY = lowerLimit;
+
+      const pIdxLast = lastPaintedY * W + px;
+      const refR = accumW[pIdxLast] > 0.0001 ? panoData[pIdxLast * 4] : avgNadirR;
+      const refG = accumW[pIdxLast] > 0.0001 ? panoData[pIdxLast * 4 + 1] : avgNadirG;
+      const refB = accumW[pIdxLast] > 0.0001 ? panoData[pIdxLast * 4 + 2] : avgNadirB;
+
+      for (let py = lastPaintedY + 1; py < H; py++) {
+        const dIdx = (py * W + px) * 4;
+        const span = H - 1 - lastPaintedY;
+        const factor = span > 0 ? (H - 1 - py) / span : 0;
+        panoData[dIdx] = Math.round((1 - factor) * avgNadirR + factor * refR);
+        panoData[dIdx + 1] = Math.round((1 - factor) * avgNadirG + factor * refG);
+        panoData[dIdx + 2] = Math.round((1 - factor) * avgNadirB + factor * refB);
+        panoData[dIdx + 3] = 255;
+        accumW[py * W + px] = 1.0;
+      }
+    }
+
+    // 6. 2-Pass Morphological Inpainting for any remaining isolated internal gaps
+    for (let pass = 0; pass < 2; pass++) {
+      let missingCount = 0;
+      for (let py = 1; py < H - 1; py++) {
+        for (let px = 0; px < W; px++) {
+          const idx = py * W + px;
+          if (accumW[idx] <= 0.0001) {
+            missingCount++;
+            const pxL = (px - 1 + W) % W;
+            const pxR = (px + 1) % W;
+
+            let sR = 0, sG = 0, sB = 0, sCount = 0;
+            const neighbors = [
+              py * W + pxL,
+              py * W + pxR,
+              (py - 1) * W + px,
+              (py + 1) * W + px,
+            ];
+            for (const nIdx of neighbors) {
+              if (accumW[nIdx] > 0.0001) {
+                sR += panoData[nIdx * 4];
+                sG += panoData[nIdx * 4 + 1];
+                sB += panoData[nIdx * 4 + 2];
+                sCount++;
+              }
+            }
+            if (sCount > 0) {
+              const dIdx = idx * 4;
+              panoData[dIdx] = Math.round(sR / sCount);
+              panoData[dIdx + 1] = Math.round(sG / sCount);
+              panoData[dIdx + 2] = Math.round(sB / sCount);
+              panoData[dIdx + 3] = 255;
+              accumW[idx] = 0.5;
+            }
+          }
+        }
+      }
+      if (missingCount === 0) break;
+    }
   }
 }

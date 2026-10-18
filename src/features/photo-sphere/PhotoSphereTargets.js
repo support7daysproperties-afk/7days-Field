@@ -529,14 +529,28 @@ export function findLargestUncapturedGap(grid) {
   const lonSteps = COVERAGE_CONFIG.LON_STEPS;
   const latSteps = COVERAGE_CONFIG.LAT_STEPS;
 
-  for (let gy = 1; gy < latSteps - 1; gy++) {
+  // Check polar cap zero density
+  let zenithZeros = 0;
+  let nadirZeros = 0;
+  for (let gx = 0; gx < lonSteps; gx++) {
+    if (grid[0 * lonSteps + gx] === 0 || grid[1 * lonSteps + gx] === 0) zenithZeros++;
+    if (grid[(latSteps - 1) * lonSteps + gx] === 0 || grid[(latSteps - 2) * lonSteps + gx] === 0) nadirZeros++;
+  }
+
+  // Scan spherical grid cells for gaps
+  for (let gy = 0; gy < latSteps; gy++) {
     const lat = (0.5 - (gy + 0.5) / latSteps) * Math.PI;
     const weight = Math.cos(lat);
     for (let gx = 0; gx < lonSteps; gx++) {
       if (grid[gy * lonSteps + gx] === 0) {
         const lon = ((gx + 0.5) / lonSteps - 0.5) * 2 * Math.PI;
         const uncoveredRatio = 1 - getLocalCoverageRatio(grid, lon, lat, 16);
-        const score = uncoveredRatio * (0.35 + 0.65 * weight);
+        let score = uncoveredRatio * (0.35 + 0.65 * weight);
+
+        // Boost score for uncaptured polar apexes to prevent ceiling and floor holes
+        if (gy <= 2 && zenithZeros > lonSteps / 3) score += 0.45;
+        if (gy >= latSteps - 3 && nadirZeros > lonSteps / 3) score += 0.45;
+
         if (score > bestScore) {
           bestScore = score;
           bestLon = lon;
@@ -592,11 +606,13 @@ export function spawnGapDot(id, yawDeg, pitchDeg) {
  * - Angular distance <= 52° unlocks contiguous frontier neighbors.
  * - Auto-retires dots with >= 96% local coverage.
  * - Dispatches dynamic gap target if frontier runs out but coverage < 99%.
+ * - Supports options.allVisible to ensure all 360 targets remain visible.
  */
-export function updateFrontierAndGapDots(targets, capturedFrames = [], coverageGrid = null) {
+export function updateFrontierAndGapDots(targets, capturedFrames = [], coverageGrid = null, options = {}) {
   if (!targets || targets.length === 0) return { updatedTargets: [], coveragePercent: 0 };
 
   const coveragePercent = coverageGrid ? computeCoveragePercent(coverageGrid) : 0;
+  const showAllDots = Boolean(options.allVisible || options.showAllDots);
 
   // At start (0 captured)
   if (capturedFrames.length === 0) {
@@ -604,7 +620,7 @@ export function updateFrontierAndGapDots(targets, capturedFrames = [], coverageG
       ...t,
       captured: false,
       status: 'pending',
-      visible: t.isCenterStartDot || t.id === 'target_0' || t.id === 't_0' || t.targetId === 't_0',
+      visible: showAllDots ? true : (t.isCenterStartDot || t.id === 'target_0' || t.id === 't_0' || t.targetId === 't_0'),
     }));
     return { updatedTargets: updated, coveragePercent };
   }
@@ -651,7 +667,7 @@ export function updateFrontierAndGapDots(targets, capturedFrames = [], coverageG
       }
     }
 
-    const isVisible = isImmediateNeighbor || t.isGapDot;
+    const isVisible = showAllDots ? true : (isImmediateNeighbor || t.isGapDot);
     return { ...t, visible: isVisible };
   });
 
