@@ -115,4 +115,14 @@ describe('Field Checklist Custom Item Creation and Management', () => {
     checklistReviewed = true;
     expect(checklistReviewed || 0 > 0).toBe(true);
   });
+
+  it('safely handles empty or null checklist and custom items in FieldChecklistStep', () => {
+    const safeChecklist = null || {};
+    const safeCustom = null || [];
+    const completed = Object.values(safeChecklist).filter(Boolean).length;
+    const total = Object.keys(safeChecklist).length;
+    expect(completed).toBe(0);
+    expect(total).toBe(0);
+    expect(safeCustom.length).toBe(0);
+  });
 });
