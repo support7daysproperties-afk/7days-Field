@@ -40,6 +40,7 @@ export default function InspectionSession() {
     } catch (_) {}
   };
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
   // Consolidated modal / tool overlay state to completely eliminate variable ordering hazards
   const [activeModal, setActiveModal] = useState(null); // 'photo' | 'video' | 'photo_sphere' | 'boundary' | 'owner_photo' | null
   const showPhotoCamera = activeModal === 'photo';

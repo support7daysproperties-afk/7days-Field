@@ -27,9 +27,12 @@ dist-ssr
 *.sw?
 
 # Android build outputs
+*.apk
+*.aab
 .gradle/
 build/
 android/.gradle/
 android/app/build/
 android/capacitor-cordova-android-plugins/build/
 *.keystore
+
