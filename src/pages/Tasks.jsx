@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle, ClipboardList } from 'lucide-react';
+import { MapPin, Calendar, ArrowRight, Plus, AlertCircle, CheckCircle, ClipboardList, Share2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import DatabaseService from '../services/offline/DatabaseService';
 import ConnectivityService from '../services/offline/ConnectivityService';
 import SyncEngine from '../services/offline/SyncEngine';
 import useBackHandler from '../hooks/useBackHandler';
+import ShareInspectionModal from '../components/ShareInspectionModal';
 
 export default function Tasks() {
   const navigate = useNavigate();
@@ -14,6 +15,7 @@ export default function Tasks() {
   const [inspections, setInspections] = useState([]);
   const [filter, setFilter] = useState('All'); // All, Active, Drafts, Completed, Pending Sync
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedShareInspection, setSelectedShareInspection] = useState(null);
 
   // On tasks tab, back returns to dashboard
   useBackHandler(
@@ -264,19 +266,57 @@ export default function Tasks() {
                     {inspection.status === 'COMPLETED' ? 'Completed' : 'Updated'} · {formatDate(inspection.updated_at || inspection.created_at)}
                   </span>
                   
-                  <span 
-                    className="text-xs font-semibold text-primary flex items-center gap-2xs"
-                    style={{ color: 'var(--primary-light)' }}
-                  >
-                    {inspection.status === 'DRAFT' ? 'Continue Setup' : 
-                     inspection.status === 'COMPLETED' ? 'View Details' : 'Continue'} <ArrowRight size={13} />
-                  </span>
+                  <div className="flex items-center gap-xs">
+                    {inspection.status === 'COMPLETED' && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedShareInspection(inspection);
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          backgroundColor: 'var(--surface-raised, #181d28)',
+                          border: '1px solid var(--border-color, #2a3447)',
+                          color: 'var(--text-primary)',
+                          fontSize: '11px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <Share2 size={12} color="var(--primary-light)" />
+                        <span>Share</span>
+                      </button>
+                    )}
+
+                    <span 
+                      className="text-xs font-semibold text-primary flex items-center gap-2xs"
+                      style={{ color: 'var(--primary-light)' }}
+                    >
+                      {inspection.status === 'DRAFT' ? 'Continue Setup' : 
+                       inspection.status === 'COMPLETED' ? 'View Details' : 'Continue'} <ArrowRight size={13} />
+                    </span>
+                  </div>
                 </div>
               </div>
             );
           })
         )}
       </div>
+
+      {/* ── Share Inspection Modal ── */}
+      {selectedShareInspection && (
+        <ShareInspectionModal
+          inspection={selectedShareInspection}
+          onClose={() => setSelectedShareInspection(null)}
+          onNavigateToSync={() => navigate('/sync')}
+        />
+      )}
     </div>
   );
 }

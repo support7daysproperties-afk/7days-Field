@@ -17,6 +17,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PhotoSphereSensorPlugin.class);
         registerPlugin(GoogleAuthPlugin.class);
         registerPlugin(SpeechRecognitionPlugin.class);
+        registerPlugin(NativeSharePlugin.class);
         super.onCreate(savedInstanceState);
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {

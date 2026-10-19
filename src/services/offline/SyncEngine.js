@@ -300,7 +300,7 @@ class SyncEngine {
   // ─── Job processing ──────────────────────────────────────────────────────────
 
   async _processJob(job) {
-    const inspection = await InspectionRepository.getInspection(job.inspection_id);
+    let inspection = await InspectionRepository.getInspection(job.inspection_id);
     if (!inspection) {
       await SyncJobRepository.upsertJob({ ...job, status: 'FAILED', last_error: 'Inspection not found in local DB' });
       return;
@@ -342,6 +342,17 @@ class SyncEngine {
           return;
         }
         throw driveErr;
+      }
+
+      const driveFolderId = folders?.inspectionFolder || folders?.propertyFolder || null;
+      const driveFolderUrl = driveFolderId ? GoogleDriveService.getFolderWebUrl(driveFolderId) : null;
+      if (driveFolderId) {
+        inspection = {
+          ...inspection,
+          drive_folder_id: driveFolderId,
+          drive_folder_url: driveFolderUrl
+        };
+        await InspectionRepository.saveInspection(inspection);
       }
 
       // ── STEP 4: Concurrent media uploads with bounded queue ────────────────
@@ -403,10 +414,10 @@ class SyncEngine {
       const isBoundaryPending = freshBoundary && freshBoundary.snapshot_image && freshBoundary.sync_status !== 'SYNCED';
 
       if (pendingItems.length === 0 && !isBoundaryPending) {
-        await this._markSynced(job, inspection, supabaseInspectionId);
+        await this._markSynced(job, inspection, supabaseInspectionId, driveFolderId, driveFolderUrl);
       } else {
         const failureDetails = pendingItems.map(m => `${m.filename || m.id}: ${m.last_upload_error || 'pending'}`).slice(0, 2).join('; ');
-        await this._markPartiallySynced(job, inspection, `${pendingItems.length} file(s) pending (${failureDetails})`, supabaseInspectionId);
+        await this._markPartiallySynced(job, inspection, `${pendingItems.length} file(s) pending (${failureDetails})`, supabaseInspectionId, driveFolderId, driveFolderUrl);
       }
 
     } catch (err) {
@@ -907,14 +918,20 @@ class SyncEngine {
 
   // ─── State transitions ───────────────────────────────────────────────────────
 
-  async _markSynced(job, inspection, supabaseInspectionId) {
+  async _markSynced(job, inspection, supabaseInspectionId, driveFolderId = null, driveFolderUrl = null) {
     const now = new Date().toISOString();
+    const finalFolderId = driveFolderId || inspection.drive_folder_id || null;
+    const finalFolderUrl = driveFolderUrl || inspection.drive_folder_url || (finalFolderId ? GoogleDriveService.getFolderWebUrl(finalFolderId) : null);
 
     if (supabaseInspectionId) {
       try {
+        const remoteUpdate = { sync_status: 'UPLOADED', updated_at: now };
+        if (finalFolderId) remoteUpdate.drive_folder_id = finalFolderId;
+        if (finalFolderUrl) remoteUpdate.drive_folder_url = finalFolderUrl;
+
         await supabase
           .from('field_inspections')
-          .update({ sync_status: 'UPLOADED', updated_at: now })
+          .update(remoteUpdate)
           .eq('id', supabaseInspectionId);
       } catch (err) {
         console.warn('[SyncEngine] Notice updating remote sync_status to UPLOADED:', err.message);
@@ -925,6 +942,8 @@ class SyncEngine {
       ...inspection,
       server_id: supabaseInspectionId || inspection.server_id,
       supabase_id: supabaseInspectionId || inspection.supabase_id,
+      drive_folder_id: finalFolderId,
+      drive_folder_url: finalFolderUrl,
       sync_status: 'SYNCED',
       synced_at: now
     });
@@ -932,7 +951,10 @@ class SyncEngine {
     this._notify();
   }
 
-  async _markPartiallySynced(job, inspection, reason, supabaseInspectionId) {
+  async _markPartiallySynced(job, inspection, reason, supabaseInspectionId, driveFolderId = null, driveFolderUrl = null) {
+    const finalFolderId = driveFolderId || inspection.drive_folder_id || null;
+    const finalFolderUrl = driveFolderUrl || inspection.drive_folder_url || (finalFolderId ? GoogleDriveService.getFolderWebUrl(finalFolderId) : null);
+
     if (supabaseInspectionId) {
       try {
         await supabase
@@ -947,6 +969,8 @@ class SyncEngine {
       ...inspection,
       server_id: supabaseInspectionId || inspection.server_id,
       supabase_id: supabaseInspectionId || inspection.supabase_id,
+      drive_folder_id: finalFolderId,
+      drive_folder_url: finalFolderUrl,
       sync_status: 'PARTIALLY_SYNCED'
     });
     await SyncJobRepository.upsertJob({ ...job, status: 'PARTIALLY_SYNCED', last_error: reason });

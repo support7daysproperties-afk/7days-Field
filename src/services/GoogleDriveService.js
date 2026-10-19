@@ -752,6 +752,97 @@ class GoogleDriveService {
     return data.files?.[0] || null;
   }
 
+  /**
+   * Construct or return the canonical web URL for a Google Drive folder.
+   */
+  getFolderWebUrl(folderId) {
+    if (!folderId) return null;
+    return `https://drive.google.com/drive/folders/${folderId}`;
+  }
+
+  /**
+   * Query the list of permissions for a Drive file or folder.
+   */
+  async getFolderPermissions(folderId) {
+    if (!folderId) throw new Error('Folder ID is required');
+    const res = await this._fetchWithRetry(
+      `https://www.googleapis.com/drive/v3/files/${folderId}/permissions?fields=permissions(id,type,role,allowFileDiscovery)`
+    );
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error?.message || 'Failed to retrieve folder permissions');
+    }
+    return data.permissions || [];
+  }
+
+  /**
+   * Ensure a folder has link-sharing enabled with read-only ('reader') permissions.
+   * Checks existing permissions first to prevent duplicate entries.
+   * Enforces that edit permission is never granted by default.
+   */
+  async ensureFolderShareable(folderId, role = 'reader') {
+    if (!folderId) throw new Error('Folder ID is required');
+
+    // 1. Verify connectivity
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const err = new Error('Network connection offline. Permission verification requires internet.');
+      err.code = 'NETWORK_OFFLINE';
+      throw err;
+    }
+
+    const folderUrl = this.getFolderWebUrl(folderId);
+
+    // 2. Check if an approved link-sharing permission already exists
+    try {
+      const permissions = await this.getFolderPermissions(folderId);
+      const existingAnyone = permissions.find(p => p.type === 'anyone');
+      if (existingAnyone) {
+        return {
+          success: true,
+          permissionId: existingAnyone.id,
+          role: existingAnyone.role,
+          alreadyShareable: true,
+          folderUrl
+        };
+      }
+    } catch (checkErr) {
+      console.warn('[GoogleDriveService] Error checking existing permissions:', checkErr);
+      if (checkErr.message?.includes('insufficientFilePermissions') || checkErr.message?.includes('403')) {
+        throw new Error('Google Drive account lacks permission to inspect folder sharing settings.');
+      }
+    }
+
+    // 3. Create view-only permission ('reader')
+    const res = await this._fetchWithRetry(
+      `https://www.googleapis.com/drive/v3/files/${folderId}/permissions`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: role,
+          type: 'anyone'
+        })
+      }
+    );
+
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      const msg = data.error?.message || 'Failed to update folder sharing permissions';
+      if (res.status === 403) {
+        throw new Error(`Google Drive restricted sharing: Organization policy or user account prevented public link sharing. (${msg})`);
+      }
+      throw new Error(msg);
+    }
+
+    return {
+      success: true,
+      permissionId: data.id,
+      role: data.role || role,
+      alreadyShareable: false,
+      folderUrl
+    };
+  }
+
   // ─── Upload ──────────────────────────────────────────────────────────────────
 
   async uploadFile(fileBlob, filename, mimeType, parentFolderId, onProgress = null) {

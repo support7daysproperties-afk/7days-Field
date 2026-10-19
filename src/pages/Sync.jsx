@@ -4,7 +4,7 @@ import {
   CheckCircle2, RefreshCw, AlertTriangle, Wifi, WifiOff,
   CloudOff, Upload, Image as ImageIcon, Video, FileSignature,
   ChevronDown, ChevronUp, HardDrive, RotateCcw, Clock,
-  AlertCircle, Loader2, XCircle
+  AlertCircle, Loader2, XCircle, Share2
 } from 'lucide-react';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import MediaRepository from '../services/offline/MediaRepository';
@@ -14,6 +14,7 @@ import SyncEngine from '../services/offline/SyncEngine';
 import DatabaseService from '../services/offline/DatabaseService';
 import { useAuth } from '../context/AuthContext';
 import useBackHandler from '../hooks/useBackHandler';
+import ShareInspectionModal from '../components/ShareInspectionModal';
 
 // ── Status config ─────────────────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -68,7 +69,7 @@ function MediaProgressBar({ uploaded, total, uploading = 0 }) {
   );
 }
 
-function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnectDrive }) {
+function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnectDrive, onShare }) {
   const [expanded, setExpanded] = useState(inspection.sync_status !== 'SYNCED');
 
   const totalMedia = mediaForInspection.length;
@@ -110,8 +111,34 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
             )}
           </div>
         </div>
-        <div style={{ flexShrink: 0, color: 'var(--text-secondary)' }}>
-          {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onShare && onShare(inspection);
+            }}
+            style={{
+              padding: '5px 10px',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              backgroundColor: 'var(--surface-raised, #181d28)',
+              color: 'var(--text-primary)',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="Share Drive Folder"
+          >
+            <Share2 size={13} color="var(--primary-light)" />
+            <span>Share</span>
+          </button>
+          <div style={{ color: 'var(--text-secondary)' }}>
+            {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          </div>
         </div>
       </div>
 
@@ -177,9 +204,20 @@ function InspectionCard({ inspection, mediaForInspection, job, onRetry, onConnec
             )}
 
             {inspection.sync_status === 'SYNCED' && (
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '12px', color: 'var(--success-color)' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={12}/> Synced to Field database</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={12}/> Uploaded to Google Drive</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '12px', color: 'var(--success-color)' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={12}/> Synced to Field database</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><CheckCircle2 size={12}/> Uploaded to Google Drive</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary w-full flex items-center justify-center gap-xs"
+                  style={{ fontSize: '13px', padding: '9px 12px' }}
+                  onClick={() => onShare && onShare(inspection)}
+                >
+                  <Share2 size={14} color="var(--primary-light)" />
+                  <span>Share Google Drive Folder</span>
+                </button>
               </div>
             )}
           </div>
@@ -232,6 +270,7 @@ export default function Sync() {
   const [jobMap, setJobMap] = useState({});
   const [isOnline, setIsOnline] = useState(ConnectivityService.online);
   const [isSyncing, setIsSyncing] = useState(SyncEngine.isSyncing);
+  const [selectedShareInspection, setSelectedShareInspection] = useState(null);
 
   // On sync tab, back returns to dashboard
   useBackHandler(
@@ -502,9 +541,18 @@ export default function Sync() {
               job={jobMap[ins.id] || null}
               onRetry={() => handleRetry(ins.id)}
               onConnectDrive={() => handleConnectDrive(ins.id)}
+              onShare={setSelectedShareInspection}
             />
           ))}
         </div>
+      )}
+
+      {/* ── Share Modal ── */}
+      {selectedShareInspection && (
+        <ShareInspectionModal
+          inspection={selectedShareInspection}
+          onClose={() => setSelectedShareInspection(null)}
+        />
       )}
     </div>
   );
