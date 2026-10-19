@@ -6,6 +6,7 @@ import { useBackHandler } from '../hooks/useBackHandler';
 import { navigationService } from '../services/NavigationService';
 import InspectionRepository from '../services/offline/InspectionRepository';
 import { locationService } from '../services/platform/LocationService';
+import VoiceRemarksInput from '../components/VoiceRemarksInput';
 
 export default function CreateInspection() {
   const navigate = useNavigate();
@@ -316,12 +317,12 @@ export default function CreateInspection() {
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
               Notes / Purpose
             </label>
-            <textarea 
-              name="purpose"
+            <VoiceRemarksInput 
+              id="create-inspection-notes"
               value={formData.purpose}
-              onChange={handleInputChange}
+              onChange={(val) => setFormData(prev => ({ ...prev, purpose: val }))}
               placeholder="e.g. Verify boundary survey, check boundary markers, and record road access."
-              style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)', color: 'var(--text-primary)', fontSize: '14px', minHeight: '80px', boxSizing: 'border-box', outline: 'none' }}
+              rows={3}
             />
           </div>
           

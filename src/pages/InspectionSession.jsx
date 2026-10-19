@@ -10,6 +10,7 @@ import MotionSensorViewer from '../features/photo-sphere/components/MotionSensor
 import SignaturePad from '../components/SignaturePad';
 import OwnerCamera from '../components/OwnerCamera';
 import FieldChecklistStep from '../components/FieldChecklistStep';
+import VoiceRemarksInput from '../components/VoiceRemarksInput';
 import PropertyBoundary from './PropertyBoundary';
 import { EvidenceService } from '../services/EvidenceService';
 import InspectionRepository from '../services/offline/InspectionRepository';
@@ -1493,8 +1494,13 @@ export default function InspectionSession() {
         {activeStepId === 'remarks' && (
           <div className="card">
             <h3 className="mb-md">Remarks & Observations</h3>
-            <textarea className="form-textarea mb-md" rows={5} placeholder="Add any issues or observations..." value={remarks} onChange={(e) => setRemarks(e.target.value)}></textarea>
-            <button className="btn btn-primary" onClick={() => setActiveStepId('overview')}>Next</button>
+            <VoiceRemarksInput
+              value={remarks}
+              onChange={setRemarks}
+              placeholder="Add any issues or observations..."
+              rows={5}
+            />
+            <button className="btn btn-primary mt-md" onClick={() => setActiveStepId('overview')}>Next</button>
           </div>
         )}
 
@@ -1522,7 +1528,13 @@ export default function InspectionSession() {
             </div>
             <div className="form-group mb-lg">
               <label className="form-label">Remarks (Optional)</label>
-              <textarea className="form-textarea" rows={3} value={ownerInfo.remarks || ''} onChange={e => setOwnerInfo({...ownerInfo, remarks: e.target.value})} placeholder="Any additional notes about the owner/contact..."></textarea>
+              <VoiceRemarksInput
+                value={ownerInfo.remarks || ''}
+                onChange={val => setOwnerInfo({...ownerInfo, remarks: val})}
+                placeholder="Any additional notes about the owner/contact..."
+                rows={3}
+                id="owner-remarks-textarea"
+              />
             </div>
             <button className="btn btn-primary" onClick={() => setActiveStepId('consent')}>Continue to Consent</button>
           </div>
