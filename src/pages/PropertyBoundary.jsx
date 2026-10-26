@@ -672,6 +672,22 @@ export default function PropertyBoundary({
         });
 
         // ── GPS watch ────────────────────────────────────────────────────────
+        // Helper function for responsive GPS marker size based on zoom level
+        const getGpsIcon = (currentZoom = 18) => {
+          // At close zoom (>= 18) when inspecting small property plots, keep pointer small and sleek (scale: 4.5)
+          // At medium/overview zoom, adjust slightly for clear visibility without obscuring map features
+          const s = currentZoom >= 19 ? 4.5 : currentZoom >= 17 ? 5 : 5.5;
+          const sw = currentZoom >= 19 ? 1.5 : 2;
+          return {
+            path: gmaps.SymbolPath.CIRCLE,
+            scale: s,
+            fillColor: '#2563eb',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: sw,
+          };
+        };
+
         if ('geolocation' in navigator) {
           gpsWatchRef.current = navigator.geolocation.watchPosition(
             ({ coords: pos }) => {
@@ -690,14 +706,7 @@ export default function PropertyBoundary({
                   position: userLatLng,
                   map,
                   clickable: false,
-                  icon: {
-                    path: gmaps.SymbolPath.CIRCLE,
-                    scale: 9,
-                    fillColor: '#3b82f6',
-                    fillOpacity: 1,
-                    strokeColor: '#ffffff',
-                    strokeWeight: 3,
-                  },
+                  icon: getGpsIcon(map.getZoom() || 18),
                   zIndex: 800,
                 });
               } else {
@@ -710,6 +719,13 @@ export default function PropertyBoundary({
         } else {
           setGpsWarning(true);
         }
+
+        // Dynamically adjust GPS marker scale when zooming to keep it sleek, precise and responsive
+        map.addListener('zoom_changed', () => {
+          if (gpsMarkerRef.current) {
+            gpsMarkerRef.current.setIcon(getGpsIcon(map.getZoom() || 18));
+          }
+        });
 
         mapRef.current = map;
         setMapLoaded(true);
