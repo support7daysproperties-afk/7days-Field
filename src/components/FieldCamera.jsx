@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, X, RotateCcw, MapPin, Navigation, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Camera, X, RotateCcw, MapPin, Navigation, CheckCircle, AlertTriangle, Smartphone } from 'lucide-react';
 import { EvidenceService } from '../services/EvidenceService';
 
 export default function FieldCamera({ 
@@ -31,6 +31,78 @@ export default function FieldCamera({
   const watchIdRef = useRef(null);
   const cachedAddressRef = useRef(null);
 
+  // Dual Orientation Management (Horizontal & Vertical)
+  const [manualOrientation, setManualOrientation] = useState(null); // null (auto) | 'portrait' | 'landscape'
+  const [isWindowLandscape, setIsWindowLandscape] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth > window.innerHeight;
+    }
+    return false;
+  });
+  const [deviceTilt, setDeviceTilt] = useState('portrait'); // 'portrait' | 'landscape'
+  const [deviceTiltAngle, setDeviceTiltAngle] = useState(0); // 0 | 90 | 270
+
+  // Screen orientation unlock & dynamic listener
+  useEffect(() => {
+    // Release any previous orientation locks so the phone can rotate freely
+    if (typeof window !== 'undefined' && window.screen?.orientation?.unlock) {
+      try {
+        window.screen.orientation.unlock();
+      } catch (_) {}
+    }
+
+    const checkWindowOrientation = () => {
+      const isLand = window.innerWidth > window.innerHeight || 
+        (window.screen?.orientation?.type ? window.screen.orientation.type.includes('landscape') : false);
+      setIsWindowLandscape(isLand);
+    };
+
+    const handleDeviceOrientation = (event) => {
+      const { beta, gamma } = event;
+      if (beta === null || gamma === null) return;
+      const absG = Math.abs(gamma);
+      const absB = Math.abs(beta);
+      if (absG > 45 || (absB < 35 && absG > 25)) {
+        setDeviceTilt('landscape');
+        setDeviceTiltAngle(gamma < 0 ? 270 : 90);
+      } else if (absB > 50 && absG < 35) {
+        setDeviceTilt('portrait');
+        setDeviceTiltAngle(0);
+      }
+    };
+
+    window.addEventListener('resize', checkWindowOrientation);
+    window.addEventListener('orientationchange', checkWindowOrientation);
+    if (window.screen?.orientation) {
+      window.screen.orientation.addEventListener('change', checkWindowOrientation);
+    }
+    window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+
+    checkWindowOrientation();
+
+    return () => {
+      window.removeEventListener('resize', checkWindowOrientation);
+      window.removeEventListener('orientationchange', checkWindowOrientation);
+      if (window.screen?.orientation) {
+        window.screen.orientation.removeEventListener('change', checkWindowOrientation);
+      }
+      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
+    };
+  }, []);
+
+  const isLandscape = manualOrientation !== null 
+    ? manualOrientation === 'landscape' 
+    : (isWindowLandscape || deviceTilt === 'landscape');
+
+  const toggleOrientationMode = () => {
+    setManualOrientation(prev => {
+      if (prev === null) {
+        return isLandscape ? 'portrait' : 'landscape';
+      }
+      return prev === 'landscape' ? 'portrait' : 'landscape';
+    });
+  };
+
   const startCamera = useCallback(async (currentFacingMode = facingMode) => {
     setCameraError(null);
     if (window.isSecureContext === false) {
@@ -47,8 +119,8 @@ export default function FieldCamera({
         mediaStream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
             facingMode: { ideal: currentFacingMode },
-            width: { ideal: 1920, max: 1920 },
-            height: { ideal: 1080, max: 1080 }
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
           } 
         });
       } catch (fallbackErr) {
@@ -156,18 +228,42 @@ export default function FieldCamera({
     try {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const context = canvas.getContext('2d');
       
-      if (isDigitalZoom && zoom > 1) {
-        const sw = video.videoWidth / zoom;
-        const sh = video.videoHeight / zoom;
-        const sx = (video.videoWidth - sw) / 2;
-        const sy = (video.videoHeight - sh) / 2;
-        context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      const shouldCaptureHorizontal = isLandscape || (video.videoWidth > video.videoHeight);
+
+      // Handle orientation transformation:
+      // If user is taking a horizontal photo, but stream was delivered as vertical (OS auto-rotate locked)
+      if (shouldCaptureHorizontal && video.videoWidth < video.videoHeight) {
+        canvas.width = video.videoHeight;
+        canvas.height = video.videoWidth;
+        const context = canvas.getContext('2d');
+        context.save();
+        context.translate(canvas.width / 2, canvas.height / 2);
+        const rot = (deviceTiltAngle === 270) ? -Math.PI / 2 : Math.PI / 2;
+        context.rotate(rot);
+        if (isDigitalZoom && zoom > 1) {
+          const sw = video.videoWidth / zoom;
+          const sh = video.videoHeight / zoom;
+          const sx = (video.videoWidth - sw) / 2;
+          const sy = (video.videoHeight - sh) / 2;
+          context.drawImage(video, sx, sy, sw, sh, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+        } else {
+          context.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+        }
+        context.restore();
       } else {
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d');
+        if (isDigitalZoom && zoom > 1) {
+          const sw = video.videoWidth / zoom;
+          const sh = video.videoHeight / zoom;
+          const sx = (video.videoWidth - sw) / 2;
+          const sy = (video.videoHeight - sh) / 2;
+          context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        } else {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        }
       }
       
       canvas.toBlob(async (blob) => {
@@ -378,6 +474,277 @@ export default function FieldCamera({
     }
   };
 
+  // A. LANDSCAPE (HORIZONTAL) LIVE VIEW
+  if (isLandscape) {
+    return (
+      <div 
+        className="fixed inset-0 bg-black z-50 overflow-hidden select-none" 
+        style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 100 }}
+      >
+        {/* Flash Animation */}
+        {flashAnimation && (
+          <div style={{ position: 'absolute', inset: 0, backgroundColor: 'white', zIndex: 50, opacity: 0.8, pointerEvents: 'none' }} />
+        )}
+
+        {/* Viewfinder Video */}
+        <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {cameraError ? (
+            <div className="text-center p-md text-white" style={{ zIndex: 10 }}>
+              <AlertTriangle size={48} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 16px auto' }} />
+              <p className="mb-md" style={{ maxWidth: '300px' }}>{cameraError}</p>
+              <button className="btn btn-outline text-white border-white mt-md" onClick={startCamera}>Try Again</button>
+            </div>
+          ) : (
+            <>
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                style={{ 
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%', 
+                  height: '100%', 
+                  objectFit: 'cover',
+                  transform: isDigitalZoom ? `scale(${zoom})` : 'none',
+                  transformOrigin: 'center center',
+                  transition: 'transform 0.1s ease-out'
+                }} 
+              />
+              <canvas ref={canvasRef} style={{ display: 'none' }} />
+            </>
+          )}
+        </div>
+
+        {/* Top-Left Floating Header Bar */}
+        <div 
+          style={{ 
+            position: 'absolute', 
+            top: 'calc(var(--safe-area-top, 12px) + 8px)', 
+            left: 'calc(env(safe-area-inset-left, 0px) + 12px)', 
+            zIndex: 40, 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '8px' 
+          }}
+        >
+          <button 
+            onClick={handleFinish} 
+            className="text-white flex items-center gap-xs" 
+            style={{ 
+              background: 'rgba(0,0,0,0.65)', 
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.25)', 
+              borderRadius: '20px', 
+              padding: '6px 14px', 
+              cursor: 'pointer', 
+              fontSize: '13px', 
+              fontWeight: 600,
+              color: 'white',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}
+          >
+            <X size={16} /> Done ({capturedCount})
+          </button>
+
+          <span 
+            className="font-medium text-xs" 
+            style={{ 
+              backgroundColor: 'rgba(0,0,0,0.65)', 
+              backdropFilter: 'blur(8px)', 
+              border: '1px solid rgba(255,255,255,0.2)',
+              color: 'white',
+              padding: '6px 12px', 
+              borderRadius: '16px' 
+            }}
+          >
+            {evidenceType}
+          </span>
+
+          {evidenceType === 'Location Verification' && (
+            <div 
+              style={{ 
+                backgroundColor: 'rgba(0,0,0,0.65)', 
+                backdropFilter: 'blur(8px)', 
+                border: '1px solid rgba(255,255,255,0.2)',
+                padding: '6px 12px', 
+                borderRadius: '16px', 
+                color: liveLocation.error ? 'var(--warning-color)' : liveLocation.loading ? 'white' : 'var(--success-color)', 
+                fontSize: '12px', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '6px' 
+              }}
+            >
+              {liveLocation.loading ? (
+                <span>GPS...</span>
+              ) : liveLocation.error ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><AlertTriangle size={14} /> GPS Error</span>
+              ) : (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><MapPin size={14} /> ±{Math.round(liveLocation.accuracy)}m</span>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={toggleOrientationMode}
+            title="Tap to toggle Horizontal & Vertical photo capture mode"
+            style={{
+              backgroundColor: 'rgba(0,0,0,0.65)',
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.25)',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              color: '#60a5fa',
+              fontSize: '12px',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              cursor: 'pointer'
+            }}
+          >
+            <Smartphone size={14} style={{ transform: 'rotate(90deg)' }} />
+            <span>Horizontal</span>
+          </button>
+        </div>
+
+        {/* Right-Side Floating Controls Bar */}
+        <div 
+          style={{ 
+            position: 'absolute', 
+            top: 0, 
+            right: 0, 
+            bottom: 0, 
+            width: 'calc(100px + env(safe-area-inset-right, 0px))', 
+            zIndex: 40, 
+            display: 'flex', 
+            flexDirection: 'column', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            gap: '18px', 
+            background: 'linear-gradient(to left, rgba(0,0,0,0.7), transparent)',
+            paddingRight: 'env(safe-area-inset-right, 0px)' 
+          }}
+        >
+          {/* Flip Camera */}
+          <button 
+            onClick={toggleCamera} 
+            className="text-white" 
+            style={{ 
+              width: '42px', 
+              height: '42px', 
+              borderRadius: '50%', 
+              backgroundColor: 'rgba(255,255,255,0.2)', 
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.3)', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              cursor: 'pointer' 
+            }}
+            title="Switch camera"
+          >
+            <RotateCcw size={18} />
+          </button>
+
+          {/* Shutter Button */}
+          <button 
+            disabled={!!cameraError || isProcessing}
+            onClick={handleCapture}
+            style={{
+              width: '74px', height: '74px', borderRadius: '50%', 
+              backgroundColor: 'white', border: '4px solid #aaa',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: cameraError ? 'not-allowed' : 'pointer',
+              boxShadow: '0 4px 14px rgba(0,0,0,0.6)'
+            }}
+            aria-label="Take Horizontal Photo"
+          >
+            {isProcessing ? 
+              <div style={{ width: '26px', height: '26px', border: '3px solid black', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div> 
+              : <div style={{ width: '58px', height: '58px', borderRadius: '50%', border: '2px solid black' }}></div>
+            }
+          </button>
+
+          {/* Gallery Thumbnail Preview */}
+          <button 
+            type="button"
+            onClick={handleOpenGallery}
+            style={{ 
+              width: '44px', 
+              height: '44px', 
+              borderRadius: '8px', 
+              overflow: 'hidden', 
+              border: '2px solid rgba(255,255,255,0.6)', 
+              backgroundColor: '#1e293b', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              position: 'relative',
+              padding: 0,
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.5)'
+            }}
+            title="Open Photos Gallery"
+          >
+            {lastThumbnail ? (
+              <img src={lastThumbnail} alt="Latest Captured" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <Camera size={20} color="#cbd5e1" />
+            )}
+            {capturedCount > 0 && (
+              <span style={{
+                position: 'absolute',
+                top: '1px',
+                right: '1px',
+                backgroundColor: 'var(--primary-color)',
+                color: 'white',
+                fontSize: '9px',
+                fontWeight: 700,
+                borderRadius: '8px',
+                padding: '1px 4px',
+                minWidth: '12px',
+                textAlign: 'center'
+              }}>
+                {capturedCount}
+              </span>
+            )}
+          </button>
+
+          {/* Compact Zoom Slider */}
+          {zoomCapabilities && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+              <span style={{ color: 'white', fontSize: '11px', fontWeight: 'bold' }}>{zoom.toFixed(1)}x</span>
+              <input 
+                type="range" 
+                min={zoomCapabilities.min} 
+                max={zoomCapabilities.max} 
+                step={zoomCapabilities.step}
+                value={zoom}
+                onChange={(e) => {
+                  const newZoom = parseFloat(e.target.value);
+                  setZoom(newZoom);
+                  if (stream && !isDigitalZoom) {
+                    const track = stream.getVideoTracks()[0];
+                    if (track.applyConstraints) {
+                      track.applyConstraints({ advanced: [{ zoom: newZoom }] }).catch(err => console.log('Zoom error', err));
+                    }
+                  }
+                }}
+                style={{ width: '60px', accentColor: 'white' }}
+              />
+            </div>
+          )}
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  // B. PORTRAIT (VERTICAL) LIVE VIEW
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 100 }}>
       {/* Header */}
@@ -385,9 +752,33 @@ export default function FieldCamera({
         <button onClick={handleFinish} className="text-white flex items-center gap-xs" style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '20px', padding: '6px 14px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}>
           <X size={18} /> Done ({capturedCount})
         </button>
-        <span className="font-medium text-sm" style={{ backgroundColor: 'rgba(0,0,0,0.5)', padding: '4px 12px', borderRadius: '14px' }}>
-          {evidenceType}
-        </span>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span className="font-medium text-sm" style={{ backgroundColor: 'rgba(0,0,0,0.5)', padding: '4px 12px', borderRadius: '14px' }}>
+            {evidenceType}
+          </span>
+          <button
+            onClick={toggleOrientationMode}
+            title="Tap to switch orientation"
+            style={{
+              backgroundColor: 'rgba(255,255,255,0.15)',
+              border: 'none',
+              borderRadius: '16px',
+              padding: '4px 10px',
+              color: 'white',
+              fontSize: '11px',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            <Smartphone size={12} />
+            <span>Vertical</span>
+          </button>
+        </div>
+
         <button onClick={toggleCamera} className="text-white" style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '50%', width: '38px', height: '38px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
           <RotateCcw size={18} />
         </button>

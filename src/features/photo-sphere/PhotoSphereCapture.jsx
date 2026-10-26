@@ -1138,6 +1138,11 @@ export default function PhotoSphereCapture({
       if (wakeLock) {
         wakeLock.release().catch(() => {});
       }
+      if (typeof window !== 'undefined' && window.screen?.orientation?.unlock) {
+        try {
+          window.screen.orientation.unlock();
+        } catch (_) {}
+      }
     };
   }, []);
 

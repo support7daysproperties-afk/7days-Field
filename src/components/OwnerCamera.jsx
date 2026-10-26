@@ -57,8 +57,8 @@ export default function OwnerCamera({ onPhotoCaptured, onClose }) {
         mediaStream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: currentMode },
-            width: { ideal: 1280, max: 1920 },
-            height: { ideal: 720, max: 1080 }
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
           },
           audio: false
         });
