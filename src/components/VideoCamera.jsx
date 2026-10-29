@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Video, X, RotateCcw, MapPin, Play, Square, CheckCircle, AlertTriangle, Smartphone } from 'lucide-react';
 import { EvidenceService } from '../services/EvidenceService';
 import useBackHandler from '../hooks/useBackHandler';
+import { acquireCameraStream, attachStreamToVideo, stopMediaStream, waitDelay } from '../services/platform/CameraService';
 
 const EXPECTED_LAT = 11.41;
 const EXPECTED_LON = 76.69;
@@ -10,6 +11,8 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const isSwitchingRef = useRef(false);
   
   const [stream, setStream] = useState(null);
   const [error, setError] = useState(null);
@@ -113,50 +116,38 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
   const startCamera = useCallback(async (currentFacingMode = facingMode) => {
     setError(null);
 
-    if (window.isSecureContext === false) {
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
       setError('Camera Requires Secure Access. Open using HTTPS or localhost.');
       return;
     }
     
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setError('No Camera Found or browser not supported.');
       return;
     }
 
+    // Cleanly stop any existing stream before acquiring a new camera
+    if (streamRef.current) {
+      stopMediaStream(streamRef.current);
+      streamRef.current = null;
+    }
+
     try {
-      let mediaStream;
-      try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: currentFacingMode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          },
-          audio: true
-        });
-      } catch (audioErr) {
-        console.warn('Audio stream failed, falling back to video-only:', audioErr);
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: { ideal: currentFacingMode },
-              width: { ideal: 1920 },
-              height: { ideal: 1080 }
-            },
-            audio: false
-          });
-        } catch (fallbackErr) {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        }
-      }
+      const mediaStream = await acquireCameraStream({
+        facingMode: currentFacingMode,
+        audio: true,
+        idealWidth: 1920,
+        idealHeight: 1080
+      });
       
+      streamRef.current = mediaStream;
       setStream(mediaStream);
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
+        await attachStreamToVideo(videoRef.current, mediaStream);
       }
       
       const track = mediaStream.getVideoTracks()[0];
-      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      const capabilities = track?.getCapabilities ? track.getCapabilities() : {};
       const maxAllowed = currentFacingMode === 'environment' ? 10 : 5;
 
       if (capabilities.zoom) {
@@ -172,8 +163,9 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
          zoomRef.current = 1;
       }
     } catch (err) {
+      console.error('[VideoCamera] Camera error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
-        setError('Camera Permission Blocked. Please allow camera access in your browser settings and try again.');
+        setError('Camera/Microphone Permission Blocked. Please allow camera and audio access in your browser settings.');
       } else if (err.name === 'NotFoundError') {
         setError('No Camera Found. We couldn\'t find a camera on this device.');
       } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
@@ -184,21 +176,42 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
     }
   }, [facingMode]);
 
+  // Re-bind stream to video whenever stream changes or orientation toggles (prevents black screen on unmount/remount)
+  useEffect(() => {
+    if (videoRef.current && (stream || streamRef.current)) {
+      attachStreamToVideo(videoRef.current, stream || streamRef.current);
+    }
+  }, [stream, isLandscape]);
+
   useEffect(() => {
     startCamera();
     return () => {
-      if (stream) stream.getTracks().forEach(track => track.stop());
+      if (streamRef.current) stopMediaStream(streamRef.current);
       if (timerInterval) clearInterval(timerInterval);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [startCamera]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggleCamera = () => {
-    if (isRecording) return;
-    if (stream) stream.getTracks().forEach(track => track.stop());
-    const newMode = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(newMode);
-    startCamera(newMode);
+  const toggleCamera = async () => {
+    if (isRecording || isSwitchingRef.current) return;
+    isSwitchingRef.current = true;
+    try {
+      // 1. Cleanly stop current hardware stream
+      if (streamRef.current) {
+        stopMediaStream(streamRef.current);
+        streamRef.current = null;
+        setStream(null);
+      }
+      // 2. Yield for Android Camera2 HAL hardware sensor release
+      await waitDelay(180);
+      // 3. Switch facing mode
+      const newMode = facingMode === 'environment' ? 'user' : 'environment';
+      setFacingMode(newMode);
+      // 4. Start new camera
+      await startCamera(newMode);
+    } finally {
+      isSwitchingRef.current = false;
+    }
   };
 
   const videoBlobRef = useRef(null);
@@ -375,7 +388,10 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
               <div className="text-center p-md text-white" style={{ zIndex: 10 }}>
                 <AlertTriangle size={44} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 12px auto' }} />
                 <p className="mb-md" style={{ maxWidth: '300px' }}>{error}</p>
-                <button className="btn btn-outline text-white border-white" onClick={() => startCamera()}>Try Again</button>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                  <button className="btn btn-outline text-white border-white" onClick={() => startCamera(facingMode)}>Try Again</button>
+                  <button className="btn text-white" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }} onClick={toggleCamera}>Switch Camera</button>
+                </div>
               </div>
             ) : (
               <>
@@ -384,6 +400,8 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
                   autoPlay 
                   playsInline 
                   muted 
+                  onLoadedMetadata={(e) => { e.currentTarget.play().catch(() => {}); }}
+                  onCanPlay={(e) => { e.currentTarget.play().catch(() => {}); }}
                   style={{ 
                     position: 'absolute',
                     inset: 0,
@@ -641,7 +659,10 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
             <div className="text-center p-md text-white">
               <AlertTriangle size={48} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 16px auto' }} />
               <p className="mb-md">{error}</p>
-              <button className="btn btn-outline text-white border-white" onClick={() => startCamera()}>Try Again</button>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                <button className="btn btn-outline text-white border-white" onClick={() => startCamera(facingMode)}>Try Again</button>
+                <button className="btn text-white" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }} onClick={toggleCamera}>Switch Camera</button>
+              </div>
             </div>
           ) : (
             <>
@@ -650,6 +671,8 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
                 autoPlay 
                 playsInline 
                 muted 
+                onLoadedMetadata={(e) => { e.currentTarget.play().catch(() => {}); }}
+                onCanPlay={(e) => { e.currentTarget.play().catch(() => {}); }}
                 style={{ 
                   width: '100%', 
                   height: '100%', 

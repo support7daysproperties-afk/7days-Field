@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Camera, RotateCcw, X, Check, RefreshCw, AlertCircle, Upload } from 'lucide-react';
 import useBackHandler from '../hooks/useBackHandler';
+import { acquireCameraStream, attachStreamToVideo, stopMediaStream, waitDelay } from '../services/platform/CameraService';
 
 /**
  * OwnerCamera.jsx
@@ -20,6 +21,8 @@ export default function OwnerCamera({ onPhotoCaptured, onClose }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
+  const streamRef = useRef(null);
+  const isSwitchingRef = useRef(false);
 
   const [stream, setStream] = useState(null);
   const [facingMode, setFacingMode] = useState('environment'); // 'environment' (rear) or 'user' (front)
@@ -35,44 +38,36 @@ export default function OwnerCamera({ onPhotoCaptured, onClose }) {
   }, 110, true);
 
   const stopTracks = useCallback(() => {
-    if (stream) {
-      stream.getTracks().forEach(track => {
-        try { track.stop(); } catch (_) {}
-      });
+    if (streamRef.current) {
+      stopMediaStream(streamRef.current);
+      streamRef.current = null;
     }
-  }, [stream]);
+  }, []);
 
   const startCamera = useCallback(async (currentMode = facingMode) => {
     setCameraError(null);
     stopTracks();
 
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setCameraError('Camera access not supported on this device/browser.');
       return;
     }
 
     try {
-      let mediaStream;
-      try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: currentMode },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          },
-          audio: false
-        });
-      } catch (_) {
-        // Fallback without specific constraints
-        mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      }
+      const mediaStream = await acquireCameraStream({
+        facingMode: currentMode,
+        audio: false,
+        idealWidth: 1280,
+        idealHeight: 720
+      });
 
+      streamRef.current = mediaStream;
       setStream(mediaStream);
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
+        await attachStreamToVideo(videoRef.current, mediaStream);
       }
     } catch (err) {
-      console.error('Owner camera initialization error:', err);
+      console.error('[OwnerCamera] initialization error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
         setCameraError('Camera permission blocked. Please allow camera access in your settings.');
       } else {
@@ -86,11 +81,27 @@ export default function OwnerCamera({ onPhotoCaptured, onClose }) {
     return () => {
       stopTracks();
     };
-  }, [facingMode]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleFlipCamera = () => {
-    const nextMode = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(nextMode);
+  useEffect(() => {
+    if (videoRef.current && (stream || streamRef.current)) {
+      attachStreamToVideo(videoRef.current, stream || streamRef.current);
+    }
+  }, [stream]);
+
+  const handleFlipCamera = async () => {
+    if (isSwitchingRef.current) return;
+    isSwitchingRef.current = true;
+    try {
+      stopTracks();
+      setStream(null);
+      await waitDelay(180);
+      const nextMode = facingMode === 'environment' ? 'user' : 'environment';
+      setFacingMode(nextMode);
+      await startCamera(nextMode);
+    } finally {
+      isSwitchingRef.current = false;
+    }
   };
 
   const handleCapture = () => {
@@ -338,6 +349,8 @@ export default function OwnerCamera({ onPhotoCaptured, onClose }) {
               autoPlay
               playsInline
               muted
+              onLoadedMetadata={(e) => { e.currentTarget.play().catch(() => {}); }}
+              onCanPlay={(e) => { e.currentTarget.play().catch(() => {}); }}
               style={{
                 width: '100%',
                 height: '100%',

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, X, RotateCcw, MapPin, Navigation, CheckCircle, AlertTriangle, Smartphone } from 'lucide-react';
+import { Camera, X, RotateCcw, MapPin, Navigation, CheckCircle, AlertTriangle, Smartphone, RefreshCw } from 'lucide-react';
 import { EvidenceService } from '../services/EvidenceService';
+import { acquireCameraStream, attachStreamToVideo, stopMediaStream, waitDelay } from '../services/platform/CameraService';
 
 export default function FieldCamera({ 
   evidenceType = 'Location Verification', 
@@ -14,6 +15,8 @@ export default function FieldCamera({
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const isSwitchingRef = useRef(false);
   
   const [stream, setStream] = useState(null);
   const [cameraError, setCameraError] = useState(null);
@@ -105,34 +108,38 @@ export default function FieldCamera({
 
   const startCamera = useCallback(async (currentFacingMode = facingMode) => {
     setCameraError(null);
-    if (window.isSecureContext === false) {
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
       setCameraError('Camera Requires Secure Access. Open using HTTPS or localhost.');
       return;
     }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setCameraError('No Camera Found or browser not supported.');
       return;
     }
+
+    // Safely stop any previous stream before requesting a new camera
+    if (streamRef.current) {
+      stopMediaStream(streamRef.current);
+      streamRef.current = null;
+    }
+
     try {
-      let mediaStream;
-      try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { 
-            facingMode: { ideal: currentFacingMode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          } 
-        });
-      } catch (fallbackErr) {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      }
+      const mediaStream = await acquireCameraStream({
+        facingMode: currentFacingMode,
+        audio: false,
+        idealWidth: 1920,
+        idealHeight: 1080
+      });
+
+      streamRef.current = mediaStream;
       setStream(mediaStream);
+
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
+        await attachStreamToVideo(videoRef.current, mediaStream);
       }
 
       const track = mediaStream.getVideoTracks()[0];
-      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      const capabilities = track?.getCapabilities ? track.getCapabilities() : {};
       const maxAllowed = currentFacingMode === 'environment' ? 10 : 5;
       
       if (capabilities.zoom) {
@@ -147,10 +154,13 @@ export default function FieldCamera({
          setZoom(1);
       }
     } catch (err) {
+      console.error('[FieldCamera] Camera access error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
         setCameraError('Camera Permission Blocked. Please allow camera access in your browser settings.');
+      } else if (err.name === 'NotFoundError') {
+        setCameraError('No camera found on this device.');
       } else {
-        setCameraError('Camera Unavailable. Another application may be using the camera.');
+        setCameraError('Camera Unavailable. Another application may be using the camera or hardware is busy.');
       }
     }
   }, [facingMode]);
@@ -197,22 +207,44 @@ export default function FieldCamera({
     );
   };
 
+  // Re-bind stream to video whenever stream changes or orientation toggles (prevents black screen on unmount/remount)
+  useEffect(() => {
+    if (videoRef.current && (stream || streamRef.current)) {
+      attachStreamToVideo(videoRef.current, stream || streamRef.current);
+    }
+  }, [stream, isLandscape]);
+
   useEffect(() => {
     startCamera();
     if (evidenceType === 'Location Verification') {
       startLocationWatcher();
     }
     return () => {
-      if (stream) stream.getTracks().forEach(track => track.stop());
+      if (streamRef.current) stopMediaStream(streamRef.current);
       if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current);
     };
-  }, [startCamera, evidenceType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggleCamera = () => {
-    if (stream) stream.getTracks().forEach(track => track.stop());
-    const newMode = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(newMode);
-    startCamera(newMode);
+  const toggleCamera = async () => {
+    if (isSwitchingRef.current) return;
+    isSwitchingRef.current = true;
+    try {
+      // 1. Cleanly stop current hardware stream
+      if (streamRef.current) {
+        stopMediaStream(streamRef.current);
+        streamRef.current = null;
+        setStream(null);
+      }
+      // 2. Yield for Android Camera2 HAL hardware sensor release
+      await waitDelay(180);
+      // 3. Switch facing mode
+      const newMode = facingMode === 'environment' ? 'user' : 'environment';
+      setFacingMode(newMode);
+      // 4. Start new camera
+      await startCamera(newMode);
+    } finally {
+      isSwitchingRef.current = false;
+    }
   };
 
   const [capturedCount, setCapturedCount] = useState(initialCount);
@@ -492,7 +524,10 @@ export default function FieldCamera({
             <div className="text-center p-md text-white" style={{ zIndex: 10 }}>
               <AlertTriangle size={48} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 16px auto' }} />
               <p className="mb-md" style={{ maxWidth: '300px' }}>{cameraError}</p>
-              <button className="btn btn-outline text-white border-white mt-md" onClick={startCamera}>Try Again</button>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                <button className="btn btn-outline text-white border-white" onClick={() => startCamera(facingMode)}>Try Again</button>
+                <button className="btn text-white" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }} onClick={toggleCamera}>Switch Camera</button>
+              </div>
             </div>
           ) : (
             <>
@@ -500,6 +535,9 @@ export default function FieldCamera({
                 ref={videoRef} 
                 autoPlay 
                 playsInline 
+                muted
+                onLoadedMetadata={(e) => { e.currentTarget.play().catch(() => {}); }}
+                onCanPlay={(e) => { e.currentTarget.play().catch(() => {}); }}
                 style={{ 
                   position: 'absolute',
                   inset: 0,
@@ -813,7 +851,10 @@ export default function FieldCamera({
           <div className="text-center p-md text-white">
             <AlertTriangle size={48} className="mx-auto mb-md text-warning" style={{ margin: '0 auto 16px auto' }} />
             <p className="mb-md">{cameraError}</p>
-            <button className="btn btn-outline text-white border-white mt-md" onClick={startCamera}>Try Again</button>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+              <button className="btn btn-outline text-white border-white" onClick={() => startCamera(facingMode)}>Try Again</button>
+              <button className="btn text-white" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }} onClick={toggleCamera}>Switch Camera</button>
+            </div>
           </div>
         ) : (
           <>
@@ -821,6 +862,9 @@ export default function FieldCamera({
               ref={videoRef} 
               autoPlay 
               playsInline 
+              muted
+              onLoadedMetadata={(e) => { e.currentTarget.play().catch(() => {}); }}
+              onCanPlay={(e) => { e.currentTarget.play().catch(() => {}); }}
               style={{ 
                 width: '100%', 
                 height: '100%', 
