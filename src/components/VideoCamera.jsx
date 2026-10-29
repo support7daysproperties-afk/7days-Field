@@ -44,73 +44,22 @@ export default function VideoCamera({ evidenceType = 'Exterior', taskId, onSave,
 
   const [saving, setSaving] = useState(false);
 
-  // Dual Orientation Management (Horizontal & Vertical)
-  const [manualOrientation, setManualOrientation] = useState(null); // null (auto) | 'portrait' | 'landscape'
-  const [isWindowLandscape, setIsWindowLandscape] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return window.innerWidth > window.innerHeight;
-    }
-    return false;
-  });
-  const [deviceTilt, setDeviceTilt] = useState('portrait'); // 'portrait' | 'landscape'
+  // Surveyor-controlled Orientation Mode (Locked to manual toggle; never auto-rotates on phone tilt)
+  const [orientationMode, setOrientationMode] = useState('portrait'); // 'portrait' (Vertical) | 'landscape' (Horizontal)
+  const isLandscape = orientationMode === 'landscape';
 
-  // Screen orientation unlock & dynamic listener
   useEffect(() => {
-    // Release any previous orientation locks so the phone can freely rotate
+    // Release any previous orientation locks so device layout doesn't crash
     if (typeof window !== 'undefined' && window.screen?.orientation?.unlock) {
       try {
         window.screen.orientation.unlock();
       } catch (_) {}
     }
-
-    const checkWindowOrientation = () => {
-      const isLand = window.innerWidth > window.innerHeight || 
-        (window.screen?.orientation?.type ? window.screen.orientation.type.includes('landscape') : false);
-      setIsWindowLandscape(isLand);
-    };
-
-    const handleDeviceOrientation = (event) => {
-      const { beta, gamma } = event;
-      if (beta === null || gamma === null) return;
-      const absG = Math.abs(gamma);
-      const absB = Math.abs(beta);
-      if (absG > 45 || (absB < 35 && absG > 25)) {
-        setDeviceTilt('landscape');
-      } else if (absB > 50 && absG < 35) {
-        setDeviceTilt('portrait');
-      }
-    };
-
-    window.addEventListener('resize', checkWindowOrientation);
-    window.addEventListener('orientationchange', checkWindowOrientation);
-    if (window.screen?.orientation) {
-      window.screen.orientation.addEventListener('change', checkWindowOrientation);
-    }
-    window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-
-    checkWindowOrientation();
-
-    return () => {
-      window.removeEventListener('resize', checkWindowOrientation);
-      window.removeEventListener('orientationchange', checkWindowOrientation);
-      if (window.screen?.orientation) {
-        window.screen.orientation.removeEventListener('change', checkWindowOrientation);
-      }
-      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
-    };
   }, []);
 
-  const isLandscape = manualOrientation !== null 
-    ? manualOrientation === 'landscape' 
-    : (isWindowLandscape || deviceTilt === 'landscape');
-
   const toggleOrientationMode = () => {
-    setManualOrientation(prev => {
-      if (prev === null) {
-        return isLandscape ? 'portrait' : 'landscape';
-      }
-      return prev === 'landscape' ? 'portrait' : 'landscape';
-    });
+    if (isRecording) return; // Prevent changing layout during active video recording
+    setOrientationMode(prev => prev === 'portrait' ? 'landscape' : 'portrait');
   };
 
   const startCamera = useCallback(async (currentFacingMode = facingMode) => {

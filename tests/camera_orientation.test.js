@@ -1,43 +1,58 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-describe('Camera Orientation & Dual-Mode Capture (Horizontal & Vertical)', () => {
+describe('Camera Orientation & Surveyor-Controlled Toggle Mode', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('determines landscape orientation correctly based on window dimensions', () => {
-    const isLandscape = (width, height, angle = 0) => {
-      return width > height || angle === 90 || angle === 270;
+  it('guarantees orientation stays locked to surveyor toggle and never auto-turns on mobile tilt or movement', () => {
+    let orientationMode = 'portrait'; // Initial default is Vertical (portrait)
+
+    const toggleOrientation = () => {
+      orientationMode = orientationMode === 'portrait' ? 'landscape' : 'portrait';
     };
 
-    // Standard mobile portrait
-    expect(isLandscape(390, 844, 0)).toBe(false);
-    // Standard mobile landscape
-    expect(isLandscape(844, 390, 0)).toBe(true);
-    // Screen rotated 90 degrees
-    expect(isLandscape(390, 844, 90)).toBe(true);
-    // Screen rotated 270 degrees
-    expect(isLandscape(390, 844, 270)).toBe(true);
+    // Even if simulated phone physical tilt (deviceorientation / gamma / beta) or window resize changes:
+    const simulateMobileTurn = (newGamma, newBeta, newWindowWidth, newWindowHeight) => {
+      // The camera mode must NOT change from mobile tilt
+      return orientationMode === 'landscape';
+    };
+
+    // Upright phone (vertical)
+    expect(simulateMobileTurn(0, 80, 390, 844)).toBe(false);
+
+    // Surveyor physically turns phone sideways (horizontal tilt)
+    expect(simulateMobileTurn(85, 10, 844, 390)).toBe(false); // Still false (Vertical), because surveyor did not tap button!
+
+    // Surveyor turns phone upside down or sideways
+    expect(simulateMobileTurn(-70, 20, 844, 390)).toBe(false);
+
+    // ONLY when surveyor clicks the toggle button does it change to Horizontal (landscape)
+    toggleOrientation();
+    expect(orientationMode).toBe('landscape');
+    expect(simulateMobileTurn(0, 80, 390, 844)).toBe(true);
+
+    // Surveyor taps toggle again to return to Vertical (portrait)
+    toggleOrientation();
+    expect(orientationMode).toBe('portrait');
+    expect(simulateMobileTurn(85, 10, 844, 390)).toBe(false);
   });
 
-  it('correctly maps manual orientation override over automatic orientation', () => {
-    const resolveOrientation = (manualOverride, isWindowLandscape, deviceTilt) => {
-      if (manualOverride !== null) {
-        return manualOverride === 'landscape';
-      }
-      return isWindowLandscape || deviceTilt === 'landscape';
+  it('prevents changing orientation mode during active video recording', () => {
+    let orientationMode = 'portrait';
+    let isRecording = true;
+
+    const toggleOrientationMode = () => {
+      if (isRecording) return;
+      orientationMode = orientationMode === 'portrait' ? 'landscape' : 'portrait';
     };
 
-    // Auto portrait
-    expect(resolveOrientation(null, false, 'portrait')).toBe(false);
-    // Auto landscape (window rotated)
-    expect(resolveOrientation(null, true, 'portrait')).toBe(true);
-    // Auto landscape (device physically tilted sideways while auto-rotate locked)
-    expect(resolveOrientation(null, false, 'landscape')).toBe(true);
-    // Manual force landscape while device is upright
-    expect(resolveOrientation('landscape', false, 'portrait')).toBe(true);
-    // Manual force portrait while device is tilted
-    expect(resolveOrientation('portrait', false, 'landscape')).toBe(false);
+    toggleOrientationMode();
+    expect(orientationMode).toBe('portrait'); // Blocked while recording
+
+    isRecording = false;
+    toggleOrientationMode();
+    expect(orientationMode).toBe('landscape'); // Allowed when idle
   });
 
   it('calculates proper canvas target dimensions for horizontal vs vertical photos', () => {

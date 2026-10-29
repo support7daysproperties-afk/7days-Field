@@ -34,76 +34,36 @@ export default function FieldCamera({
   const watchIdRef = useRef(null);
   const cachedAddressRef = useRef(null);
 
-  // Dual Orientation Management (Horizontal & Vertical)
-  const [manualOrientation, setManualOrientation] = useState(null); // null (auto) | 'portrait' | 'landscape'
-  const [isWindowLandscape, setIsWindowLandscape] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return window.innerWidth > window.innerHeight;
-    }
-    return false;
-  });
-  const [deviceTilt, setDeviceTilt] = useState('portrait'); // 'portrait' | 'landscape'
-  const [deviceTiltAngle, setDeviceTiltAngle] = useState(0); // 0 | 90 | 270
+  // Surveyor-controlled Orientation Mode (Locked to manual toggle; never auto-rotates on phone tilt)
+  const [orientationMode, setOrientationMode] = useState('portrait'); // 'portrait' (Vertical) | 'landscape' (Horizontal)
+  const isLandscape = orientationMode === 'landscape';
+  const deviceTiltAngleRef = useRef(90); // Passive capture rotation angle (90 | 270)
 
-  // Screen orientation unlock & dynamic listener
   useEffect(() => {
-    // Release any previous orientation locks so the phone can rotate freely
+    // Release any previous orientation locks so device layout doesn't crash
     if (typeof window !== 'undefined' && window.screen?.orientation?.unlock) {
       try {
         window.screen.orientation.unlock();
       } catch (_) {}
     }
 
-    const checkWindowOrientation = () => {
-      const isLand = window.innerWidth > window.innerHeight || 
-        (window.screen?.orientation?.type ? window.screen.orientation.type.includes('landscape') : false);
-      setIsWindowLandscape(isLand);
-    };
-
-    const handleDeviceOrientation = (event) => {
-      const { beta, gamma } = event;
-      if (beta === null || gamma === null) return;
-      const absG = Math.abs(gamma);
-      const absB = Math.abs(beta);
-      if (absG > 45 || (absB < 35 && absG > 25)) {
-        setDeviceTilt('landscape');
-        setDeviceTiltAngle(gamma < 0 ? 270 : 90);
-      } else if (absB > 50 && absG < 35) {
-        setDeviceTilt('portrait');
-        setDeviceTiltAngle(0);
+    // Passive sensor listener strictly for capture angle (clockwise vs counter-clockwise)
+    // NEVER alters orientationMode or triggers auto-rotation
+    const handlePassiveTilt = (event) => {
+      const { gamma } = event;
+      if (gamma !== null && gamma !== undefined) {
+        deviceTiltAngleRef.current = gamma < 0 ? 270 : 90;
       }
     };
 
-    window.addEventListener('resize', checkWindowOrientation);
-    window.addEventListener('orientationchange', checkWindowOrientation);
-    if (window.screen?.orientation) {
-      window.screen.orientation.addEventListener('change', checkWindowOrientation);
-    }
-    window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-
-    checkWindowOrientation();
-
+    window.addEventListener('deviceorientation', handlePassiveTilt, true);
     return () => {
-      window.removeEventListener('resize', checkWindowOrientation);
-      window.removeEventListener('orientationchange', checkWindowOrientation);
-      if (window.screen?.orientation) {
-        window.screen.orientation.removeEventListener('change', checkWindowOrientation);
-      }
-      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
+      window.removeEventListener('deviceorientation', handlePassiveTilt, true);
     };
   }, []);
 
-  const isLandscape = manualOrientation !== null 
-    ? manualOrientation === 'landscape' 
-    : (isWindowLandscape || deviceTilt === 'landscape');
-
   const toggleOrientationMode = () => {
-    setManualOrientation(prev => {
-      if (prev === null) {
-        return isLandscape ? 'portrait' : 'landscape';
-      }
-      return prev === 'landscape' ? 'portrait' : 'landscape';
-    });
+    setOrientationMode(prev => prev === 'portrait' ? 'landscape' : 'portrait');
   };
 
   const startCamera = useCallback(async (currentFacingMode = facingMode) => {
@@ -271,7 +231,7 @@ export default function FieldCamera({
         const context = canvas.getContext('2d');
         context.save();
         context.translate(canvas.width / 2, canvas.height / 2);
-        const rot = (deviceTiltAngle === 270) ? -Math.PI / 2 : Math.PI / 2;
+        const rot = (deviceTiltAngleRef.current === 270) ? -Math.PI / 2 : Math.PI / 2;
         context.rotate(rot);
         if (isDigitalZoom && zoom > 1) {
           const sw = video.videoWidth / zoom;
